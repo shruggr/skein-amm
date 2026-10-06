@@ -49,7 +49,7 @@ pub fn topicOf(a: Allocator, token_id: []const u8) ![]const u8 {
 }
 
 /// The token a topic name carries, as the rules take it (skein-mandala's token.zig); null for
-/// a topic that is not a token's (`tm_mandala_deploys`, `tm_demo`).
+/// a topic that is not a token's (`tm_mandala`, `tm_demo`).
 pub fn tokenIdOf(topic: []const u8) ?bsv21.TokenId {
     return mandala.token.tokenIdOf(topic);
 }

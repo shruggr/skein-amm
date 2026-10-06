@@ -35,7 +35,7 @@ A query names its token with `tokenId`, in any of skein-mandala 0.4.0's forms
 `<txid>.<vout>`. `<txid>`, `<txid>_0` and `<txid>.0` all name the token at
 output 0 and its topic `tm_<txid>`; `<txid>_<vout>` with a non-zero vout
 names `tm_<txid>_<vout>` (a BRC-161 token). Any other id is refused. A hook
-for a topic that is not a token's (`tm_mandala_deploys`) does nothing. A pool
+for a topic that is not a token's (`tm_mandala`) does nothing. A pool
 exists only for a token whose binary id is 32 bytes (a token deployed at
 output 0): the Pool contract hard-codes a 32-byte id push.
 

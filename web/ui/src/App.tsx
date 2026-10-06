@@ -56,7 +56,7 @@ export function App() {
               {t.label}
             </button>
           ))}
-          {/* The Mandala pages this app carries (www/mandala/, skein-mandala v0.4.0). */}
+          {/* The Mandala pages this app carries (www/mandala/, skein-mandala v0.6.0). */}
           <a href="mandala/deploy/">Deploy a token</a>
           <a href="mandala/tokens/">Token topics</a>
         </nav>

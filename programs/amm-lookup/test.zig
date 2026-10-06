@@ -212,7 +212,7 @@ test "names: a query's tokenId <txid>, <txid>_0 or <txid>.0 is the topic tm_<txi
     try testing.expectError(error.BadQuery, idx.topicOf(a, "abcd_0"));
     try testing.expectEqual(pool.bsv21.Kind.legacy, idx.tokenIdOf("tm_" ++ hex ++ "_17").?.kind);
     try testing.expectEqual(pool.bsv21.Kind.native, idx.tokenIdOf("tm_" ++ hex).?.kind);
-    try testing.expect(idx.tokenIdOf("tm_mandala_deploys") == null);
+    try testing.expect(idx.tokenIdOf("tm_mandala") == null);
     try testing.expect(idx.tokenIdOf("tm_" ++ hex ++ "_0") == null); // tm_<txid>_0 is never a topic
 }
 
