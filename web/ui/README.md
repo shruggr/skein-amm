@@ -264,9 +264,10 @@ the ones the owner registered with the engine (`/listTopicManagers`).
      ("BRC-29 payouts" below).
    - Token → sats only: token inputs are Mandala value outputs of the token
      from the `bsv21` basket adding up to **exactly** the leg's amount (else
-     "Not built: token split"); `listOutputs({basket: "bsv21", tags:
-     ["bsv21:<tokenId>"], include: "entire transactions"})` for their source
-     transactions.
+     "Not built: token split"); `listOutputs({basket: "mandala <txid> 0",
+     include: "entire transactions"})` and `listOutputs({basket: "bsv21",
+     tags: ["bsv21:<tokenId>"], include: "entire transactions"})` for their
+     source transactions.
    - **Funding.** The exact amount is Σ contract outputs − pool sats − token
      inputs' sats (sats in: amount in + 1 sat for the token payout, the fees
      and the commission being part of amount in; tokens in: 1 sat per Mandala
@@ -420,7 +421,7 @@ src/
     runar-ir-schema.ts   runar-ir-schema's barrel minus its node-only validators (see below)
     index.ts             the module's exports
   lp/
-    wallet.ts           listOutputs: bsv21 basket, ordinals basket, deploy transactions (BEEF)
+    wallet.ts           listOutputs: bsv21 + mandala <txid> <vout> baskets, ordinals basket, deploy transactions (BEEF)
     inventory.ts        decode (Mandala, else BSV21 JSON), group by token id, sum, icons
     ordinals.ts         image ordinals as icon candidates (the outpoint holding the bytes)
     images.ts           image bytes from an inscription or a B file
@@ -508,7 +509,10 @@ no overlay is queried and nothing is submitted to one.
 **Inventory** (`src/lp/wallet.ts`, `inventory.ts`). On connect:
 
 - `listOutputs({basket: "bsv21", include: "locking scripts", includeTags,
-  includeCustomInstructions})`; each script decoded with `Mandala.decode`,
+  includeCustomInstructions})`, and the same for each token's own basket
+  `mandala <txid> <vout>` (where 1sat-sdk files a Mandala token's outputs),
+  the baskets named by the per-token labels of `listActions({labels:
+  ["mandala"], includeLabels: true})`; each script decoded with `Mandala.decode`,
   else the BSV21 inscription template (legacy JSON); grouped by token id,
   amounts summed. The script decides id and amount, not the tags.
 - A deploy output in the wallet gives sym / dec / icon (Mandala payload, or
@@ -584,7 +588,7 @@ peer `16Uiu2HAm6mP7…GwGqq`. Each router resolves only its own instances
 
 **Create a pool** (`poolDeploy.ts`).
 
-- Tokens: Mandala outputs of the `bsv21` basket with a 32-byte id whose
+- Tokens: Mandala outputs of the token rows (`bsv21` and the `mandala <txid> <vout>` baskets) with a 32-byte id whose
   customInstructions name the wallet key — value outputs, and a fixed-supply
   deploy output (amm-topic's fixture pool deploy spends the deploy output
   itself). Legacy tokens (BRC-161 deploy: 36-byte id or JSON form) are hidden
@@ -622,10 +626,14 @@ funding and signing" applied to the deploy, which needs the validator's
 consent and so is gated like a swap):
 
 1. `getPublicKey` (LP key, BRC-29, for the first deposit input),
-   `getPublicKey` (token change key `<tokenId>-<hex>`, P1SAT, only with
-   change), `listOutputs({basket: "bsv21", tags: ["bsv21:<tokenId>",
+   `getPublicKey` (token change key, only with change: BRC-29 like the LP
+   key, derivationPrefix base64("amm-change"), derivationSuffix
+   base64("<txid>_<vout>") of the first deposit input, so the wallet can
+   re-derive it from the deploy alone), `listOutputs({basket: "mandala
+   <txid> 0", include: "entire transactions"})` and
+   `listOutputs({basket: "bsv21", tags: ["bsv21:<tokenId>",
    "bsv21:deploy"], tagQueryMode: "any", include: "entire transactions"})`
-   for the token inputs' source transactions.
+   for the token inputs' source transactions, BEEFs merged.
 2. **Funding** (`createFunding`, shared with the swap):
    `getPublicKey({protocolID: [0, "onesat"], keyID: "amm-funding-<hex>",
    counterparty: "self", forSelf: true})`; `createAction({description: "AMM
@@ -744,8 +752,9 @@ and after.
    LpPubKey), `getPublicKey({protocolID: [2, "3241645161d8"], keyID:
    lpKeyId(<spent pool outpoint>), counterparty: "self", forSelf: true})`
    (the next LP key, as RemoveLiquidity rotates it), with tokens
-   `listOutputs({basket: "bsv21", tags: ["bsv21:<tokenId>"], include:
-   "entire transactions", limit: 10000})`. Token inputs: an exact-sum subset
+   `listOutputs({basket: "mandala <txid> 0", include: "entire transactions",
+   limit: 10000})` and `listOutputs({basket: "bsv21", tags:
+   ["bsv21:<tokenId>"], include: "entire transactions", limit: 10000})`. Token inputs: an exact-sum subset
    of the token's `bsv21` outputs (`selectAddTokenInputs`), else "not built:
    token split".
 2. `PoolTemplate.planAddLiquidity` (the call without its funding, as

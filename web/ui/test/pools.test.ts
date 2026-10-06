@@ -34,6 +34,7 @@ import {
   isPoolRow,
   legacyLpKeyId,
   lpKeyId,
+  changeKeyId,
   planPoolDeploy,
   poolableTokens,
   deployFunding,
@@ -53,6 +54,7 @@ import { PendingPayoutStore, internalizeNow, type KV } from "../src/wallet/pendi
 import { BRC29, brc29Side, isBrc29, type KeyArgs } from "./brc29Wallet";
 import { tokenInputsOf } from "../src/market/swapAction";
 import { buildInventory } from "../src/lp/inventory";
+import { loadWalletAssets, mandalaBasket } from "../src/lp/wallet";
 import liveJson from "./fixtures/instance-v2/live.json";
 import v from "./fixtures/amm-topic-vectors.json";
 
@@ -330,9 +332,12 @@ function verify(tx: Transaction, i: number): boolean {
 }
 
 const RATE = 100;
+/** Anything else a non-BRC-29 key asks for (none expected). */
 const changeKey = key(40);
 /** The fixture's LP key answers the deposit's BRC-29 LP keyID and the token deploy's key, so the pool output is the fixture's byte for byte. */
-const deployKeys = (a: KeyArgs) => (a.keyID === lpKeyId(`${DEPLOY_TXID}_0`) || a.keyID.startsWith("bsv21-deploy") ? lpKey : changeKey);
+const deployKeys = (a: KeyArgs) =>
+  a.keyID === lpKeyId(`${DEPLOY_TXID}_0`) || a.keyID.startsWith("bsv21-deploy") ? lpKey : isBrc29(a.protocolID) ? side.privateKey(a) : changeKey;
+const CHANGE_KEY_ID = changeKeyId(`${DEPLOY_TXID}_0`);
 
 async function deployPool(tokens = 5_000_000n, w = fakeWallet(0, deployKeys)) {
   const inputs = poolableTokens([deployRow]).tokens[0]!.inputs;
@@ -350,19 +355,21 @@ describe("pool deploy: funding and the deploy transaction", () => {
   it("the wallet sequence: LP key, change key, token BEEF, funding (createAction + signAction, nosend, exact, 1sat-deposit with the hold), every input signed with createSignature", async () => {
     const { calls, prepared } = await deployPool();
     expect(calls.map((c) => c.method)).toEqual([
-      "getPublicKey", "getPublicKey", "listOutputs", "getPublicKey", "createAction", "signAction",
+      "getPublicKey", "getPublicKey", "listOutputs", "listOutputs", "getPublicKey", "createAction", "signAction",
       "createSignature", "getPublicKey", "createSignature", "getPublicKey",
     ]);
     expect(calls[0]!.args).toEqual({ protocolID: BRC29, keyID: lpKeyId(`${DEPLOY_TXID}_0`), counterparty: "self", forSelf: true });
     expect(LP_KEY_PROTOCOL).toEqual(BRC29);
-    expect(calls[1]!.args).toMatchObject({ protocolID: P1SAT, keyID: expect.stringMatching(new RegExp(`^${TOKEN_ID}-[0-9a-f]{16}$`)), counterparty: "self" });
-    expect(calls[2]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "bsv21:deploy"], tagQueryMode: "any", include: "entire transactions", limit: 10000 });
-    const keyID = (calls[3]!.args as { keyID: string }).keyID;
+    expect(calls[1]!.args).toEqual({ protocolID: BRC29, keyID: CHANGE_KEY_ID, counterparty: "self", forSelf: true });
+    // The token's own basket (1sat-sdk's filing), then the page's `bsv21` filings.
+    expect(calls[2]!.args).toEqual({ basket: `mandala ${DEPLOY_TXID} 0`, include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "bsv21:deploy"], tagQueryMode: "any", include: "entire transactions", limit: 10000 });
+    const keyID = (calls[4]!.args as { keyID: string }).keyID;
     expect(keyID).toMatch(/^amm-funding-[0-9a-f]{16}$/);
     const fundingScript = new P2PKH().lock(side.privateKey({ protocolID: P1SAT as never, keyID }).toAddress()).toHex();
     const expires = 1_000 + 120_000;
     const f = prepared.funding;
-    expect(calls[4]!.args).toEqual({
+    expect(calls[5]!.args).toEqual({
       description: "AMM pool deploy funding: TST",
       labels: ["amm-pool-deploy"],
       outputs: [
@@ -377,9 +384,9 @@ describe("pool deploy: funding and the deploy transaction", () => {
       ],
       options: { signAndProcess: false, randomizeOutputs: false, noSend: true },
     });
-    expect(calls[5]!.args).toEqual({ reference: "ref-1", spends: {}, options: { noSend: true } });
-    expect(calls[6]!.args).toMatchObject({ keyID: "bsv21-deploy-TST-00" });
-    expect(calls[8]!.args).toMatchObject({ protocolID: P1SAT, keyID, counterparty: "self" });
+    expect(calls[6]!.args).toEqual({ reference: "ref-1", spends: {}, options: { noSend: true } });
+    expect(calls[7]!.args).toMatchObject({ keyID: "bsv21-deploy-TST-00" });
+    expect(calls[9]!.args).toMatchObject({ protocolID: P1SAT, keyID, counterparty: "self" });
     expect(prepared.expires).toBe(expires);
     expect(prepared.validator).toBe(v.identity);
   });
@@ -392,9 +399,9 @@ describe("pool deploy: funding and the deploy transaction", () => {
     expect(d.outputs[0]!.lockingScript.toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
     expect(d.outputs[0]!.satoshis).toBe(1_000_000);
     const changeFiling = prepared.tokenChange!;
-    const changeKeyID = JSON.parse(changeFiling.customInstructions).keyID as string;
-    expect(changeKeyID.startsWith(`${TOKEN_ID}-`)).toBe(true);
-    expect(d.outputs[1]!.lockingScript.toHex()).toBe(tokenP2pkhScript(TOKEN_ID, 5_000_000n, pub(changeKey)));
+    const changeCi = JSON.parse(changeFiling.customInstructions);
+    expect(changeCi).toMatchObject({ protocolID: BRC29, keyID: CHANGE_KEY_ID, counterparty: "self" });
+    expect(d.outputs[1]!.lockingScript.toHex()).toBe(tokenP2pkhScript(TOKEN_ID, 5_000_000n, pub(side.privateKey({ protocolID: BRC29, keyID: CHANGE_KEY_ID } as KeyArgs))));
     expect(d.outputs[1]!.satoshis).toBe(1);
     d.inputs.forEach((_, i) => {
       expect(verify(d, i)).toBe(true);
@@ -430,6 +437,24 @@ describe("pool deploy: funding and the deploy transaction", () => {
     });
     expect(ci.amt).toBeUndefined();
     expect(JSON.parse(changeFiling.customInstructions)).toMatchObject({ id: TOKEN_ID, amt: "5000000", op: "transfer" });
+  });
+
+  it("the token change is locked to the key derived from input 0 (BRC-29, prefix amm-change), never a random one", async () => {
+    const rand = vi.spyOn(crypto, "getRandomValues");
+    const a = await deployPool();
+    const b = await deployPool();
+    // getRandomValues is the funding key's only use (amm-funding-<hex>): one per deploy.
+    expect(rand).toHaveBeenCalledTimes(2);
+    rand.mockRestore();
+    const derived = side.privateKey({ protocolID: BRC29, keyID: CHANGE_KEY_ID } as KeyArgs);
+    const lock = tokenP2pkhScript(TOKEN_ID, 5_000_000n, pub(derived));
+    for (const { prepared } of [a, b]) {
+      expect(prepared.deploy.outputs[1]!.lockingScript.toHex()).toBe(lock);
+      expect(JSON.parse(prepared.tokenChange!.customInstructions)).toMatchObject({ protocolID: BRC29, keyID: CHANGE_KEY_ID, counterparty: "self" });
+    }
+    // P2PKH to Hash160 of the derived key: the wallet can spend it.
+    expect(lock.endsWith(new P2PKH().lock(derived.toAddress()).toHex())).toBe(true);
+    expect(CHANGE_KEY_ID).not.toBe(lpKeyId(`${DEPLOY_TXID}_0`));
   });
 
   it("an exact deposit has no token change: one output, funding = the sats deposit − the token input's sat + fee", async () => {
@@ -819,5 +844,28 @@ describe("remove liquidity from a BRC-29-keyed pool: submit, internalize the wit
     expect((await completeRemoveLiquidity(wallet, s)).internalized).toBe(true);
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { outputs: { outputIndex: number; protocol: string }[] };
     expect(ia.outputs.map((o) => [o.outputIndex, o.protocol])).toEqual([[0, "wallet payment"], [1, "basket insertion"]]);
+  });
+});
+
+describe("token rows: the token's own basket (1sat-sdk's Mandala filing) and bsv21", () => {
+  it("loadWalletAssets lists every `mandala <txid> <vout>` basket named by a `mandala`-labelled action; a fresh Mandala deploy is poolable", async () => {
+    const asked: unknown[] = [];
+    const ownRow = { ...deployRow, outpoint: `${DEPLOY_TXID}.0` };
+    const wallet = {
+      async listActions(args: unknown) {
+        asked.push(args);
+        return { totalActions: 1, actions: [{ labels: ["mandala", `mandala ${DEPLOY_TXID} 0`, "other"] }] };
+      },
+      async listOutputs(args: { basket: string }) {
+        asked.push(args);
+        return { totalOutputs: 0, outputs: args.basket === `mandala ${DEPLOY_TXID} 0` ? [ownRow] : [] };
+      },
+    } as never;
+    const assets = await loadWalletAssets(wallet);
+    expect(asked).toContainEqual({ labels: ["mandala"], includeLabels: true, limit: 10000 });
+    expect(asked).toContainEqual({ basket: `mandala ${DEPLOY_TXID} 0`, include: "locking scripts", includeTags: true, includeCustomInstructions: true, limit: 10000 });
+    expect(assets.tokenRows).toEqual([ownRow]);
+    expect(poolableTokens(assets.tokenRows).tokens.map((t) => t.tokenId)).toEqual([TOKEN_ID]);
+    expect(mandalaBasket(TOKEN_ID)).toBe(`mandala ${DEPLOY_TXID} 0`);
   });
 });

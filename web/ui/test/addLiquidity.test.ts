@@ -155,18 +155,19 @@ describe("add liquidity: funding and the add transaction", () => {
   it("the wallet sequence and the funding: nosend, exact, 1sat-deposit, amm-funding + hold, {amm: {add, expires}}", async () => {
     const { calls, prepared, side } = await add();
     expect(calls.map((c) => c.method)).toEqual([
-      "getPublicKey", "getPublicKey", "listOutputs", "getPublicKey", "createAction", "signAction",
+      "getPublicKey", "getPublicKey", "listOutputs", "listOutputs", "getPublicKey", "createAction", "signAction",
       "createSignature", "createSignature", "getPublicKey", "createSignature", "getPublicKey",
     ]);
     expect(calls[0]!.args).toEqual({ ...LP_REF, forSelf: true });
     expect(calls[1]!.args).toEqual({ protocolID: BRC29, keyID: NEXT_LP_ID, counterparty: "self", forSelf: true });
     expect(LP_KEY_PROTOCOL).toEqual(BRC29);
-    expect(calls[2]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
-    const keyID = (calls[3]!.args as { keyID: string }).keyID;
+    expect(calls[2]!.args).toEqual({ basket: `mandala ${TOKEN_ID.slice(0, 64)} 0`, include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
+    const keyID = (calls[4]!.args as { keyID: string }).keyID;
     expect(keyID).toMatch(/^amm-funding-[0-9a-f]{16}$/);
     const f = prepared.funding;
     const expires = 121_000;
-    expect(calls[4]!.args).toEqual({
+    expect(calls[5]!.args).toEqual({
       description: "AMM add-liquidity funding: TST",
       labels: ["amm-add-liquidity"],
       outputs: [
@@ -181,10 +182,10 @@ describe("add liquidity: funding and the add transaction", () => {
       ],
       options: { signAndProcess: false, randomizeOutputs: false, noSend: true },
     });
-    expect(calls[5]!.args).toEqual({ reference: "ref-1", spends: {}, options: { noSend: true } });
-    expect(calls[6]!.args).toMatchObject({ ...LP_REF }); // the LP's slot, under the current LP key
-    expect(calls[7]!.args).toMatchObject({ protocolID: P1SAT, keyID, counterparty: "self" });
-    expect(calls[9]!.args).toMatchObject({ keyID: TOKEN_KEY });
+    expect(calls[6]!.args).toEqual({ reference: "ref-1", spends: {}, options: { noSend: true } });
+    expect(calls[7]!.args).toMatchObject({ ...LP_REF }); // the LP's slot, under the current LP key
+    expect(calls[8]!.args).toMatchObject({ protocolID: P1SAT, keyID, counterparty: "self" });
+    expect(calls[10]!.args).toMatchObject({ keyID: TOKEN_KEY });
     // Exact: addBsv − the token input's 1 sat + the fee for the final size.
     expect(f.outputs).toBe(9_999);
     expect(f.size).toBe(swapTxSize(prepared.plan, 2));

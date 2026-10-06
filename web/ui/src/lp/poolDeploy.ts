@@ -23,8 +23,8 @@
  *                 and the LP key), then the funding output (last)
  *        outputs  0  the pool: `PoolTemplate.lockDeploy(args, state)`,
  *                    `sats` satoshis
- *                 1  token change (Mandala value, P2PKH to a fresh P1SAT
- *                    key filed in `bsv21`), when the inputs carry more
+ *                 1  token change (Mandala value, P2PKH to the change key
+ *                    below, filed in `bsv21`), when the inputs carry more
  *      Every input is signed with `createSignature` (SIGHASH_ALL|FORKID over
  *      the BIP-143 sighash computed here) and checked with `Spend`.
  *   3. The relay (src/lp/poolRelay.ts, `amm.pool.submit`) carries both to
@@ -49,6 +49,11 @@
  *    it unique, and determinism keeps the history recovery. Pools created
  *    before this have a 1sat-sdk LP key (`P1SAT_PROTOCOL`, keyID
  *    "amm-lp-<txid>_<vout>", `legacyLpKeyId`).
+ *  - Token change key: BRC-29 like the LP key, derivationPrefix =
+ *    base64("amm-change"), derivationSuffix = base64("<txid>_<vout>") of the
+ *    same first deposit input (`changeKeyId`). Never random: the wallet can
+ *    re-derive it from the deploy's input 0 even when the page dies before
+ *    `completePoolDeploy` files the change.
  *  - Validator key: the anyone-child of the chosen validator's identity for
  *    `1-amm pool-<first deposit input>` (src/lib/keys.ts), a public
  *    derivation, computed here. amm-validator checks it against the first
@@ -100,6 +105,7 @@ import { priceOf } from "../market/view";
 import type { ValidatorChoice } from "./validators";
 
 import { BRC29_PROTOCOL, brc29KeyID } from "../wallet/brc29";
+import { tokenSourceBeef } from "./wallet";
 import { POOL_OP, POOL_TAG, isPoolRow } from "./poolRows";
 export { POOL_OP, POOL_TAG, isPoolRow };
 /** The keyID prefix of the pre-BRC-29 LP keys (`P1SAT_PROTOCOL`). */
@@ -107,6 +113,7 @@ export const LP_KEY_PREFIX = "amm-lp-";
 /** The LP key's protocol: BRC-29 (see the module comment). */
 export const LP_KEY_PROTOCOL: WalletProtocol = BRC29_PROTOCOL;
 const LP_DERIVATION_PREFIX = Utils.toBase64(Utils.toArray("amm-lp", "utf8"));
+const CHANGE_DERIVATION_PREFIX = Utils.toBase64(Utils.toArray("amm-change", "utf8"));
 /** Validator fee and LP fee the form starts with (amm-topic's fixture pool; the instance's `ammValidator` terms are not exposed by its routes). */
 export const DEFAULT_LP_FEE_BPS = 30n;
 export const DEFAULT_VALIDATOR_FEE_BPS = 5n;
@@ -115,10 +122,6 @@ const toHex = (b: number[] | Uint8Array) => Utils.toHex(Array.from(b));
 
 function describe(text: string): string {
   return text.length <= 50 ? text : `${text.slice(0, 49)}…`;
-}
-
-function randomHex(bytes = 8): string {
-  return toHex(Array.from(crypto.getRandomValues(new Uint8Array(bytes))));
 }
 
 /** The LP key's BRC-29 derivation for a pool output created by a transaction whose input 0 spends `outpoint` (`<txid>_<vout>` or `txid.vout`). */
@@ -130,6 +133,17 @@ export function lpDerivation(outpoint: string): { derivationPrefix: string; deri
 /** The LP key's keyID (`LP_KEY_PROTOCOL`) for `outpoint`: `"<derivationPrefix> <derivationSuffix>"`. */
 export function lpKeyId(outpoint: string): string {
   return brc29KeyID(lpDerivation(outpoint));
+}
+
+/** The token change key's BRC-29 derivation for a deploy whose input 0 spends `outpoint`: as `lpDerivation`, prefix "amm-change". */
+export function changeDerivation(outpoint: string): { derivationPrefix: string; derivationSuffix: string } {
+  const [txid, vout] = outpoint.split(/[._]/);
+  return { derivationPrefix: CHANGE_DERIVATION_PREFIX, derivationSuffix: Utils.toBase64(Utils.toArray(`${txid}_${vout}`, "utf8")) };
+}
+
+/** The token change key's keyID (`LP_KEY_PROTOCOL`, BRC-29) for `outpoint`. */
+export function changeKeyId(outpoint: string): string {
+  return brc29KeyID(changeDerivation(outpoint));
 }
 
 /** The pre-BRC-29 LP keyID (`P1SAT_PROTOCOL`): `amm-lp-<txid>_<vout>`. */
@@ -420,6 +434,14 @@ export async function deriveLpKey(wallet: WalletInterface, firstInput: { txid: s
   return { protocolID, keyID, publicKey };
 }
 
+/** The token change key for a deposit whose first input is `firstInput` (see the module comment). */
+export async function deriveChangeKey(wallet: WalletInterface, firstInput: { txid: string; vout: number }): Promise<{ protocolID: WalletProtocol; keyID: string; publicKey: string }> {
+  const protocolID = LP_KEY_PROTOCOL;
+  const keyID = changeKeyId(`${firstInput.txid}_${firstInput.vout}`);
+  const { publicKey } = await wallet.getPublicKey({ protocolID, keyID, counterparty: "self", forSelf: true });
+  return { protocolID, keyID, publicKey };
+}
+
 export class DeployShapeError extends Error {
   constructor(message: string) {
     super(message);
@@ -485,8 +507,7 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
   const outputs: { satoshis: number; script: string }[] = [{ satoshis: Number(plan.sats), script: plan.lockingScript }];
   let tokenChange: BasketFiling | null = null;
   if (plan.tokenChange > 0n) {
-    const keyID = `${plan.tokenId}-${randomHex()}`;
-    const { publicKey } = await wallet.getPublicKey({ protocolID: P1SAT, keyID, counterparty: "self", forSelf: true });
+    const { protocolID, keyID, publicKey } = await deriveChangeKey(wallet, first);
     outputs.push({ satoshis: 1, script: tokenP2pkhScript(plan.tokenId, plan.tokenChange, publicKey) });
     tokenChange = {
       outputIndex: 1,
@@ -494,23 +515,16 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
       tags: bsv21FilterTags({ tokenId: plan.tokenId }),
       customInstructions: buildBsv21CustomInstructions({
         token: { id: plan.tokenId, amt: String(plan.tokenChange), op: "transfer", sym: meta.sym, dec: meta.dec },
-        protocolID: P1SAT,
+        protocolID,
         keyID,
         counterparty: "self",
       }),
     };
   }
 
-  // The token inputs' source transactions (a deploy output is tagged `bsv21:deploy`, not by its id).
-  const listed = await wallet.listOutputs({
-    basket: BSV21_BASKET,
-    tags: [...bsv21FilterTags({ tokenId: plan.tokenId }), BSV21_DEPLOY_TAG],
-    tagQueryMode: "any",
-    include: "entire transactions",
-    limit: 10000,
-  });
-  if (!listed.BEEF) throw new DeployShapeError("the wallet returned no BEEF for the token inputs");
-  const tokenBeef = Beef.fromBinary(Array.from(listed.BEEF));
+  // The token inputs' source transactions: the token's own basket, and `bsv21` (a deploy output there is tagged `bsv21:deploy`, not by its id).
+  const tokenBeef = await tokenSourceBeef(wallet, plan.tokenId, { tags: [...bsv21FilterTags({ tokenId: plan.tokenId }), BSV21_DEPLOY_TAG], tagQueryMode: "any" });
+  if (!tokenBeef) throw new DeployShapeError("the wallet returned no BEEF for the token inputs");
   for (const t of form.inputs) if (!tokenBeef.findTxid(t.txid)) throw new DeployShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
 
   const amounts = deployFunding(outputs, form.inputs, i.satsPerKb);

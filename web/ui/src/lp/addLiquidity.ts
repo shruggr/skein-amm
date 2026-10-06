@@ -58,6 +58,7 @@ import {
 import type { LookupOutput } from "../lib/overlay";
 import { LP_KEY_PROTOCOL, lpKeyId, poolCustomInstructions, POOL_TAG, type BasketFiling } from "./poolDeploy";
 import type { LpKeyRef } from "./myPools";
+import { tokenSourceBeef } from "./wallet";
 
 export class AddShapeError extends Error {
   constructor(message: string) {
@@ -147,9 +148,8 @@ export async function prepareAddLiquidity(i: AddLiquidityInput): Promise<Prepare
 
   let tokenBeef: Beef | null = null;
   if (i.tokenInputs.length > 0) {
-    const listed = await wallet.listOutputs({ basket: BSV21_BASKET, tags: bsv21FilterTags({ tokenId: i.tokenId }), include: "entire transactions", limit: 10000 });
-    if (!listed.BEEF) throw new AddShapeError("the wallet returned no BEEF for the token inputs");
-    tokenBeef = Beef.fromBinary(Array.from(listed.BEEF));
+    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: i.tokenId }) });
+    if (!tokenBeef) throw new AddShapeError("the wallet returned no BEEF for the token inputs");
     for (const t of i.tokenInputs) if (!tokenBeef.findTxid(t.txid)) throw new AddShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
   }
 

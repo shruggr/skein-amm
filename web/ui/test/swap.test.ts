@@ -405,8 +405,9 @@ describe("the swap transaction", () => {
 
   it("tokens in: [pool, funding, token] with the token input's BEEF from the wallet; funding = 1 sat per Mandala fee or commission output − the token input's sat + fee; all valid", async () => {
     const { prepared, calls, vkey, side } = await tokensIn();
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "listOutputs", "getPublicKey", "createAction", "signAction", "createSignature", "getPublicKey", "createSignature", "getPublicKey"]);
-    expect(calls[2]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "listOutputs", "listOutputs", "getPublicKey", "createAction", "signAction", "createSignature", "getPublicKey", "createSignature", "getPublicKey"]);
+    expect(calls[2]!.args).toEqual({ basket: `mandala ${TOKEN_ID.slice(0, 64)} 0`, include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
     expect(prepared.funding.outputs).toBe(2); // LP fee, validator fee, commission: 3 sats − the token input's 1
     expect(prepared.commission).toEqual({ amount: 50n, pkh: v.commissionPkh, to: "relay" });
     const s = prepared.swap;

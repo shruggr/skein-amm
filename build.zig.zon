@@ -1,6 +1,6 @@
 .{
     .name = .skein_amm,
-    .version = "0.3.3",
+    .version = "0.3.4",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{

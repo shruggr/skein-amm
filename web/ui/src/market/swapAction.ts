@@ -53,6 +53,7 @@ import type { Direction, Leg, PoolState } from "@amm-poc/matching-engine";
 import { PoolTemplate, decodeMandala, type CallPlan, type PoolUtxo } from "../pool";
 import type { LookupOutput } from "../lib/overlay";
 import { isPoolRow } from "../lp/poolRows";
+import { tokenSourceBeef } from "../lp/wallet";
 import { payoutId, type PendingPayout } from "../wallet/pendingPayouts";
 import { WALLET_PAYMENT, identityKeyOf, newBrc29Payout, type Brc29Payout } from "../wallet/brc29";
 
@@ -533,9 +534,8 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
   // Token inputs: their source transactions, for the final swap's BEEF.
   let tokenBeef: Beef | null = null;
   if (tokenInputs.length > 0) {
-    const listed = await wallet.listOutputs({ basket: BSV21_BASKET, tags: bsv21FilterTags({ tokenId: i.tokenId }), include: "entire transactions", limit: 10000 });
-    if (!listed.BEEF) throw new LegShapeError("the wallet returned no BEEF for the token inputs");
-    tokenBeef = Beef.fromBinary(Array.from(listed.BEEF));
+    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: i.tokenId }) });
+    if (!tokenBeef) throw new LegShapeError("the wallet returned no BEEF for the token inputs");
     for (const t of tokenInputs) if (!tokenBeef.findTxid(t.txid)) throw new LegShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
   }
 

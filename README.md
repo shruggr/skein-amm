@@ -3,7 +3,7 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.3.3**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
+and its pages. Version **0.3.4**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
 and skein-mandala 0.6.0; a host serving a market subscribes the beacons
 (0.3.0, shruggr/skein#120), a node beacons only the topics its owner
 has set up validation for, per topic (0.3.1, David 2026-10-06), and its
@@ -154,7 +154,7 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.3.3 |
+| this app | 0.3.4 |
 | skein-overlay | v0.7.7 (9e30a64) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-mandala | v0.5.2 (cd9ae27) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
