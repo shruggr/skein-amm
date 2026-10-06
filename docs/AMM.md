@@ -10,9 +10,9 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.7.5 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit` (or `/submit`, delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.5.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala_deploys` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.5.0 (copied) | `ls_mandala`, `ls_mandala_deploys` |
+| `overlay` | skein-overlay 0.7.6 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.5.1 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala_deploys` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.5.1 (copied) | `ls_mandala`, `ls_mandala_deploys` |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls; submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the liveness beacon, the relay, the pages (`www/` from the app's tree) |
@@ -67,7 +67,7 @@ state.
 
 | route | what |
 |---|---|
-| `POST /submit` | the submission message's transport (`X-Topics` a registered topic): `200 {id}`, delivery only; no STEAK (skein-overlay 0.7.2+) |
+| `POST /submit` | the submission message's transport (`X-Topics` a registered topic): `200 {id}`, delivery only; no STEAK (skein-overlay 0.7.2+); the submission event is admitted into box `amm/submit` (0.7.6) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}`; `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`) |
 | `GET /live` | amm-p2p: the validators heard from |
@@ -76,12 +76,12 @@ state.
 
 **Box `amm/overlay`** (the manifest's `"overlay"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
-{topic}`, from the owner. skein-overlay 0.7.5 takes them in this box only.
+{topic}`, from the owner. skein-overlay 0.7.5+ takes them in this box only.
 
 **Box `amm/submit`** (the manifest's `"submit"`, `filter: "beef"`): the
 engine's `submit {beef, topics, offChainValues?}` from anyone (the
-validator's own submissions among them), answered to the sender in this
-box; `register` / `deregister` here are refused (`bad-args`).
+validator's own submissions among them) and `POST /submit`'s submission
+event (skein-overlay 0.7.6), answered to the sender in this box; `register` / `deregister` here are refused (`bad-args`).
 
 **Box `amm`** (a message `{fn, args}`, skein docs/APPS.md §4):
 
@@ -90,7 +90,7 @@ box; `register` / `deregister` here are refused (`bad-args`).
 | `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (the owner too) |
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
-| the engine's | its own `watch`, `resume` (and `/submit`'s submission event, row 2) | the instance itself, events |
+| the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 2) | the instance itself, events |
 | amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
@@ -150,7 +150,7 @@ the package's transport and address whose sender rule admits the sender:
 3. `""` from `$self` → `overlay` (the engine's own watch, resume)
 4. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
 5. `amm-p2p` from `*` → `amm-p2p`
-6. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone; skein-overlay 0.7.5)
+6. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
 7. http `/listTopicManagers`, `/listLookupServiceProviders`,
    `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider`
    → `overlay`
@@ -168,13 +168,8 @@ the engine would get neither.
 
 ## Not wired
 
-- **`POST /submit` into `amm/submit`.** skein-overlay 0.7.5's derived
-  `/submit` route admits its submission event into the app's own box
-  `amm` (src/routes.zig: `admitOne(a, ev, app)`), not `amm/submit`; row 2
-  (`""` from `event`) takes it to the engine, which answers it in box
-  `amm`. The pages' `/submit` (removeLiquidity) is unchanged.
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
-  0.7.1+'s manifest row): not carried, as skein-mandala 0.5.0 does not; a
+  0.7.1+'s manifest row): not carried, as skein-mandala 0.5.1 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
 - **`tm_<txid>-live` subscription.** The skein node never subscribes `-live`
