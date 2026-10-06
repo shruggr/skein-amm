@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The Mandala pages (deploy a token; the owner's registered token topics),
-# copied into www/mandala/ from the skein-mandala v0.7.1 tag, as built there.
+# copied into www/mandala/ from the skein-mandala v0.7.2 tag, as built there.
 # They are outside that package's Zig `paths`, so they come from the tag's
 # tarball by URL and sha256 (the same tag build.zig.zon names by URL and
 # hash). Nothing is built here.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TAG=v0.7.1
+TAG=v0.7.2
 URL="https://github.com/shruggr/skein-mandala/archive/refs/tags/${TAG}.tar.gz"
-SHA256=8c2da29fa3e109e511d81d0a466706c6f60d9be26d5fd1fe15a9131b517601e9
+SHA256=7a3536a4c554414d7ce374f9a4b3def475182011dd3aa3954eb24ab3893235fb
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

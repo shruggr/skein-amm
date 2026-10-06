@@ -10,9 +10,9 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.9.0 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic, and with it the market's liveness and the validator's beacon on `tm_<txid>-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.7.1 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.7.1 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read `/mandala/tokens` (0.6.0: the token list is a read of the components) |
+| `overlay` | skein-overlay 0.9.1 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic, and with it the market's liveness and the validator's beacon on `tm_<txid>-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.7.2 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.7.2 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read `/mandala/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls, for every registered token when `config.overlay.validator` is set; submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the relay, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
@@ -67,7 +67,7 @@ state.
 
 | route | what |
 |---|---|
-| `POST /submit` | the submission message's transport (`X-Topics` a registered topic): `200 {id}`, delivery only; no STEAK (skein-overlay 0.7.2+); the submission event is admitted into box `amm/submit` (0.7.6) |
+| `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}`; `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
 | `GET /.live/tm_<txid>-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` empty: the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (not a market, or the topic not registered) |
@@ -119,7 +119,7 @@ start or stop: the manifest has none, and the owner's `{kind:
 "amm-p2p-start" | "amm-p2p-stop"}` is refused (`BadMessage`).
 
 **Market and validator** (0.6.0, shruggr/skein#120). David, 2026-10-06
-evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both". Two settings of the engine (skein-overlay 0.9.0), each
+evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both". Two settings of the engine (skein-overlay 0.9.0+), each
 optional, the only role settings; this manifest sets both:
 
 ```json

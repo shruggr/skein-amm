@@ -45,6 +45,7 @@ import {
   completeRemoveLiquidity,
   pendingRemovePayout,
   prepareRemoveLiquidity,
+  steakText,
   submitToOverlay,
   admittedOutput,
   awaitAdmitted,
@@ -422,9 +423,9 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
   async function submitAndComplete(s: PreparedRemoveLiquidity) {
     if (!wallet) return;
     const r = await submitToOverlay(authFetch, AMM_OVERLAY, s.topic, s.beef);
-    setSubmitted(`delivered, request ${r.id}; waiting for the overlay to admit it`);
+    setSubmitted(`submitted: ${steakText(r)}`);
     const at = admittedOutput(s);
-    if (at !== null) setSubmitted((await awaitAdmitted(authFetch, AMM_OVERLAY, s.txid, at)) ? `admitted (request ${r.id})` : `delivered (request ${r.id}), not admitted yet: the lookup does not show it`);
+    if (at !== null) setSubmitted((await awaitAdmitted(authFetch, AMM_OVERLAY, s.txid, at)) ? `admitted (${steakText(r)})` : `submitted (${steakText(r)}), not admitted yet: the lookup does not show it`);
     const c = await completeRemoveLiquidity(wallet, s);
     setCompleted(c);
     const pending = pendingRemovePayout(s, p.topic.tokenId);

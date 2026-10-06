@@ -3,8 +3,9 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.6.0**: on skein-overlay 0.9.0 (skein-sdk 0.7.1)
-and skein-mandala 0.7.1. Market and validator are the engine's two settings
+and its pages. Version **0.6.1**: on skein-overlay 0.9.1 (skein-sdk 0.7.1)
+and skein-mandala 0.7.2 (`POST /submit` is BRC-22 again: it answers the
+STEAK, and the pages read it; shruggr/skein#112). Market and validator are the engine's two settings
 (0.6.0, shruggr/skein#120; David, 2026-10-06 evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both"): with
 `config.overlay.market` the engine's `register` asks the runtime's liveness
 tool for the token's `tm_<txid>-live`, with `config.overlay.validator` it
@@ -23,9 +24,9 @@ request to its own validator program in-VM. Ported from amm-poc (b-open-io/amm-p
 
 | role | file | what |
 |---|---|---|
-| `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.9.0's build: serves the topics, keeps the registered set (`register` / `deregister`, only in `amm/register`) and, by `config.overlay.market` / `.validator`, asks liveness of and beacons each registered token's `tm_<txid>-live`, takes submissions by message and from `POST /submit` (box `amm/submit`) and answers them to the sender's box |
-| `mandala-topic` | `bin/mandala-topic.wasm` | skein-mandala 0.7.1's topic manager: one topic per token, `tm_<txid>`, judged by the BRC-162 rules alone; the discovery topic `tm_mandala` |
-| `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.7.1's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output), and the token list (the read `/mandala/tokens`) |
+| `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.9.1's build: serves the topics, keeps the registered set (`register` / `deregister`, only in `amm/register`) and, by `config.overlay.market` / `.validator`, asks liveness of and beacons each registered token's `tm_<txid>-live`, takes submissions by message (box `amm/submit`, answered to the sender's box) and by `POST /submit` (BRC-22: the STEAK) |
+| `mandala-topic` | `bin/mandala-topic.wasm` | skein-mandala 0.7.2's topic manager: one topic per token, `tm_<txid>`, judged by the BRC-162 rules alone; the discovery topic `tm_mandala` |
+| `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.7.2's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output), and the token list (the read `/mandala/tokens`) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools of every token topic the overlay serves, each query naming its token |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token when `config.overlay.validator` is set: checks a taker's or an LP's transaction against the pool, signs the pool input last, submits it to its own overlay by message and answers on the engine's answer (`swap`, `addLiquidity`, `deploy`, libp2p direct calls) |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1`, `amm.liquidity/1`: a transaction carried to the validator the caller names), and the pages (`www/`, served from the app's own tree) |
@@ -33,7 +34,7 @@ request to its own validator program in-VM. Ported from amm-poc (b-open-io/amm-p
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
 | | `web/ui`, `web/engine` | the pages (validator, LP, swap, tokens) and the matching engine, built into `www/` |
-| | `www/mandala/` | skein-mandala 0.7.1's pages: deploy a token, the owner's token topics |
+| | `www/mandala/` | skein-mandala 0.7.2's pages: deploy a token, the owner's token topics |
 
 docs/AMM.md has the pieces, the pool rule, the interfaces, the rows and
 what is not wired.
@@ -51,7 +52,7 @@ scripts/www.sh     # www/: the pages from web/ui, then the Mandala pages into ww
 ```
 
 **The overlay and Mandala artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.9.0 and skein-mandala v0.7.1 by tag
+`build.zig.zon` names skein-overlay v0.9.1 and skein-mandala v0.7.2 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/mandala-topic.wasm`, `bin/mandala-lookup.wasm`
 from the skein-mandala package, byte for byte. skein-mandala's pages are
@@ -147,10 +148,10 @@ wildcard DNS, `<host>/@<handle>/amm`).
    call, anyone, signed or not; 0.5.0); `/call` and `/submit` are message
    routes (a signed request). `<base>/live` is gone (0.5.0).
 
-**Submit and look up** (skein-overlay 0.7.2+: a submission is a message, answered later to the submitter's box; BRC-24):
+**Submit and look up** (BRC-22, synchronous: skein-overlay 0.9.1; by message instead, answered later to the submitter's box; BRC-24):
 
 ```
-POST <base>/submit                     → 200 {id}: delivery only (the request record's CID), no STEAK
+POST <base>/submit                     → 200, the STEAK (BRC-22; 503 + Retry-After while undecided)
 X-Topics: ["tm_<txid>"]
 Content-Type: application/octet-stream
 <BEEF>
@@ -167,9 +168,9 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.6.0 |
-| skein-overlay | v0.9.0 (7f24ca2) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-mandala | v0.7.1 (a53dc29) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
+| this app | 0.6.1 |
+| skein-overlay | v0.9.1 (1e2be41) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
+| skein-mandala | v0.7.2 (32774ce) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain v0.3.2) |

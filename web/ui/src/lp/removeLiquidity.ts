@@ -25,8 +25,9 @@
  *   5. `POST <base>/submit` (`x-topics: tm_<txid>`) with the remove's
  *      AtomicBEEF; the funding transaction is in it as the unproven parent
  *      (the engine verifies against it, as it does the fixture's unproven
- *      pool deploy). The answer is delivery only, `{id}` (skein-overlay
- *      0.7.2+); the outcome is read with a lookup (`awaitAdmitted`).
+ *      pool deploy). The answer is BRC-22's STEAK (skein-overlay 0.9.1),
+ *      or 503 when nothing is decided yet; the outcome is read with a
+ *      lookup too (`awaitAdmitted`).
  *   6. `completeRemoveLiquidity`: one `internalizeAction` — the sats
  *      withdrawal as a BRC-29 wallet payment (the contract pays the current
  *      LP key, a BRC-29 key `"<prefix> <suffix>"`, so the remittance is its
@@ -274,31 +275,40 @@ export async function completeRemoveLiquidity(wallet: WalletInterface, s: Prepar
   return out;
 }
 
+/** BRC-22's STEAK: per topic, the outputs admitted and the coins retained and removed. */
+export type Steak = Record<string, { outputsToAdmit: number[]; coinsToRetain: number[]; coinsRemoved: number[] }>;
+
 /**
- * Submit to the instance (skein-overlay 0.7.2+, docs/OVERLAY.md "Submitting"): `POST <base>/submit`
- * (`x-topics` the token topic, the body the BEEF) carries the submission message `{fn: "submit",
- * args: {beef, topics}}` and answers its delivery only, `200 {id}` — the request record's CID, which
- * every answer names. No STEAK comes back on the connection: the verdict (admitted, each proof, or
- * rejected) is a message to the submitter's box, and the page reads the outcome with a lookup
- * (`awaitAdmitted`). Both are POSTs, so both go through the connected wallet's `AuthFetch`
- * (a skein takes no unsigned POST).
+ * Submit to the instance (BRC-22; skein-overlay 0.9.1, docs/OVERLAY.md "Submitting"): `POST
+ * <base>/submit` (`x-topics` the token topic, the body the BEEF) waits on the submission and
+ * answers the STEAK; 503 with Retry-After when nothing is decided within the host's bound (the
+ * submission stands: `steak` absent). A POST, so it goes through the connected wallet's
+ * `AuthFetch`.
  */
-export async function submitToOverlay(af: SignedFetch | null, base: string, topic: string, beef: number[]): Promise<{ id: string }> {
+export async function submitToOverlay(af: SignedFetch | null, base: string, topic: string, beef: number[]): Promise<{ steak?: Steak }> {
   const res = await needSigned(af).fetch(`${base}/submit`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": topic },
     body: new Uint8Array(beef),
   });
   const text = await res.text();
+  if (res.status === 503) return {};
   if (!res.ok) throw new Error(`POST ${base}/submit: ${res.status} ${text.slice(0, 300)}`);
-  let id: unknown;
+  let steak: unknown;
   try {
-    id = (JSON.parse(text) as { id?: unknown }).id;
+    steak = JSON.parse(text);
   } catch {
     /* not JSON */
   }
-  if (typeof id !== "string") throw new Error(`POST ${base}/submit: want {id}, got ${text.slice(0, 300)}`);
-  return { id };
+  if (!steak || typeof steak !== "object" || Array.isArray(steak)) throw new Error(`POST ${base}/submit: want the STEAK, got ${text.slice(0, 300)}`);
+  return { steak: steak as Steak };
+}
+
+/** The STEAK in words: the topics that admitted outputs, else "taken by no topic"; no STEAK, "not decided yet". */
+export function steakText(r: { steak?: Steak }): string {
+  if (!r.steak) return "not decided yet";
+  const took = Object.entries(r.steak).filter(([, e]) => e.outputsToAdmit.length > 0).map(([t, e]) => `${t} (outputs ${e.outputsToAdmit.join(", ")})`);
+  return took.length ? `admitted under ${took.join("; ")}` : "taken by no topic";
 }
 
 /** The output of the remove the lookup is asked about: the continuation, else the token withdrawal (null: neither). */
