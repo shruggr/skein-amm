@@ -33,6 +33,10 @@
 //!   map `live` (identity key → at ‖ peer ID) under the program's own head:
 //!   a later `at` replaces an earlier one, never the reverse.
 //!
+//! Who judges (shruggr/skein#120, David 2026-10-06): a host serving a
+//! market (`ammP2p.market`) subscribes `tm_<txid>-live` to `validateLive`
+//! for each token it serves (`subscribeEvent`, `plan`); no other host does.
+//!
 //! Consumer: `live(map, identityKey, now, threshold)` → the peer ID and
 //! time, while `now - at <= threshold`.
 const std = @import("std");
@@ -78,6 +82,50 @@ pub fn unbeaconEvent(a: Allocator, topic: []const u8) !Value {
         .{ .key = "event", .value = .{ .text = "unbeacon" } },
         .{ .key = "topic", .value = .{ .text = topic } },
     }) };
+}
+
+// ---------------------------------------------------------------- the market role
+
+/// What the kernel delivers a `-live` beat to (shruggr/skein#119 `subscribe {topic, program, fn}`):
+/// this program's role in the app's record and the handler that judges a frame.
+pub const live_program = "amm-p2p";
+pub const live_fn = "validateLive";
+
+/// A market's subscription (shruggr/skein#120, David 2026-10-06: liveness by role): deliver each
+/// beat on `topic` (`tm_<txid>-live`) to amm-p2p's `validateLive`.
+pub fn subscribeEvent(a: Allocator, topic: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = "subscribe" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+        .{ .key = "program", .value = .{ .text = live_program } },
+        .{ .key = "fn", .value = .{ .text = live_fn } },
+    }) };
+}
+
+/// The subscription to `topic` ended (the app's own: shruggr/skein#119).
+pub fn unsubscribeEvent(a: Allocator, topic: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = "unsubscribe" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+    }) };
+}
+
+/// The subscriptions to change: the token topics `want`ed and not `standing` (subscribe), and the
+/// ones `standing` and no longer wanted (unsubscribe). A market wants every served token topic
+/// while started; a stop, or a host that is not a market, wants none.
+pub const Plan = struct { subscribe: []const []const u8, unsubscribe: []const []const u8 };
+
+pub fn plan(a: Allocator, standing: []const []const u8, want: []const []const u8) !Plan {
+    var sub: std.ArrayList([]const u8) = .empty;
+    var unsub: std.ArrayList([]const u8) = .empty;
+    for (want) |t| if (!contains(standing, t) and !contains(sub.items, t)) try sub.append(a, t);
+    for (standing) |t| if (!contains(want, t)) try unsub.append(a, t);
+    return .{ .subscribe = sub.items, .unsubscribe = unsub.items };
+}
+
+fn contains(xs: []const []const u8, x: []const u8) bool {
+    for (xs) |y| if (std.mem.eql(u8, x, y)) return true;
+    return false;
 }
 
 pub fn encodeBody(a: Allocator, b: Body) ![]u8 {

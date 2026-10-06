@@ -21,6 +21,13 @@ Ported from amm-poc `programs/amm-p2p` (skein-overlay 0.2.0, skein-sdk 0.3.0) on
 - **STOP: the heartbeat topic is not routed.** The heartbeat is still published on `tm_<txid>-live` for each served token topic, and `validateLive` still judges it, but no row in the app routes `tm_<txid>-live` to it: amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`), templated per instance, and a dynamic overlay's manifest names no token. How validator liveness per token is addressed is not decided (`liveVerdict`, src/main.zig).
 - **The peer ID.** amm-poc filled `ammP2p.peerId` per instance (`{{PEER_ID}}`). skein gives a program no way to learn its own peer ID (a step's input has `self.identity`, no peer ID; the host derives the libp2p key from the master secret, `[2, "skein instance"]`, key ID `libp2p:<handle>`), so the manifest carries none; without it `amm-p2p-start` schedules no heartbeat (catch-up only).
 
+## 0.3.0 (the market role)
+
+This section supersedes what the rest of this file says where they differ (the Port STOP "the heartbeat topic is not routed" and 0.2.0's "Not routed: `tm_<txid>-live`" included).
+
+- **Validator liveness by role** (shruggr/skein#120, David 2026-10-06). `ammP2p.market` (boolean, default `false`). On a market host a start — with or without `jobs` — emits, for every served token topic not yet subscribed (`ammP2p.topics`, else every registered or declared `tm_<txid>`), `{event: "subscribe", topic: "tm_<txid>-live", program: "amm-p2p", fn: "validateLive"}` (shruggr/skein#119; `liveness.subscribeEvent`), and `{event: "unsubscribe", topic}` for one subscribed before and no longer served; a stop, or a start with the role off, unsubscribes every one. The standing set is the map `subscriptions` in `amm/p2p` (`{kind: "amm-p2p-state", maps: {live, cursor, beacons, subscriptions}}`); the step's result lists `market`, `subscribed` and `unsubscribed`. The kernel delivers each beat to `validateLive` through the door, as a row's handler; an accepted beat's `amm-live` entry is stepped into the map `live` as before, and the relay picks the validator's peer from it (unchanged). Off a market host nothing is subscribed, the map stays empty and the relay refuses `validator_offline`.
+- **Registrations are not seen.** The owner's `register` / `deregister` goes to the engine (box `amm/register`); nothing steps amm-p2p then. The set is reconciled at each start (the manifest's `start`, which the owner sends again after a register or deregister, as for the beacons).
+
 ## 0.2.1 (skein-overlay 0.7.5; skein 387e057)
 
 This section supersedes what the rest of this file says where they differ.
@@ -71,7 +78,7 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 
 | route (libp2p) | program fn | what |
 |---|---|---|
-| `libp2p:tm_<txid>-live` (GossipSub topic) | `validateLive` | judge a heartbeat; accept admits its `amm-live` entry into box `amm-p2p`. Not routed in the app (Port, STOP) |
+| `libp2p:tm_<txid>-live` (GossipSub topic) | `validateLive` | judge a heartbeat; accept admits its `amm-live` entry into box `amm-p2p`. Delivered by the market role's subscription (0.3.0), no row |
 | `libp2p:/amm/proofs/1.0.0` (direct call) | `proofsByBlock` | answer one request frame with one reply frame |
 | `/amm/call` (HTTP, APPS.md §4) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit`, `amm.pool.submit` and `amm.liquidity.submit` wait on their relay |
 

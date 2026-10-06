@@ -92,7 +92,7 @@ event (skein-overlay 0.7.6), answered to the sender in this box; `register` / `d
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
 | the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 2) | the instance itself, events |
-| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`) | the owner |
+| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the subscriptions) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
 action) and the swap, deploy or add, checks the pair, records it under
@@ -103,11 +103,12 @@ marketplace relay").
 **libp2p**: `/amm-validator/1/swap`, `/addLiquidity`, `/deploy`
 (amm-validator; one signed-message package per frame); the engine's
 `<topic>`, `-admit`, `-proof` for each registered topic; `tm_<txid>-live`,
-published by the host's beacon (below), never subscribed by the node.
+published by the host's beacon (below), and subscribed by a host serving a
+market (below, "The market role").
 
 **Box `amm/amm-p2p`**: the owner's `{kind: "amm-p2p-start" | "amm-p2p-stop"}`
 (the Validator page), the cron provider's ticks (the fallback, `jobs`), and
-admitted heartbeats (none are, below).
+admitted heartbeats (`amm-live`, on a market host: below).
 
 **The beacon** (shruggr/skein#126): on start amm-p2p emits, per served token
 topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds ×
@@ -130,13 +131,30 @@ instance"]`, key ID `libp2p:<handle>`, counterparty self, as an identity
 multihash — the key the host's node runs (skein 387e057, signer.ts
 `peerKey`, from the instance's root).
 
+**The market role** (shruggr/skein#120, David 2026-10-06: validator
+liveness by role). `config.amm.ammP2p.market` (default `false`). On a host
+that serves a market, the start also emits, per served token topic (the
+registered set under `amm/topics` and any declared), `{event: "subscribe",
+topic: "tm_<txid>-live", program: "amm-p2p", fn: "validateLive"}`
+(shruggr/skein#119), once: the kernel delivers each beat on it to
+`validateLive`, which judges the host-signed frame (`liveness.judge`) and
+admits an accepted one as `{kind: "amm-live", …}` into `amm/amm-p2p`;
+stepped, it is applied to the validator map `live` under `amm/p2p` (a later
+`at` replaces an earlier one). The relay picks a pool's validator from that
+map, live within `offlineSeconds`, as amm-poc did. A start unsubscribes
+(`{event: "unsubscribe", topic}`) a topic subscribed before and no longer
+served, and a stop, or a start with the role off, unsubscribes every one
+(the set: map `subscriptions` under `amm/p2p`). A host not serving a market
+subscribes nothing; its map stays empty and its relay refuses a swap
+`validator_offline`. A validator's host beacons as above, whatever its role.
+
 ## The manifest
 
 `etc/app.json`: the six programs; `config.overlay` with no topics and the
 lookups `ls_mandala`, `ls_mandala_deploys` (both `mandala-lookup`) and
 `ls_amm` (`amm-lookup`), none with a `topics` list, so each listens to every
 topic served; gossip on (the default); `config.amm` (`ammP2p`:
-`heartbeatSeconds`, `offlineSeconds`; `ammValidator`, `commission`);
+`heartbeatSeconds`, `offlineSeconds`, `market`; `ammValidator`, `commission`);
 `provides` the three `amm.*` interfaces; `requires: ["chain/1"]`; `start` /
 `stop`.
 
@@ -173,17 +191,18 @@ the engine would get neither.
   0.7.1+'s manifest row): not carried, as skein-mandala 0.5.2 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
-- **`tm_<txid>-live` subscription.** The skein node never subscribes `-live`
-  (matchmaking is the client's): `validateLive` and the last-seen map stay,
-  routed by nothing, so `/live` lists no one and the relay finds no
-  validator's peer from it.
+- **`tm_<txid>-live` off a market host.** `-live` is consumed by a host
+  serving a market (`ammP2p.market`, above); on any other host nothing
+  subscribes it, so `/live` lists no one and the relay finds no validator.
 - **Catch-up and proofs by block.** Never specified; sync is
   shruggr/skein#112's `want`. The `/amm/proofs/1.0.0` row is gone and no
   start schedules the catch-up pass; the code stays as a utility
   (`proofsByBlock`, `catchup`).
-- **The beacon on register / deregister.** amm-p2p is not told of the
-  engine's registrations: a topic registered after the start is beaconed at
-  the next start; one deregistered is unbeaconed at the next start or stop.
+- **The beacon and the subscription on register / deregister.** amm-p2p is
+  not stepped by the engine's registrations (the owner's `register` goes to
+  the engine alone): a topic registered after the start is beaconed, and on
+  a market host subscribed, at the next start; one deregistered is
+  unbeaconed and unsubscribed at the next start or stop.
 - **Governance per token** (#120 item 4) and the other Mandala queries:
   skein-mandala docs/MANDALA.md "Not built".
 - **Run end to end.** The programs are tested natively and the pages

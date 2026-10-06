@@ -11,7 +11,7 @@
 //! **Called** (input kind "call"; `fn`):
 //!
 //!   validateLive    a libp2p:tm_<txid>-live message → {verdict, reason?, admit?: [the amm-live entry (box amm/amm-p2p)]}
-//!                   (no row routes it: the node does not subscribe `-live`, docs/AMM.md "Not wired")
+//!                   (delivered by the market role's subscription, shruggr/skein#119: `ammP2p.market`)
 //!   proofsByBlock   a /amm/proofs/1.0.0 frame → {verdict: accept, body: {bump} | {missing: true}}
 //!                   (a utility: no row routes it since 0.2.0; sync is shruggr/skein#112's `want`)
 //!   serve           route http `/` (prefix): the app's pages, `www/` of the app's own tree
@@ -30,7 +30,9 @@
 //!   message {kind: "amm-p2p-start" | "amm-p2p-stop"}   from the owner (the manifest's `start`, in box `amm`):
 //!                                                     a `beacon` event per served token topic on
 //!                                                     `tm_<txid>-live` (the host publishes it every
-//!                                                     heartbeatSeconds), or `unbeacon` for each
+//!                                                     heartbeatSeconds), or `unbeacon` for each; with
+//!                                                     `ammP2p.market`, a `subscribe` of each served
+//!                                                     `tm_<txid>-live` to `validateLive` (or `unsubscribe`)
 //!   message {kind: "amm-p2p-start" | "amm-p2p-stop", jobs: [...]}   the cron fallback: the schedules asked of
 //!                                                     (or stopped at) the cron provider (`local` `cron`)
 //!   message {kind: "amm-p2p-tick", job, name, due}      from the cron provider (skein#69): the heartbeat
@@ -42,7 +44,7 @@
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay" | "amm-liquidity-relay", id}   the relay (launched by a submit): a thread resting on
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!
-//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor, beacons}}.
+//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor, beacons, subscriptions}}.
 //! The app's state under the head `amm/app` (relay.zig `Book`; skein #77:
 //! `app.headOf`): the installed app record's `state`, or (an instance wired
 //! by its genesis, no app record) the head's root itself: {kind:
@@ -114,6 +116,10 @@ const Config = struct {
     peers: []const []const u8 = &.{},
     /// How long catch-up waits on a direct call's answer (ms).
     reply_timeout_ms: u64 = 30_000,
+    /// The market role (`ammP2p.market`, shruggr/skein#120, David 2026-10-06): this host serves a
+    /// market, so it subscribes the `tm_<txid>-live` beacons of the tokens it serves and keeps the
+    /// validator map the relay picks from. Off: nothing subscribed, the map stays empty.
+    market: bool = false,
 };
 
 /// A configuration section: the installed app record's `config.amm.<key>`
@@ -184,6 +190,7 @@ fn config(a: Allocator, in: Value) !Config {
         inline for (.{ .{ "heartbeatSeconds", "heartbeat_s" }, .{ "offlineSeconds", "offline_s" }, .{ "catchupSeconds", "catchup_s" }, .{ "window", "window" }, .{ "batch", "batch" }, .{ "replyTimeoutMs", "reply_timeout_ms" } }) |f| {
             if (o.get(f[0])) |v| @field(cfg, f[1]) = if (v == .integer and v.integer > 0) @intCast(v.integer) else return error.BadConfig;
         }
+        if (o.get("market")) |v| cfg.market = if (v == .bool) v.bool else return error.BadConfig;
         if (o.get("topics")) |v| cfg.topics = try strings(a, v);
         if (o.get("peers")) |v| cfg.peers = try strings(a, v);
     }
@@ -215,10 +222,12 @@ const State = struct {
     cursor: Map,
     /// The beacons standing: served topic `tm_<txid>` → when its beacon was asked (ms).
     beacons: Map,
+    /// The market's subscriptions standing: served topic `tm_<txid>` → when `tm_<txid>-live` was subscribed (ms).
+    subscriptions: Map,
 
     fn load(a: Allocator, s: w.store.Store) !State {
         const maps = try w.store.Maps.create(a, s);
-        var st: State = .{ .s = s, .live = maps.map(null), .cursor = maps.map(null), .beacons = maps.map(null) };
+        var st: State = .{ .s = s, .live = maps.map(null), .cursor = maps.map(null), .beacons = maps.map(null), .subscriptions = maps.map(null) };
         const c = (try vm.head(a, state_head)) orelse return st;
         const rec = try s.getValue(a, c);
         if (!eql(u8, rec.getText("kind") orelse "", "amm-p2p-state")) return error.BadState;
@@ -226,14 +235,15 @@ const State = struct {
         st.live = maps.map(m.getCid("live"));
         st.cursor = maps.map(m.getCid("cursor"));
         st.beacons = maps.map(m.getCid("beacons"));
+        st.subscriptions = maps.map(m.getCid("subscriptions"));
         return st;
     }
 
     /// Save and advance the head when anything changed: → the state record's CID, or null.
     fn commit(self: *State, a: Allocator) !?[]const u8 {
-        if (!self.live.dirty and !self.cursor.dirty and !self.beacons.dirty) return null;
-        var es: [3]cbor.Entry = undefined;
-        inline for (.{ "live", "cursor", "beacons" }, 0..) |n, i| {
+        if (!self.live.dirty and !self.cursor.dirty and !self.beacons.dirty and !self.subscriptions.dirty) return null;
+        var es: [4]cbor.Entry = undefined;
+        inline for (.{ "live", "cursor", "beacons", "subscriptions" }, 0..) |n, i| {
             const m = &@field(self, n);
             try m.flush();
             es[i] = .{ .key = n, .value = if (m.root) |r| .{ .cid = r } else .null };
@@ -288,9 +298,8 @@ fn validateLive(a: Allocator, in: Value, arg: Value) !Value {
     return libp2p.answer(a, v);
 }
 
-/// Not wired (skein-amm docs/AMM.md "Not wired"): nothing routes `tm_<txid>-live` to this function.
-/// The skein node never subscribes `-live` (David, 2026-10-05): the matchmaking is the client's,
-/// which reads the beacons itself. The verdict is kept for a node that does.
+/// A beat on `tm_<txid>-live`, delivered by the market role's subscription (`market`; shruggr/skein#119,
+/// David 2026-10-06: a host serving a market keeps the validator map; one that does not, subscribes nothing).
 fn liveVerdict(a: Allocator, in: Value, msg: libp2p.Inbound) !libp2p.Verdict {
     const topic = msg.topic orelse return error.NoTopic;
     const t = names.parse(topic) orelse return error.UnknownTopic;
@@ -488,6 +497,8 @@ fn step(a: Allocator, in: Value) !void {
             const owner = in.getBytes("owner") orelse "";
             if (!eql(u8, sender, owner) and !eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheOwner;
             const cfg = try config(a, in);
+            // The market role: subscribe the served tokens' `-live` beacons (or end them).
+            try market(a, in, &st, cfg, eql(u8, op, schedule.start_kind), &fields);
             // The beacon (#126): the host publishes the heartbeat; nothing ticks. A start naming
             // `jobs` asks the cron provider instead (the fallback, below).
             if (body.getArray("jobs") == null) {
@@ -579,6 +590,37 @@ fn beacons(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields
     try fields.appendSlice(a, &.{
         .{ .key = "beacons", .value = .{ .array = asked.items } },
         .{ .key = "unbeacons", .value = .{ .array = ended.items } },
+    });
+}
+
+/// The market role (`ammP2p.market`, shruggr/skein#120, David 2026-10-06): a start subscribes
+/// `tm_<txid>-live` for every served token topic not yet subscribed — `{event: "subscribe", topic,
+/// program: "amm-p2p", fn: "validateLive"}` (shruggr/skein#119): the kernel delivers each beat there,
+/// and an accepted one is stepped into the map `live` — and unsubscribes a topic subscribed before
+/// and no longer served (deregistered meanwhile); a stop, or a start with the role off, unsubscribes
+/// every standing one. The standing set is the map `subscriptions`. amm-p2p is not stepped by a
+/// registration (the owner's `register` goes to the engine): the set is reconciled at each start.
+fn market(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields: *std.ArrayList(cbor.Entry)) !void {
+    const at: u64 = in.getUint("at") orelse return error.BadInput;
+    var standing: std.ArrayList([]const u8) = .empty;
+    for (try st.subscriptions.prefixed("")) |kv| try standing.append(a, try a.dupe(u8, kv.key));
+    const p = try liveness.plan(a, standing.items, if (start and cfg.market) cfg.topics else &.{});
+    const subscribed = try a.alloc(Value, p.subscribe.len);
+    for (p.subscribe, subscribed) |t, *o| {
+        _ = try vm.emitEvent(a, try liveness.subscribeEvent(a, try names.live(a, t)));
+        try st.subscriptions.put(t, .{ .int = @intCast(at) });
+        o.* = .{ .text = t };
+    }
+    const unsubscribed = try a.alloc(Value, p.unsubscribe.len);
+    for (p.unsubscribe, unsubscribed) |t, *o| {
+        _ = try vm.emitEvent(a, try liveness.unsubscribeEvent(a, try names.live(a, t)));
+        _ = try st.subscriptions.remove(t);
+        o.* = .{ .text = t };
+    }
+    try fields.appendSlice(a, &.{
+        .{ .key = "market", .value = .{ .boolean = cfg.market } },
+        .{ .key = "subscribed", .value = .{ .array = subscribed } },
+        .{ .key = "unsubscribed", .value = .{ .array = unsubscribed } },
     });
 }
 

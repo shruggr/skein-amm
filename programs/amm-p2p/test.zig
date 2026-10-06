@@ -395,6 +395,76 @@ test "the beacon (shruggr/skein#126): beacon {topic: tm_<txid>-live, every, body
     try testing.expect(u.get("body") == null);
 }
 
+test "the market role (shruggr/skein#120, #119): subscribe tm_<txid>-live to amm-p2p validateLive per served topic; off → none; deregister or stop → unsubscribe" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const t1 = "tm_" ++ "ab" ** 32;
+    const t2 = "tm_" ++ "cd" ** 32;
+    const served: []const []const u8 = &.{ t1, t2 };
+
+    // The event as emitted, read back: the topic is the beacon's, the program and fn the handler.
+    const sub = readBack(a, try liveness.subscribeEvent(a, try names.live(a, t1)));
+    try testing.expectEqualStrings("subscribe", sub.getText("event").?);
+    try testing.expectEqualStrings(t1 ++ "-live", sub.getText("topic").?);
+    try testing.expectEqualStrings("amm-p2p", sub.getText("program").?);
+    try testing.expectEqualStrings("validateLive", sub.getText("fn").?);
+    const un = readBack(a, try liveness.unsubscribeEvent(a, try names.live(a, t1)));
+    try testing.expectEqualStrings("unsubscribe", un.getText("event").?);
+    try testing.expectEqualStrings(t1 ++ "-live", un.getText("topic").?);
+    try testing.expect(un.get("program") == null and un.get("fn") == null);
+
+    // Market on, nothing standing: a subscription per served topic.
+    const on = try liveness.plan(a, &.{}, served);
+    try testing.expectEqual(@as(usize, 2), on.subscribe.len);
+    try testing.expectEqualStrings(t1, on.subscribe[0]);
+    try testing.expectEqualStrings(t2, on.subscribe[1]);
+    try testing.expectEqual(@as(usize, 0), on.unsubscribe.len);
+    // Started again with the same set: nothing to change.
+    const again = try liveness.plan(a, served, served);
+    try testing.expectEqual(@as(usize, 0), again.subscribe.len + again.unsubscribe.len);
+    // Market off (main.zig `market` wants nothing), nothing standing: nothing emitted.
+    const off = try liveness.plan(a, &.{}, &.{});
+    try testing.expectEqual(@as(usize, 0), off.subscribe.len + off.unsubscribe.len);
+    // t2 deregistered, then a start: t2 unsubscribed, t1 left standing.
+    const dereg = try liveness.plan(a, served, &.{t1});
+    try testing.expectEqual(@as(usize, 0), dereg.subscribe.len);
+    try testing.expectEqual(@as(usize, 1), dereg.unsubscribe.len);
+    try testing.expectEqualStrings(t2, dereg.unsubscribe[0]);
+    // A stop (or the role turned off): every standing one unsubscribed.
+    const stop = try liveness.plan(a, served, &.{});
+    try testing.expectEqual(@as(usize, 2), stop.unsubscribe.len);
+}
+
+test "the market role: a beat delivered by the subscription is judged and stepped into the validator map the relay reads" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const maps = try w.store.Maps.create(a, ms.store());
+    var live = maps.map(null);
+    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
+    const t0: u64 = 1_790_000_000_000;
+
+    // The handler's argument as the door hands a subscription's delivery to validateLive (libp2p.inbound).
+    const frame = try liveness.encodeFrame(a, try beat(a, ka, peer_a, t0));
+    const arg = readBack(a, .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "transport", .value = .{ .text = "libp2p" } },
+        .{ .key = "topic", .value = .{ .text = live_topic } },
+        .{ .key = "from", .value = .{ .bytes = peer_a } },
+        .{ .key = "body", .value = .{ .bytes = frame } },
+    }) });
+    const msg = try libp2p.inbound(arg);
+    const o = liveness.judge(a, msg.topic.?, msg.body, msg.from, t0 + 1000, liveness.default_offline_s * 1000);
+    try expectTag(o, "accept", null);
+    const ev = readBack(a, try liveness.liveEvent(a, o.accept));
+    try testing.expect(try liveness.apply(a, &live, ev));
+    // What the relay's validator selection (main.zig envPeer) reads: the peer, live within the threshold.
+    const s = (try liveness.live(&live, (try ka.publicKey()).toCompressedSec1(), t0 + 2000, liveness.default_offline_s * 1000)).?;
+    try testing.expectEqualSlices(u8, peer_a, s.peer_id);
+}
+
 // selfPeerId (main.zig) asks the signer for [2, "skein instance"] / `libp2p:<handle>` / self and
 // takes this multihash of it; the host derives its node's key the same way from the instance's root
 // (skein 387e057, src/host/signer.ts `peerKey`), so the beacon's peerId is the node's peer ID.
