@@ -10,7 +10,7 @@ import type { PoolState } from "@amm-poc/matching-engine";
 import { useWallet } from "../wallet/AppWalletProvider";
 import { useAuthFetch } from "../wallet/authFetch";
 import { AMM_OVERLAY, AMM_OWNER_IDENTITY, AMM_PEER_OVERLAY, appName } from "../lib/config";
-import { fetchLive, listTokenTopics, queryPools, type LiveAnswer } from "../lib/overlay";
+import { fetchLiveByToken, listTokenTopics, mergeLive, queryPools, type LiveAnswer } from "../lib/overlay";
 import { ago } from "../lp/validators";
 import { marginalPrice, shortKey, shortOutpoint } from "../market/view";
 import { livenessLine, loadThisInstance, poolsServedBy, type ServedPool, type ThisInstance } from "../validator/instance";
@@ -88,8 +88,8 @@ function ThisInstanceSection({ t, error }: { t: ThisInstance | null; error: stri
               <span className={`dot ${t.peer?.entry?.live ? "dot-live" : "dot-off"}`} /> {livenessLine(t, ago)}
               <br />
               <small>
-                A node never hears its own heartbeat (GossipSub <code>emitSelf: false</code>), so this is read from the
-                peer's <code>{AMM_PEER_OVERLAY ? `${AMM_PEER_OVERLAY}/live` : "(no peer)"}</code>.
+                Read from the peer&apos;s liveness read of this instance&apos;s token topics,{" "}
+                <code>{AMM_PEER_OVERLAY ? `${AMM_PEER_OVERLAY}/.live/tm_<txid>-live` : "(no peer)"}</code> (kept where the peer is a market for the token).
               </small>
             </Row>
           </tbody>
@@ -154,8 +154,8 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
       <h2>Register / heartbeat</h2>
       <p>
         <small>
-          A validator heartbeats on <code>tm_&lt;txid&gt;-live</code> for each topic it validates (below); markets list it
-          on their <code>/amm/live</code>. The heartbeat starts when amm-p2p receives{" "}
+          A validator heartbeats on <code>tm_&lt;txid&gt;-live</code> for each topic it validates (below); markets keep it
+          in their liveness read, <code>/amm/.live/tm_&lt;txid&gt;-live</code>. The heartbeat starts when amm-p2p receives{" "}
           <code>{"{kind: \"amm-p2p-start\"}"}</code> in box <code>amm/amm-p2p</code> from the owner (or the cron provider),
           after every boot; stop ends it and keeps the validated topics. These buttons send that
           message as the connected wallet: <code>POST {t?.address.origin ?? "<instance>"}/sendMessage</code> (BRC-33),
@@ -188,7 +188,7 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
               <small>
                 Admitted means the messagebox took the message (box <code>amm/amm-p2p</code> takes any sender).
                 amm-p2p then acts only if the sender is the owner; a refusal there is on the instance's thread and not in
-                this answer. Whether the heartbeat runs shows on the peer's <code>/amm/live</code> within one interval
+                this answer. Whether the heartbeat runs shows in the peer's <code>/amm/.live/tm_&lt;txid&gt;-live</code> within one interval
                 (Refresh).
               </small>
             </p>
@@ -478,14 +478,15 @@ function PeersSection({ live, error }: { live: LiveAnswer | null; error: string 
       <h2>Peers</h2>
       <p>
         <small>
-          The validators this node has seen heartbeat (<code>{AMM_OVERLAY}/live</code>).
+          The validators live in this node&apos;s liveness read (<code>{AMM_OVERLAY}/.live/tm_&lt;txid&gt;-live</code>, each token it
+          serves, merged; kept when this node is a market, <code>config.amm.ammP2p.market</code>).
         </small>
       </p>
       {error && <p className="bad">{error}</p>}
       {live && live.validators.length > 0 ? (
         <LiveTable live={live} />
       ) : (
-        live && <p>None: this node has seen no heartbeat (threshold {Math.round(live.thresholdMs / 1000)} s).</p>
+        live && <p>None{live.kept ? ` within ${Math.round(live.windowMs / 1000)} s` : ": this node keeps no liveness for its tokens"}.</p>
       )}
     </section>
   );
@@ -504,15 +505,24 @@ export function ValidatorPage() {
   const refresh = useCallback(async () => {
     setTError(null);
     setLiveError(null);
+    let topics: Awaited<ReturnType<typeof listTokenTopics>> = [];
     try {
-      setT(await loadThisInstance(AMM_OVERLAY, AMM_PEER_OVERLAY));
+      topics = await listTokenTopics(AMM_OVERLAY);
+    } catch (e) {
+      setLiveError(`${AMM_OVERLAY}/listTopicManagers: ${errText(e)}`);
+    }
+    try {
+      setT(await loadThisInstance(AMM_OVERLAY, AMM_PEER_OVERLAY, topics.map((x) => x.topic)));
     } catch (e) {
       setTError(errText(e));
     }
     try {
-      setLive(await fetchLive(AMM_OVERLAY));
+      const reads = await fetchLiveByToken(AMM_OVERLAY, topics);
+      setLive(mergeLive([...reads.values()].filter((r): r is LiveAnswer => !(r instanceof Error))));
+      const failed = [...reads.values()].filter((r): r is Error => r instanceof Error);
+      if (failed.length) setLiveError(`${AMM_OVERLAY}/.live: ${failed.map((e) => e.message).join("; ")}`);
     } catch (e) {
-      setLiveError(`${AMM_OVERLAY}/live: ${errText(e)}`);
+      setLiveError(`${AMM_OVERLAY}/.live: ${errText(e)}`);
     }
     setRefreshKey((k) => k + 1);
   }, []);

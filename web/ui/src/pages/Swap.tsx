@@ -4,12 +4,16 @@
  * instance at `AMM_OVERLAY` and the connected BRC-100 wallet; broadcasts
  * nothing itself (the validator does).
  *
- *   market    topics → pools (lookup) → prices, validator liveness (/live)
- *   form      token, direction, amount, slippage → the engine's plan
+ *   market    topics → pools (lookup) → prices; per token, the validators live
+ *             (`GET <base>/.live/tm_<txid>-live`, the runtime's liveness read:
+ *             the beats within the window, each body {identityKey, peerId})
+ *   form      token, direction, amount, slippage → the engine's plan over the
+ *             pools whose validator is live there (src/market/plan.ts `livePools`)
  *   swap      the relay's terms (amm.swap.terms: where the commission goes),
  *             then per leg: the funding (nosend) and the swap through the
  *             wallet (src/market/swapAction.ts), then the relay
- *             (amm.swap.submit / amm.swap.status, src/market/relay.ts, swapFlow.ts)
+ *             (amm.swap.submit / amm.swap.status, src/market/relay.ts, swapFlow.ts),
+ *             naming the validator: its identity key and the peer ID from the read
  *   result    accepted → payout internalized, funding relinquished;
  *             refused / timeout → funding aborted, replanned from the refusal
  */
@@ -18,7 +22,8 @@ import type { Direction, Plan } from "@amm-poc/matching-engine";
 import { useWallet } from "../wallet/AppWalletProvider";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS } from "../lib/config";
 import {
-  fetchLive,
+  LIVE_WINDOW_MS,
+  fetchLiveByToken,
   listTokenTopics,
   lookupPoolOutput,
   queryPools,
@@ -29,6 +34,7 @@ import { loadWalletAssets, type WalletAssets } from "../lp/wallet";
 import { buildInventory } from "../lp/inventory";
 import { formatAmount } from "../lp/amounts";
 import { buildMarketView, shortKey, shortOutpoint, validatorStatus, type MarketToken, type TokenMeta, type ValidatorStatus } from "../market/view";
+import { ago } from "../lp/validators";
 import { buildPlanRequest, goneFromLookup, quote, type PlanView } from "../market/plan";
 import {
   abandonSwap,
@@ -57,7 +63,7 @@ type LegResult =
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function LiveDot({ v }: { v: ValidatorStatus }) {
-  const title = v.seen ? `last heartbeat ${Math.round((v.ageMs ?? 0) / 1000)} s ago${v.peerId ? `, peer ${v.peerId}` : ""}` : "no heartbeat seen by this instance";
+  const title = v.seen ? `last beat ${Math.round((v.ageMs ?? 0) / 1000)} s ago${v.peerId ? `, peer ${v.peerId}` : ""}` : "not in this instance's liveness read for the token";
   return <span className={`dot ${v.live ? "dot-live" : "dot-off"}`} title={title} aria-label={v.live ? "live" : "not live"} />;
 }
 
@@ -77,8 +83,8 @@ export function SwapPage() {
   // --- the instance -------------------------------------------------------
   const [topics, setTopics] = useState<TokenTopic[]>([]);
   const [pools, setPools] = useState<PoolsAnswer>(new Map());
-  const [live, setLive] = useState<LiveAnswer | null>(null);
-  const [liveError, setLiveError] = useState<string | null>(null);
+  // Per token: the validators live on its `-live` topic (the runtime's read), or the error reading it.
+  const [live, setLive] = useState<Map<string, LiveAnswer | Error>>(new Map());
   const [instanceError, setInstanceError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
 
@@ -97,15 +103,10 @@ export function SwapPage() {
       );
       setTopics(ts);
       setPools(answers);
+      setLive(await fetchLiveByToken(AMM_OVERLAY, ts));
       setInstanceError(null);
     } catch (e) {
       setInstanceError(errText(e));
-    }
-    try {
-      setLive(await fetchLive(AMM_OVERLAY));
-      setLiveError(null);
-    } catch (e) {
-      setLiveError(errText(e));
     }
     setRefreshedAt(Date.now());
   }, [authFetch]);
@@ -157,6 +158,7 @@ export function SwapPage() {
     if (!selected && market.length > 0) setSelected(market[0]!.topic.tokenId);
   }, [market, selected]);
   const token = market.find((t) => t.topic.tokenId === selected);
+  const tokenLive = token?.live ?? null;
   const dec = token?.meta?.dec;
   // A refusal carries the pool's current state: it replaces the refused outpoint until the lookup catches up.
   const [refusedPools, setRefusedPools] = useState<Map<string, PoolState>>(new Map());
@@ -167,14 +169,14 @@ export function SwapPage() {
 
   const planned = useMemo(() => {
     if (!token) return null;
-    const req = buildPlanRequest(token.topic.tokenId, { direction, amount, slippageBps, allowPartial }, tokenPools, live, dec);
+    const req = buildPlanRequest(token.topic.tokenId, { direction, amount, slippageBps, allowPartial }, tokenPools, tokenLive, dec);
     if (!req.ok) return { error: req.error };
     try {
-      return quote(req.request, live, dec);
+      return quote(req.request, tokenLive, dec);
     } catch (e) {
       return { error: errText(e) };
     }
-  }, [token, direction, amount, slippageBps, allowPartial, tokenPools, live, dec]);
+  }, [token, direction, amount, slippageBps, allowPartial, tokenPools, tokenLive, dec]);
   const plan: Plan | null = planned && "plan" in planned ? planned.plan : null;
   const view: PlanView | null = planned && "view" in planned ? planned.view : null;
 
@@ -259,7 +261,7 @@ export function SwapPage() {
         candidates = tokenInputsOf(assets?.tokenRows ?? [], token.topic.tokenId);
       } catch (e) {
         const reason = errText(e);
-        setLegs(plan.legs.map((l) => ({ outpoint: l.outpoint, status: "not_built", reason, validator: validatorStatus(poolOf(l.outpoint).validatorIdentityKey, live) })));
+        setLegs(plan.legs.map((l) => ({ outpoint: l.outpoint, status: "not_built", reason, validator: validatorStatus(poolOf(l.outpoint).validatorIdentityKey, tokenLive) })));
         setBuilding(false);
         return;
       }
@@ -267,7 +269,14 @@ export function SwapPage() {
     const running: Promise<void>[] = [];
     for (const leg of plan.legs) {
       const pool = poolOf(leg.outpoint);
-      const validator = validatorStatus(pool.validatorIdentityKey, live);
+      const validator = validatorStatus(pool.validatorIdentityKey, tokenLive);
+      // The swap names the validator: the peer ID its beat carries (the relay dials it).
+      const peerId = validator.live ? validator.peerId : undefined;
+      if (!peerId) {
+        results.push({ outpoint: leg.outpoint, status: "error", validator, reason: "the pool's validator is no longer in this token's liveness read: no peer to name; refresh and plan again" });
+        setLegs([...results]);
+        continue;
+      }
       let tokenInputs: TokenInput[] | undefined;
       if (direction === "tokenToBsv") {
         const pick = selectExactTokenInputs(candidates, leg.amountIn);
@@ -304,7 +313,7 @@ export function SwapPage() {
         const l: Extract<LegResult, { prepared: PreparedSwap }> = { outpoint: leg.outpoint, status: "relaying", prepared, validator, payoutIds: pending.map((r) => r.id) };
         results.push(l);
         running.push(
-          relaySwap(ctx, prepared)
+          relaySwap(ctx, prepared, peerId)
             .catch((e): SwapOutcome => ({ status: "unknown", reason: errText(e) }))
             .then((o) => {
               const next = settled(l, o);
@@ -358,11 +367,10 @@ export function SwapPage() {
           <small>
             Refreshes every {Math.round(REFRESH_MS / 1000)} s
             {refreshedAt && ` · last ${new Date(refreshedAt).toLocaleTimeString()}`}
-            {live && ` · ${live.validators.filter((x) => x.live).length} validator(s) live by heartbeat`}
+            {` · validators live: a beat within ${Math.round(LIVE_WINDOW_MS / 1000)} s on the token's tm_<txid>-live`}
           </small>
         </p>
         {instanceError && <p className="bad">Instance: {instanceError}</p>}
-        {liveError && <p className="warn">/live: {liveError}</p>}
         {!instanceError && market.length === 0 && <p><small>The instance serves no token topics.</small></p>}
         {market.map((t) => (
           <div key={t.topic.topic} className="market-token">
@@ -378,6 +386,7 @@ export function SwapPage() {
                 </small>
               </p>
             )}
+            <LiveLine t={t} />
             {t.error ? (
               <p className="bad">Lookup {t.topic.tokenId}: {t.error}</p>
             ) : t.pools.length === 0 ? (
@@ -515,9 +524,9 @@ export function SwapPage() {
                 {` · fees LP ${fmtIn(view.lpFees)}, validator ${fmtIn(view.validatorFees)}, commission ${fmtIn(view.commissions)} ${unit(direction === "bsvToToken")}`}
               </small>
             </p>
-            {view.legs.some((l) => !l.validator.live) && (
-              <p className="warn"><small>A chosen pool&apos;s validator has no recent heartbeat on this instance; it may not answer.</small></p>
-            )}
+            <p>
+              <small>Only pools whose validator is live (a beat within {Math.round((tokenLive?.windowMs ?? LIVE_WINDOW_MS) / 1000)} s) are planned; each swap names its validator&apos;s peer for the relay to dial.</small>
+            </p>
           </>
         )}
 
@@ -565,13 +574,37 @@ export function SwapPage() {
   );
 }
 
+/** A token's validators live: its liveness read (`GET <base>/.live/tm_<txid>-live`), newest first. */
+function LiveLine({ t }: { t: MarketToken }) {
+  if (t.liveError) return <p className="warn"><small>Liveness ({t.topic.topic}-live): {t.liveError}</small></p>;
+  const l = t.live;
+  if (!l) return null;
+  if (!l.kept) return <p><small>This instance keeps no liveness for {t.topic.topic}-live: no validator is known live, so no pool can be planned.</small></p>;
+  const live = l.validators.filter((v) => v.live);
+  return (
+    <p>
+      <small>
+        Validators live (a beat within {Math.round(l.windowMs / 1000)} s):{" "}
+        {live.length === 0
+          ? "none"
+          : live.map((v, i) => (
+              <span key={v.identityKey}>
+                {i > 0 && ", "}
+                <code title={`${v.identityKey}\npeer ${v.peerId}`}>{shortKey(v.identityKey)}</code> ({ago(v.ageMs)})
+              </span>
+            ))}
+      </small>
+    </p>
+  );
+}
+
 function ValidatorLine({ v }: { v: ValidatorStatus }) {
   return (
     <p>
       Validator <LiveDot v={v} /> <code>{v.identityKey}</code>
       <br />
       <small>
-        {v.seen ? `peer ${v.peerId || "?"} · ${v.live ? "live" : "not live"} (last heartbeat ${Math.round((v.ageMs ?? 0) / 1000)} s ago)` : "no heartbeat from this validator on this instance: peer unknown"}
+        {v.seen ? `peer ${v.peerId || "?"} · ${v.live ? "live" : "not live"} (last beat ${Math.round((v.ageMs ?? 0) / 1000)} s ago)` : "not in this token's liveness read: peer unknown"}
       </small>
     </p>
   );

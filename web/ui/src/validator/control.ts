@@ -35,7 +35,7 @@
  *   itself refuses a sender that is neither `in.owner` nor the cron
  *   provider by erroring its step (`NotTheOwner`). That refusal is on the
  *   instance's thread, not in the HTTP answer: a 200 means "admitted", and
- *   only the peer's `/amm/live` shows whether the heartbeat runs.
+ *   only the peer's liveness read (`/amm/.live/tm_<txid>-live`) shows whether the heartbeat runs.
  *
  * - the explorer (`GET <origin>/explore…`, read op `explore`, the owner only
  *   by the stock reads table; others get 403): the genesis (log entry 0,

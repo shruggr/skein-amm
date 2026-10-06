@@ -7,16 +7,17 @@
  *   `amm2` at `localhost:8300`), or the `/@<handle>/` dev prefix;
  * - identity key: the router's BRC-169 answer for that handle
  *   (src/lp/validators.ts `resolveHandle`: `/manifest.json` → resolve);
- * - peer ID and liveness: what the OTHER node's `GET /amm/live` reports for
- *   that identity. A node never hears its own heartbeat (GossipSub
- *   `emitSelf: false`), so this instance's own `/amm/live` cannot say.
+ * - peer ID and liveness: what the OTHER node's liveness read reports for
+ *   that identity (`GET <peer>/.live/tm_<txid>-live`, for each token topic
+ *   this instance serves, merged: the peer keeps it when it is a market for
+ *   the token).
  *
  * And the pools this instance serves as a validator: the lookup's pools whose
  * `validatorIdentityKey` is this instance's identity.
  */
 import type { PoolState } from "@amm-poc/matching-engine";
 import type { LiveAnswer, LiveValidator, TokenTopic } from "../lib/overlay";
-import { parseLiveAnswer } from "../lib/overlay";
+import { LIVE_WINDOW_MS, liveTopicOf, liveUrl, mergeLive, noLiveness, parseLiveBeats } from "../lib/overlay";
 import { findLive, resolveHandle, type FetchLike, type ResolvedHandle } from "../lp/validators";
 
 export interface InstanceAddress {
@@ -55,7 +56,7 @@ export interface PeerView {
   base: string;
   /** `amm3.localhost:8400` */
   label: string;
-  /** The peer's whole live list (null when it could not be read). */
+  /** The peer's liveness reads for our token topics, merged (null when they could not be read). */
   live: LiveAnswer | null;
   /** The peer's entry for our identity, if it has heard our heartbeat. */
   entry?: LiveValidator;
@@ -77,18 +78,26 @@ export interface ThisInstance {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-async function getLive(base: string, fetchFn: FetchLike): Promise<LiveAnswer> {
-  const res = await fetchFn(`${base}/live`, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`GET ${base}/live: ${res.status}`);
-  return parseLiveAnswer(await res.json());
+/** The peer's liveness read (`GET <base>/.live/tm_<txid>-live`) for each token topic, merged; 404 is none kept. */
+async function getLive(base: string, topics: string[], fetchFn: FetchLike, now: number): Promise<LiveAnswer> {
+  const answers = await Promise.all(
+    topics.map(async (topic) => {
+      const url = liveUrl(base, liveTopicOf(topic));
+      const res = await fetchFn(url, { headers: { accept: "application/json" } });
+      if (res.status === 404) return noLiveness(now);
+      if (!res.ok) throw new Error(`GET ${url}: ${res.status}`);
+      return parseLiveBeats(await res.json(), now, LIVE_WINDOW_MS);
+    }),
+  );
+  return mergeLive(answers, now);
 }
 
 /**
  * Reads what "this instance" is: handle → identity (BRC-169), then the
- * peer's live list for that identity's peer ID and last heartbeat.
- * `peerBase` "" skips the peer.
+ * peer's liveness reads of `topics` (the token topics this instance serves)
+ * for that identity's peer ID and last beat. `peerBase` "" skips the peer.
  */
-export async function loadThisInstance(base: string, peerBase: string, fetchFn: FetchLike = fetch): Promise<ThisInstance> {
+export async function loadThisInstance(base: string, peerBase: string, topics: string[], fetchFn: FetchLike = fetch, now: number = Date.now()): Promise<ThisInstance> {
   const address = instanceAddress(base);
   const out: ThisInstance = { address };
   if (address.name && address.domain) {
@@ -105,7 +114,7 @@ export async function loadThisInstance(base: string, peerBase: string, fetchFn: 
   if (peerBase) {
     const peer: PeerView = { base: peerBase, label: hostLabel(peerBase), live: null };
     try {
-      peer.live = await getLive(peerBase, fetchFn);
+      peer.live = await getLive(peerBase, topics, fetchFn, now);
       const entry = out.identityKey ? findLive(out.identityKey, peer.live) : undefined;
       if (entry) {
         peer.entry = entry;
@@ -123,10 +132,10 @@ export async function loadThisInstance(base: string, peerBase: string, fetchFn: 
 export function livenessLine(t: ThisInstance, ago: (ms: number) => string): string {
   const p = t.peer;
   if (!p) return "no peer configured (VITE_AMM_PEER_OVERLAY): liveness unknown";
-  if (p.error) return `could not read ${p.label}/live: ${p.error}`;
+  if (p.error) return `could not read ${p.label}'s liveness: ${p.error}`;
   if (!t.identityKey) return "unknown: this instance's identity key is unknown";
-  if (!p.entry) return `${p.label} has not seen a heartbeat from this identity`;
-  return `last heartbeat seen by ${p.label}: ${ago(p.entry.ageMs)} (${p.entry.live ? "live" : "offline"})`;
+  if (!p.entry) return p.live && !p.live.kept ? `${p.label} keeps no liveness for this instance's tokens` : `${p.label} has no beat from this identity within its window`;
+  return `last beat seen by ${p.label}: ${ago(p.entry.ageMs)} (${p.entry.live ? "live" : "offline"})`;
 }
 
 export interface ServedPool {

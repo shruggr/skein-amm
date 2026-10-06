@@ -30,7 +30,19 @@ export interface SwapForm {
 
 export type PlanInput = { ok: true; request: PlanRequest } | { ok: false; error: string };
 
-/** Parses the form against one token's pools. `dec` scales a token amount (base units when unknown). */
+/**
+ * The pools the planner may use (0.4.0, shruggr/skein#120): those whose validator is in the token's
+ * liveness read (`GET <base>/.live/tm_<txid>-live`) within the window. No read, none.
+ */
+export function livePools(pools: PoolState[], live: LiveAnswer | null): PoolState[] {
+  if (!live) return [];
+  return pools.filter((p) => validatorStatus(p.validatorIdentityKey, live).live);
+}
+
+/**
+ * Parses the form against one token's pools; only the pools whose validator is live (`livePools`)
+ * are planned. `dec` scales a token amount (base units when unknown).
+ */
 export function buildPlanRequest(
   tokenId: string,
   form: SwapForm,
@@ -54,6 +66,17 @@ export function buildPlanRequest(
   }
   if (toleranceBps < 0n || toleranceBps > 10000n) return { ok: false, error: "slippage: 0-10000 bps" };
   if (pools.length === 0) return { ok: false, error: "no pools for this token" };
+  const usable = livePools(pools, live);
+  if (usable.length === 0) {
+    return {
+      ok: false,
+      error: !live
+        ? "no liveness read for this token: no pool can be planned"
+        : !live.kept
+          ? "this instance keeps no liveness for this token (its market role is off for it): no validator is known live"
+          : `no pool's validator has beaten within ${Math.round(live.windowMs / 1000)} s on this token`,
+    };
+  }
   const fixedCost: FixedCost = { minerFeeSats: LEG_MINER_FEE_SATS };
   return {
     ok: true,
@@ -64,7 +87,7 @@ export function buildPlanRequest(
       slippage: { toleranceBps },
       allowPartial: form.allowPartial,
       fixedCost,
-      inventory: withLastSeen(pools, live),
+      inventory: withLastSeen(usable, live),
     },
   };
 }

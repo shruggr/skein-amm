@@ -14,14 +14,19 @@ import { BRC29, brc29Side, isBrc29 } from "./brc29Wallet";
 import { PendingPayoutStore, internalizeNow, type KV } from "../src/wallet/pendingPayouts";
 import { PoolTemplate, decodeMandala } from "../src/pool";
 import {
-  parseLiveAnswer,
+  LIVE_WINDOW_MS,
+  liveTopicOf,
+  liveUrl,
+  noLiveness,
+  parseLiveBeats,
   parseLookupAnswer,
   parseOutputList,
   parseTokenTopic,
   type SignedFetch,
 } from "../src/lib/overlay";
 import { buildMarketView, marginalPrice, validatorStatus } from "../src/market/view";
-import { buildPlanRequest, goneFromLookup, quote, type SwapForm } from "../src/market/plan";
+import { buildPlanRequest, goneFromLookup, livePools, quote, type SwapForm } from "../src/market/plan";
+import { PEER, beatEntry, liveFor } from "./liveRead";
 import {
   FUNDING_TAG,
   assetIdOf,
@@ -38,7 +43,7 @@ import { dagBytes, parseSwapTerms, readBytes, swapTerms, toPoolState, type AuthF
 import { relaySwap, checkAgain } from "../src/market/swapFlow";
 import topics from "./fixtures/instance-v2/listTopicManagers.json";
 import lookupAll from "./fixtures/instance-v2/lookup-all.json";
-import liveJson from "./fixtures/instance-v2/live.json";
+import liveRead from "./fixtures/live-read.json";
 import beefAnswer from "./fixtures/instance-v2/lookup-outpoint-beef.json";
 import v from "./fixtures/amm-topic-vectors.json";
 
@@ -51,7 +56,9 @@ const TOKEN_ID = `${TXID}_0`;
 
 describe("market view from the instance's answers", () => {
   const tokenTopics = Object.keys(topics).map(parseTokenTopic).filter((t) => t !== null);
-  const live = parseLiveAnswer(liveJson);
+  // The liveness read's shape (skein #138), with the v2 instance's recorded validator and peer, 28 s old.
+  const NOW = 1790844766808;
+  const live = parseLiveBeats(liveRead, NOW);
   const pools = parseLookupAnswer(lookupAll);
 
   it("names: tm_<txid> is a native token, tm_<txid>_<vout> a legacy one, anything else is not a token", () => {
@@ -64,7 +71,7 @@ describe("market view from the instance's answers", () => {
   });
 
   it("pools, prices (display units with decimals, base units without) and validator liveness", () => {
-    const view = buildMarketView(tokenTopics, new Map([[TOKEN_ID, pools]]), live, new Map([[TOKEN_ID, { sym: "TST", dec: 2 }]]));
+    const view = buildMarketView(tokenTopics, new Map([[TOKEN_ID, pools]]), new Map([[TOKEN_ID, live]]), new Map([[TOKEN_ID, { sym: "TST", dec: 2 }]]));
     expect(view).toHaveLength(1);
     const [row] = view[0]!.pools;
     expect(view[0]!.meta).toEqual({ sym: "TST", dec: 2 });
@@ -72,27 +79,46 @@ describe("market view from the instance's answers", () => {
     // 1,019,930 sats / 4,902,298 base units = 0.20805140… sats per base unit, × 100 per token.
     expect(row!.price).toBe("20.80514077");
     expect(row!.priceUnit).toBe("token");
-    // The pool's validator is not the one heartbeating on this instance.
+    // The pool's validator is not the one beating on the token's -live topic.
     expect(row!.validator).toEqual({ identityKey: pools[0]!.validatorIdentityKey, live: false, seen: false });
+    expect(view[0]!.live).toBe(live);
 
-    const bare = buildMarketView(tokenTopics, new Map([[TOKEN_ID, pools]]), live, new Map());
+    const bare = buildMarketView(tokenTopics, new Map([[TOKEN_ID, pools]]), new Map([[TOKEN_ID, live]]), new Map());
     expect(bare[0]!.meta).toBeUndefined();
     expect(bare[0]!.pools[0]!.price).toBe("0.2080514");
     expect(bare[0]!.pools[0]!.priceUnit).toBe("base unit");
 
-    const failed = buildMarketView(tokenTopics, new Map([[TOKEN_ID, new Error("lookup 500")]]), live, new Map());
+    const failed = buildMarketView(tokenTopics, new Map([[TOKEN_ID, new Error("lookup 500")]]), new Map([[TOKEN_ID, new Error("GET …/.live/…: 500")]]), new Map());
     expect(failed[0]!.error).toBe("lookup 500");
+    expect(failed[0]!.live).toBeNull();
+    expect(failed[0]!.liveError).toBe("GET …/.live/…: 500");
   });
 
-  it("live answer: the recorded heartbeat is live; an unknown key is not seen", () => {
-    expect(live.validators).toHaveLength(1);
+  it("the liveness read (GET <base>/.live/tm_<txid>-live): each body decoded to {identityKey, peerId}; within the window, live", () => {
+    expect(liveUrl("http://a.localhost:8100/amm/", liveTopicOf(`tm_${TXID}`))).toBe(`http://a.localhost:8100/amm/.live/tm_${TXID}-live`);
+    expect(live.kept).toBe(true);
+    expect(live.windowMs).toBe(LIVE_WINDOW_MS);
+    expect(live.windowMs).toBe(40_000);
+    expect(live.validators).toEqual([
+      { identityKey: "03cdee31ef0446ffb95aeae00353d9ab4c26a8555d597a9930b0ddd4f4cc1ae0d0", peerId: PEER, at: 1790844738661, ageMs: 28147, live: true },
+    ]);
     const id = live.validators[0]!.identityKey;
-    expect(validatorStatus(id.toUpperCase().replace("0X", ""), live)).toMatchObject({ live: true, seen: true, peerId: live.validators[0]!.peerId });
-    expect(parseLiveAnswer({ now: 1000, thresholdMs: 100, validators: [{ identityKey: "AB", at: 800 }] }).validators[0]).toMatchObject({
-      identityKey: "ab",
-      ageMs: 200,
-      live: false,
-    });
+    expect(validatorStatus(id.toUpperCase(), live)).toMatchObject({ live: true, seen: true, peerId: PEER });
+    // Past the window: seen, not live.
+    expect(parseLiveBeats(liveRead, 1790844738661 + 40_001).validators[0]).toMatchObject({ live: false, ageMs: 40_001 });
+    // The latest beat per identity; newest first.
+    const k2 = "02" + "22".repeat(32);
+    const two = parseLiveBeats([beatEntry(k2, PEER, 900), beatEntry(id, PEER, 800), beatEntry(id, PEER, 950)], 1000);
+    expect(two.validators.map((x) => [x.identityKey, x.at])).toEqual([[id, 950], [k2, 900]]);
+    // Skipped: a body naming another identity than its sender, a body that is not the beacon's, no body.
+    const odd = parseLiveBeats(
+      [beatEntry(k2, PEER, 900, id), { sender: id, at: 900, body: Utils.toBase64([1, 2, 3]), from: PEER }, { sender: id, at: 900 }, "junk"],
+      1000,
+    );
+    expect(odd.validators).toEqual([]);
+    expect(parseLiveBeats({ not: "an array" }, 1000).validators).toEqual([]);
+    // 404: the instance keeps no liveness for the topic.
+    expect(noLiveness(5)).toEqual({ now: 5, windowMs: 40_000, validators: [], kept: false });
   });
 
   it("marginal price is exact bigint arithmetic", () => {
@@ -118,12 +144,34 @@ const poolB: PoolState = { ...poolA, outpoint: `${"bb".repeat(32)}_0`, bsvReserv
 
 describe("plan display", () => {
   const form: SwapForm = { direction: "bsvToToken", amount: "400000", slippageBps: "500", allowPartial: true };
+  // poolA and poolB share a validator, live on the token.
+  const live = liveFor([poolA.validatorIdentityKey]);
+
+  it("the planner considers only the pools whose validator is in the liveness read, within the window", () => {
+    const poolC: PoolState = { ...poolA, outpoint: `${"cc".repeat(32)}_0`, validatorIdentityKey: "03" + "33".repeat(32) };
+    expect(livePools([poolA, poolB, poolC], live).map((p) => p.outpoint)).toEqual([poolA.outpoint, poolB.outpoint]);
+    expect(livePools([poolA], null)).toEqual([]);
+    const req = buildPlanRequest(TOKEN_ID, form, [poolA, poolB, poolC], live, 0);
+    if (!req.ok) throw new Error(req.error);
+    expect(req.request.inventory.map((p) => p.outpoint)).toEqual([poolA.outpoint, poolB.outpoint]);
+    expect(req.request.inventory[0]!.lastSeen).toBe(live.validators[0]!.at);
+    expect(quote(req.request, live, 0).plan.legs.every((l) => l.outpoint !== poolC.outpoint)).toBe(true);
+    // Only poolC: nothing to plan, and why.
+    expect(buildPlanRequest(TOKEN_ID, form, [poolC], live, 0)).toEqual({ ok: false, error: "no pool's validator has beaten within 40 s on this token" });
+    expect(buildPlanRequest(TOKEN_ID, form, [poolA], null, 0)).toEqual({ ok: false, error: "no liveness read for this token: no pool can be planned" });
+    expect(buildPlanRequest(TOKEN_ID, form, [poolA], noLiveness(0), 0)).toMatchObject({ ok: false, error: expect.stringMatching(/keeps no liveness/) });
+    // Its beat older than the window: not planned.
+    const stale = parseLiveBeats([beatEntry(poolA.validatorIdentityKey, PEER, 0)], 40_001);
+    expect(buildPlanRequest(TOKEN_ID, form, [poolA], stale, 0).ok).toBe(false);
+    // The leg's validator carries the peer ID the swap names.
+    expect(quote(req.request, live, 0).view.legs[0]!.validator).toMatchObject({ live: true, peerId: PEER });
+  });
 
   it("plans across several pools, with per-leg fees and totals", () => {
-    const req = buildPlanRequest(TOKEN_ID, form, [poolA, poolB], null, 0);
+    const req = buildPlanRequest(TOKEN_ID, form, [poolA, poolB], live, 0);
     expect(req.ok).toBe(true);
     if (!req.ok) return;
-    const { plan, view } = quote(req.request, null, 0);
+    const { plan, view } = quote(req.request, live, 0);
     expect(plan.legs.length).toBe(2);
     expect(view.legs.map((l) => l.outpoint).sort()).toEqual([poolA.outpoint, poolB.outpoint].sort());
     expect(view.totalIn).toBe(400_000n);
@@ -144,37 +192,37 @@ describe("plan display", () => {
 
   it("no partial fills: one pool only; the pool's commission is priced as a fee on amount in", () => {
     const withCommission = { ...poolA, commissionBps: 10n };
-    const req = buildPlanRequest(TOKEN_ID, { ...form, amount: "40000", allowPartial: false }, [withCommission], null, 0);
+    const req = buildPlanRequest(TOKEN_ID, { ...form, amount: "40000", allowPartial: false }, [withCommission], live, 0);
     if (!req.ok) throw new Error(req.error);
     expect(req.request.fixedCost).toEqual({ minerFeeSats: expect.any(BigInt) });
-    const { view } = quote(req.request, null, 0);
+    const { view } = quote(req.request, live, 0);
     expect(view.legs).toHaveLength(1);
     const l = view.legs[0]!;
     expect([l.lpFee, l.validatorFee, l.commission]).toEqual([120n, 20n, 40n]);
     expect(view.commissions).toBe(40n);
     expect(l.amountOut).toBe(computeSwap(withCommission, "bsvToToken", 40_000n)!.amountOut);
     // The same order on the same pool without a commission gets more out.
-    const bare = buildPlanRequest(TOKEN_ID, { ...form, amount: "40000", allowPartial: false }, [poolA], null, 0);
+    const bare = buildPlanRequest(TOKEN_ID, { ...form, amount: "40000", allowPartial: false }, [poolA], live, 0);
     if (!bare.ok) throw new Error(bare.error);
-    expect(quote(bare.request, null, 0).view.totalOut).toBeGreaterThan(view.totalOut);
+    expect(quote(bare.request, live, 0).view.totalOut).toBeGreaterThan(view.totalOut);
   });
 
   it("token amounts are entered in display units", () => {
-    const req = buildPlanRequest(TOKEN_ID, { ...form, direction: "tokenToBsv", amount: "1.5" }, [poolA], null, 2);
+    const req = buildPlanRequest(TOKEN_ID, { ...form, direction: "tokenToBsv", amount: "1.5" }, [poolA], live, 2);
     expect(req.ok && req.request.amountIn).toBe(150n);
-    expect(buildPlanRequest(TOKEN_ID, { ...form, amount: "1.5" }, [poolA], null, 2)).toEqual({ ok: false, error: "at most 0 decimal place(s)" });
-    expect(buildPlanRequest(TOKEN_ID, form, [], null, 0)).toEqual({ ok: false, error: "no pools for this token" });
+    expect(buildPlanRequest(TOKEN_ID, { ...form, amount: "1.5" }, [poolA], live, 2)).toEqual({ ok: false, error: "at most 0 decimal place(s)" });
+    expect(buildPlanRequest(TOKEN_ID, form, [], live, 0)).toEqual({ ok: false, error: "no pools for this token" });
   });
 
   it("races: a planned pool missing from a fresh lookup is reported, and replanning drops it", () => {
-    const req = buildPlanRequest(TOKEN_ID, form, [poolA, poolB], null, 0);
+    const req = buildPlanRequest(TOKEN_ID, form, [poolA, poolB], live, 0);
     if (!req.ok) throw new Error(req.error);
-    const { plan } = quote(req.request, null, 0);
+    const { plan } = quote(req.request, live, 0);
     const fresh = [poolB];
     expect(goneFromLookup(plan, fresh)).toEqual([poolA.outpoint]);
-    const again = buildPlanRequest(TOKEN_ID, form, fresh, null, 0);
+    const again = buildPlanRequest(TOKEN_ID, form, fresh, live, 0);
     if (!again.ok) throw new Error(again.error);
-    expect(quote(again.request, null, 0).plan.legs.map((l) => l.outpoint)).toEqual([poolB.outpoint]);
+    expect(quote(again.request, live, 0).plan.legs.map((l) => l.outpoint)).toEqual([poolB.outpoint]);
   });
 });
 
@@ -476,7 +524,7 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     });
     const seen: string[] = [];
     const before = calls.length;
-    const o = await relaySwap({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared);
+    const o = await relaySwap({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared, PEER);
 
     expect(http.map((c) => [c.url, c.method, c.headers, c.body.fn])).toEqual([
       ["http://amm2.localhost:8300/amm/call", "POST", { "content-type": "application/json" }, "amm.swap.submit"],
@@ -488,6 +536,7 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
       swap: dagBytes(prepared.swap.toBinary()),
       pool: `${poolDeploy.id("hex")}_0`,
       validator: dagBytes(Utils.toArray(v.identity, "hex")),
+      peerId: PEER,
       expires: 121_000,
     });
     expect((http[0]!.body.args.funding as { "/": { bytes: string } })["/"].bytes).not.toMatch(/=/);
@@ -515,7 +564,7 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
       const final = await validatorSigns(prepared, readBytes(args.swap)!, vkey);
       return ok(fn, { id: ID, status: "accepted", tx: final.toHex(), txid: final.id("hex") });
     });
-    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared);
+    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER);
     if (o.status !== "accepted" || prepared.payout.kind !== "brc29") throw new Error(`expected acceptance, got ${o.status}`);
     expect(o.completed).toEqual({ txid: o.txid, internalized: true, relinquished: [prepared.funding.outpoint, `${poolDeploy.id("hex")}.1`], errors: [] });
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { outputs: unknown[] };
@@ -531,14 +580,14 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     const other = Transaction.fromBinary(prepared.swap.toBinary());
     other.outputs[1]!.satoshis = 2;
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "accepted", tx: other.toHex(), txid: other.id("hex") }));
-    await expect(relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared)).rejects.toThrow(/not the swap we built/);
+    await expect(relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).rejects.toThrow(/not the swap we built/);
     expect(calls.some((c) => c.method === "internalizeAction")).toBe(false);
   });
 
   it("refused: abortAction of the funding, and the refusal's pool for the replan", async () => {
     const { wallet, calls, prepared } = await satsIn();
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "refused", reason: "pool_spent", pool: `${poolDeploy.id("hex")}_0`, poolState: wirePool }));
-    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared);
+    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER);
     expect(o).toEqual({
       status: "refused",
       id: ID,
@@ -548,33 +597,33 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     expect(calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
     expect(calls.some((c) => c.method === "internalizeAction" || c.method === "relinquishOutput")).toBe(false);
     // The engine replans against it.
-    const req = buildPlanRequest(TOKEN_ID, { direction: "bsvToToken", amount: "20000", slippageBps: "500", allowPartial: true }, [o.status === "refused" ? o.pool! : stateOf(poolDeploy, v.identity)], null, 0);
+    const req = buildPlanRequest(TOKEN_ID, { direction: "bsvToToken", amount: "20000", slippageBps: "500", allowPartial: true }, [o.status === "refused" ? o.pool! : stateOf(poolDeploy, v.identity)], liveFor([v.identity]), 0);
     if (!req.ok) throw new Error(req.error);
-    expect(quote(req.request, null, 0).plan.legs.map((l) => l.outpoint)).toEqual([wirePool.outpoint]);
+    expect(quote(req.request, liveFor([v.identity]), 0).plan.legs.map((l) => l.outpoint)).toEqual([wirePool.outpoint]);
   });
 
   it("timeout: abortAction", async () => {
     const { wallet, calls, prepared } = await satsIn();
     const { af } = fakeRelay((fn, _a, n) => ok(fn, { id: ID, status: n === 1 ? "pending" : "timeout" }));
-    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, prepared)).toEqual({ status: "timeout", id: ID });
+    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, prepared, PEER)).toEqual({ status: "timeout", id: ID });
     expect(calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
   });
 
   it("an error answer to submit (the instance does not serve the function): nothing recorded, abortAction", async () => {
     const { wallet, calls, prepared } = await satsIn();
     const { af } = fakeRelay((fn) => ({ status: 404, body: { fn, error: { code: "unknown-fn", message: "amm.swap.submit is not provided" } } }));
-    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared)).toEqual({ status: "failed", reason: "amm.swap.submit: unknown-fn: amm.swap.submit is not provided" });
+    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).toEqual({ status: "failed", reason: "amm.swap.submit: unknown-fn: amm.swap.submit is not provided" });
     expect(calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
   });
 
   it("no answer: nothing is aborted; still pending past expiry + grace is unknown; Check again settles it", async () => {
     const { wallet, calls, prepared, vkey } = await satsIn();
     const lost: AuthFetchLike = { fetch: async () => { throw new Error("network down"); } };
-    expect(await relaySwap({ wallet, authFetch: lost, base: "http://x/amm" }, prepared)).toEqual({ status: "unknown", reason: "amm.swap.submit: network down" });
+    expect(await relaySwap({ wallet, authFetch: lost, base: "http://x/amm" }, prepared, PEER)).toEqual({ status: "unknown", reason: "amm.swap.submit: network down" });
 
     let t = 0;
     const pending = fakeRelay((fn) => ok(fn, { id: ID, status: "pending" }));
-    const o = await relaySwap({ wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (t += 60_000), now: () => t }, prepared);
+    const o = await relaySwap({ wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (t += 60_000), now: () => t }, prepared, PEER);
     expect(o).toEqual({ status: "unknown", id: ID, reason: "still pending past the swap's expiry" });
     expect(pending.calls.length).toBe(4); // submit + polls until 121,000 + 30,000
     expect(calls.some((c) => c.method === "abortAction")).toBe(false);
@@ -587,7 +636,7 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
   it("the relay's transport failure is no answer: nothing aborted", async () => {
     const { wallet, calls, prepared } = await satsIn();
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "failed", reason: "dial", detail: "no route" }));
-    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared)).toEqual({ status: "unknown", id: ID, reason: "the relay could not reach the validator (dial: no route)" });
+    expect(await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).toEqual({ status: "unknown", id: ID, reason: "the relay could not reach the validator (dial: no route)" });
     expect(calls.some((c) => c.method === "abortAction")).toBe(false);
   });
 
@@ -695,7 +744,7 @@ describe("the commission", () => {
       const final = await validatorSigns(prepared, readBytes(args.swap)!, vkey);
       return ok(fn, { id: ID, status: "accepted", tx: final.toHex(), txid: final.id("hex") });
     });
-    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared);
+    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER);
     if (o.status !== "accepted") throw new Error(`expected acceptance, got ${o.status}`);
     expect(o.completed.internalized).toBe(true);
     const ia = calls.find((x) => x.method === "internalizeAction")!.args as { outputs: unknown[] };
@@ -728,7 +777,7 @@ describe("the commission", () => {
       for (const i of [0, 1, 2]) expect(spendValid(final, i)).toBe(true);
       return ok(fn, { id: ID, status: "accepted", tx: final.toHex(), txid: final.id("hex") });
     });
-    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared);
+    const o = await relaySwap({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER);
     if (o.status !== "accepted" || prepared.payout.kind !== "brc29") throw new Error(`expected acceptance, got ${o.status}`);
     const ia = calls.find((x) => x.method === "internalizeAction")!.args as { outputs: unknown[] };
     expect(ia.outputs).toEqual([

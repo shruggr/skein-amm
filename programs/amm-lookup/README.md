@@ -128,8 +128,9 @@ lowercase hex text.
 
 `setLiveJoin` / `liveOf` merge `lastSeen` from a `live` map
 (`identityKey → {peerId, at}`) when one is wired; nothing wires one in
-`main.zig` (amm-p2p keeps its last-seen map under `amm/p2p`, and the
-service does not read it). Without a join, `lastSeen` is left out.
+`main.zig` (since skein-amm 0.4.0 liveness is the runtime's read, `GET
+/amm/.live/tm_<txid>-live`, which the page joins itself; no map is kept in
+the graph). Without a join, `lastSeen` is left out.
 
 ## Tests
 

@@ -1,5 +1,6 @@
-//! amm-p2p natively: the liveness verdict, signature and last-seen map, the
-//! handler's answer and the entry it admits; the proofs-by-block direct
+//! amm-p2p natively: the beat's body and signature, the market's liveness
+//! events and plan, the relay naming its validator (dialled, or this node's
+//! own, called in-VM), the handler's answer; the proofs-by-block direct
 //! call and the catch-up plan; the names, the cron provider's schedule
 //! bodies and the libp2p provider's bodies and answers — over an in-memory
 //! store. The VM wiring (main.zig) is wasm32-wasi only.
@@ -175,54 +176,6 @@ fn beat(a: Allocator, root: bsvz.primitives.ec.PrivateKey, peer: []const u8, at:
     return liveness.sign(a, root, live_topic, body, at);
 }
 
-test "liveness: the host's frame — accept, wrong peer, wrong identity, wrong signer, wrong topic, stale, future, malformed" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const kb = try bsvz.primitives.ec.PrivateKey.fromBytes(root_b);
-    const at: u64 = 1_790_000_000_000;
-    const off: u64 = liveness.default_offline_s * 1000;
-
-    const good = try beat(a, ka, peer_a, at);
-    const frame = try liveness.encodeFrame(a, good);
-    // The body carries no time and no signature: the frame does.
-    const bv = try cbor.decode(a, good.body);
-    try testing.expectEqual(@as(usize, 2), bv.map.len);
-    try testing.expect(bv.get("at") == null and bv.get("sig") == null);
-    const o = liveness.judge(a, live_topic, frame, peer_a, at + 1000, off);
-    try expectTag(o, "accept", null);
-    const ev = try liveness.liveEvent(a, o.accept);
-    try testing.expectEqualStrings("amm-live", ev.getText("kind").?);
-    try testing.expectEqualStrings(live_topic, ev.getText("topic").?);
-    try testing.expectEqualSlices(u8, &(try ka.publicKey()).toCompressedSec1(), ev.getBytes("sender").?);
-
-    // The message came from another peer than the one the body names.
-    try expectTag(liveness.judge(a, live_topic, frame, peer_b, at + 1000, off), "reject", "WrongPeer");
-    // The frame was signed for another topic.
-    try expectTag(liveness.judge(a, "tm_" ++ "cd" ** 32 ++ "-live", frame, peer_a, at + 1000, off), "reject", "BadSignature");
-    // B beats A's body: the body's identity is not the sender.
-    const b_frame = try liveness.sign(a, kb, live_topic, good.body, at);
-    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, b_frame), peer_a, at + 1000, off), "reject", "WrongIdentity");
-    // B signs, claiming to be A (A's key as the sender).
-    var forged = b_frame;
-    forged.sender = good.sender;
-    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, forged), peer_a, at + 1000, off), "reject", "BadSignature");
-    // A's frame with another body, or redated.
-    var moved = good;
-    moved.body = try liveness.encodeBody(a, .{ .identity_key = good.sender, .peer_id = peer_b });
-    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, moved), peer_b, at + 1000, off), "reject", "BadSignature");
-    var redated = good;
-    redated.at = at + 5;
-    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, redated), peer_a, at + 1000, off), "reject", "BadSignature");
-    // Too old, too far ahead.
-    try expectTag(liveness.judge(a, live_topic, frame, peer_a, at + off + 1, off), "ignore", "Stale");
-    try expectTag(liveness.judge(a, live_topic, frame, peer_a, at - liveness.max_skew_ms - 1, off), "ignore", "FromTheFuture");
-    try expectTag(liveness.judge(a, live_topic, "junk", peer_a, at, off), "reject", "Malformed");
-    // A bare body (0.2.0's publish) is not a frame.
-    try expectTag(liveness.judge(a, live_topic, good.body, peer_a, at, off), "reject", "Malformed");
-}
-
 test "liveness: the frame's signature is the instance's createSignature over beaconPreimage, 2-metanet handles envelope-send, anyone" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -248,79 +201,26 @@ test "liveness: the frame's signature is the instance's createSignature over bea
     try testing.expectEqual(@as(u8, 15), frame[0]);
 }
 
-test "liveness: the last-seen map and the consumer API" {
+test "the beacon's body (the validator side, kept in 0.4.0): {identityKey, peerId} in the host's signed frame, what the page decodes from the liveness read" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const maps = try w.store.Maps.create(a, ms.store());
-    var m = maps.map(null);
     const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const ida = (try ka.publicKey()).toCompressedSec1();
-    const t0: u64 = 1_790_000_000_000;
-
-    const heard = struct {
-        fn of(al: Allocator, b: liveness.Beat) !Value {
-            const o = liveness.judge(al, live_topic, try liveness.encodeFrame(al, b), (try liveness.decodeBody(al, b.body)).peer_id, b.at, 90_000);
-            return liveness.liveEvent(al, o.accept);
-        }
-    }.of;
-    try testing.expect(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_a, t0))));
-    const s = (try liveness.live(&m, ida, t0 + 30_000, 90_000)).?;
-    try testing.expectEqualSlices(u8, peer_a, s.peer_id);
-    try testing.expectEqual(t0, s.at);
-    // Offline after the threshold; never seen.
-    try testing.expect((try liveness.live(&m, ida, t0 + 90_001, 90_000)) == null);
-    try testing.expect((try liveness.live(&m, (try (try bsvz.primitives.ec.PrivateKey.fromBytes(root_b)).publicKey()).toCompressedSec1(), t0, 90_000)) == null);
-    // A later heartbeat from a new peer ID moves it; an earlier one does not.
-    try testing.expect(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_b, t0 + 30_000))));
-    try testing.expect(!(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_a, t0 + 10_000)))));
-    try testing.expectEqualSlices(u8, peer_b, (try liveness.live(&m, ida, t0 + 40_000, 90_000)).?.peer_id);
-    // An entry whose signature does not hold is refused, map unchanged.
-    var bad = try beat(a, ka, peer_a, t0 + 60_000);
-    bad.at += 1;
-    try testing.expectError(error.BadSignature, liveness.apply(a, &m, try liveness.liveEvent(a, .{ .topic = live_topic, .beat = bad, .body = try liveness.decodeBody(a, bad.body) })));
-    // Persisted and read back.
-    try m.flush();
-    var m2 = maps.map(m.root);
-    try testing.expectEqualSlices(u8, peer_b, (try liveness.lastSeen(&m2, ida)).?.peer_id);
+    const b = try beat(a, ka, peer_a, 1_790_000_000_000);
+    const frame = try liveness.decodeFrame(a, try liveness.encodeFrame(a, b));
+    try testing.expect(liveness.verify(a, live_topic, frame));
+    const body = try liveness.decodeBody(a, frame.body);
+    try testing.expectEqualSlices(u8, &(try ka.publicKey()).toCompressedSec1(), &body.identity_key);
+    try testing.expectEqualSlices(u8, &frame.sender, &body.identity_key);
+    try testing.expectEqualSlices(u8, peer_a, body.peer_id);
+    // The body's keys, as the page reads them (web/ui src/lib/overlay.ts `parseLiveBeats`).
+    const v = try cbor.decode(a, frame.body);
+    try testing.expectEqual(@as(usize, 2), v.map.len);
+    try testing.expect(v.getBytes("identityKey") != null and v.getBytes("peerId") != null);
+    try testing.expectError(error.Malformed, liveness.decodeBody(a, "junk"));
+    // Another topic's signature does not hold here (the topic is signed, not carried).
+    try testing.expect(!liveness.verify(a, "tm_" ++ "cd" ** 32 ++ "-live", frame));
 }
-
-test "liveness: the handler's admit entry, stepped by this program into the last-seen map" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const maps = try w.store.Maps.create(a, ms.store());
-    var live = maps.map(null);
-    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const t0: u64 = 1_790_000_000_000;
-    const frame = try liveness.encodeFrame(a, try beat(a, ka, peer_a, t0));
-    const o = liveness.judge(a, live_topic, frame, peer_a, t0 + 1000, liveness.default_offline_s * 1000);
-    try expectTag(o, "accept", null);
-
-    // The answer, as main.zig's validateLive builds it and the front door reads it.
-    const ans = readBack(a, try libp2p.answer(a, .{ .accept = &.{.{ .box = names.own_box, .event = try liveness.liveEvent(a, o.accept) }} }));
-    try testing.expectEqualStrings("accept", ans.getText("verdict").?);
-    const ad = ans.getArray("admit").?;
-    try testing.expectEqual(@as(usize, 1), ad.len);
-    try testing.expectEqualStrings("amm/amm-p2p", ad[0].getText("box").?);
-    const ev = ad[0].get("event").?;
-    try testing.expectEqualStrings("amm-live", ev.getText("kind").?);
-
-    try testing.expect(try liveness.apply(a, &live, ev));
-    try testing.expectEqualSlices(u8, peer_a, (try liveness.live(&live, (try ka.publicKey()).toCompressedSec1(), t0 + 2000, 90_000)).?.peer_id);
-    // Again: nothing moves. A forged entry is refused.
-    try testing.expect(!(try liveness.apply(a, &live, ev)));
-    var bad = try beat(a, ka, peer_a, t0 + 5000);
-    bad.at += 1;
-    try testing.expectError(error.BadSignature, liveness.apply(a, &live, readBack(a, try liveness.liveEvent(a, .{ .topic = live_topic, .beat = bad, .body = try liveness.decodeBody(a, bad.body) }))));
-}
-
-
-// ================================================================ names, schedules, the libp2p adapter
 
 test "names: tm_<txid> and tm_<txid>-live, parsed here" {
     const o = "tm_" ++ "ab" ** 32;
@@ -395,7 +295,7 @@ test "the beacon (shruggr/skein#126): beacon {topic: tm_<txid>-live, every, body
     try testing.expect(u.get("body") == null);
 }
 
-test "the market role (shruggr/skein#120, #119): subscribe tm_<txid>-live to amm-p2p validateLive per served topic; off → none; deregister or stop → unsubscribe" {
+test "the market role (shruggr/skein#120, #138): liveness {topic: tm_<txid>-live, window} per served topic; off → none; deregister or stop → unliveness, only for a topic asked" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -403,37 +303,46 @@ test "the market role (shruggr/skein#120, #119): subscribe tm_<txid>-live to amm
     const t2 = "tm_" ++ "cd" ** 32;
     const served: []const []const u8 = &.{ t1, t2 };
 
-    // The event as emitted, read back: the topic is the beacon's, the program and fn the handler.
-    const sub = readBack(a, try liveness.subscribeEvent(a, try names.live(a, t1)));
-    try testing.expectEqualStrings("subscribe", sub.getText("event").?);
-    try testing.expectEqualStrings(t1 ++ "-live", sub.getText("topic").?);
-    try testing.expectEqualStrings("amm-p2p", sub.getText("program").?);
-    try testing.expectEqualStrings("validateLive", sub.getText("fn").?);
+    // The events as emitted, read back: the beacon's topic, the window offlineSeconds × 1000 (40 s by default).
+    try testing.expectEqual(@as(u64, 40), liveness.default_offline_s);
+    try testing.expectEqual(@as(u64, 30), liveness.default_interval_s);
+    const on_ev = readBack(a, try liveness.livenessEvent(a, try names.live(a, t1), liveness.default_offline_s * 1000));
+    try testing.expectEqualStrings("liveness", on_ev.getText("event").?);
+    try testing.expectEqualStrings(t1 ++ "-live", on_ev.getText("topic").?);
+    try testing.expectEqual(@as(u64, 40_000), on_ev.getUint("window").?);
+    try testing.expect(on_ev.get("program") == null and on_ev.get("fn") == null);
+    const off_ev = readBack(a, try liveness.unlivenessEvent(a, try names.live(a, t1)));
+    try testing.expectEqualStrings("unliveness", off_ev.getText("event").?);
+    try testing.expectEqualStrings(t1 ++ "-live", off_ev.getText("topic").?);
+    try testing.expect(off_ev.get("window") == null);
+    // 0.3.x's subscription, ended once on the way up.
     const un = readBack(a, try liveness.unsubscribeEvent(a, try names.live(a, t1)));
     try testing.expectEqualStrings("unsubscribe", un.getText("event").?);
     try testing.expectEqualStrings(t1 ++ "-live", un.getText("topic").?);
-    try testing.expect(un.get("program") == null and un.get("fn") == null);
 
-    // Market on, nothing standing: a subscription per served topic.
+    // Market on, nothing standing: a liveness per served topic.
     const on = try liveness.plan(a, &.{}, served);
-    try testing.expectEqual(@as(usize, 2), on.subscribe.len);
-    try testing.expectEqualStrings(t1, on.subscribe[0]);
-    try testing.expectEqualStrings(t2, on.subscribe[1]);
-    try testing.expectEqual(@as(usize, 0), on.unsubscribe.len);
+    try testing.expectEqual(@as(usize, 2), on.liveness.len);
+    try testing.expectEqualStrings(t1, on.liveness[0]);
+    try testing.expectEqualStrings(t2, on.liveness[1]);
+    try testing.expectEqual(@as(usize, 0), on.unliveness.len);
     // Started again with the same set: nothing to change.
     const again = try liveness.plan(a, served, served);
-    try testing.expectEqual(@as(usize, 0), again.subscribe.len + again.unsubscribe.len);
+    try testing.expectEqual(@as(usize, 0), again.liveness.len + again.unliveness.len);
     // Market off (main.zig `market` wants nothing), nothing standing: nothing emitted.
     const off = try liveness.plan(a, &.{}, &.{});
-    try testing.expectEqual(@as(usize, 0), off.subscribe.len + off.unsubscribe.len);
-    // t2 deregistered, then a start: t2 unsubscribed, t1 left standing.
+    try testing.expectEqual(@as(usize, 0), off.liveness.len + off.unliveness.len);
+    // t2 deregistered, then a start: unliveness for t2, t1 left standing.
     const dereg = try liveness.plan(a, served, &.{t1});
-    try testing.expectEqual(@as(usize, 0), dereg.subscribe.len);
-    try testing.expectEqual(@as(usize, 1), dereg.unsubscribe.len);
-    try testing.expectEqualStrings(t2, dereg.unsubscribe[0]);
-    // A stop (or the role turned off): every standing one unsubscribed.
+    try testing.expectEqual(@as(usize, 0), dereg.liveness.len);
+    try testing.expectEqual(@as(usize, 1), dereg.unliveness.len);
+    try testing.expectEqualStrings(t2, dereg.unliveness[0]);
+    // A stop (or the role turned off): unliveness for every standing one, and only those.
     const stop = try liveness.plan(a, served, &.{});
-    try testing.expectEqual(@as(usize, 2), stop.unsubscribe.len);
+    try testing.expectEqual(@as(usize, 2), stop.unliveness.len);
+    const stop_one = try liveness.plan(a, &.{t1}, &.{});
+    try testing.expectEqual(@as(usize, 1), stop_one.unliveness.len);
+    try testing.expectEqualStrings(t1, stop_one.unliveness[0]);
 }
 
 test "validation (0.3.1): validate per topic beacons it; unvalidate ends it; stop ends every beacon and keeps the set; start beacons it again; independent of the market role" {
@@ -487,43 +396,14 @@ test "validation (0.3.1): validate per topic beacons it; unvalidate ends it; sto
 
     // Independent of the market role: the market's plan reads the served topics and `market`
     // (main.zig `market`), validation the validated set. A market host validating nothing:
-    // subscriptions, no beacon; a validator that is not a market: beacons, no subscription.
+    // liveness, no beacon; a validator that is not a market: beacons, no liveness.
     const market_only = try liveness.plan(a, &.{}, &.{ t1, t2 });
-    try testing.expectEqual(@as(usize, 2), market_only.subscribe.len);
+    try testing.expectEqual(@as(usize, 2), market_only.liveness.len);
     const no_beacon = try liveness.validation(a, .start, &.{}, &.{}, null);
     try testing.expectEqual(@as(usize, 0), no_beacon.beacon.len);
     const not_market = try liveness.plan(a, &.{}, &.{});
-    try testing.expectEqual(@as(usize, 0), not_market.subscribe.len);
+    try testing.expectEqual(@as(usize, 0), not_market.liveness.len);
     try testing.expectEqual(@as(usize, 2), start.beacon.len);
-}
-
-test "the market role: a beat delivered by the subscription is judged and stepped into the validator map the relay reads" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const maps = try w.store.Maps.create(a, ms.store());
-    var live = maps.map(null);
-    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const t0: u64 = 1_790_000_000_000;
-
-    // The handler's argument as the door hands a subscription's delivery to validateLive (libp2p.inbound).
-    const frame = try liveness.encodeFrame(a, try beat(a, ka, peer_a, t0));
-    const arg = readBack(a, .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "transport", .value = .{ .text = "libp2p" } },
-        .{ .key = "topic", .value = .{ .text = live_topic } },
-        .{ .key = "from", .value = .{ .bytes = peer_a } },
-        .{ .key = "body", .value = .{ .bytes = frame } },
-    }) });
-    const msg = try libp2p.inbound(arg);
-    const o = liveness.judge(a, msg.topic.?, msg.body, msg.from, t0 + 1000, liveness.default_offline_s * 1000);
-    try expectTag(o, "accept", null);
-    const ev = readBack(a, try liveness.liveEvent(a, o.accept));
-    try testing.expect(try liveness.apply(a, &live, ev));
-    // What the relay's validator selection (main.zig envPeer) reads: the peer, live within the threshold.
-    const s = (try liveness.live(&live, (try ka.publicKey()).toCompressedSec1(), t0 + 2000, liveness.default_offline_s * 1000)).?;
-    try testing.expectEqualSlices(u8, peer_a, s.peer_id);
 }
 
 // selfPeerId (main.zig) asks the signer for [2, "skein instance"] / `libp2p:<handle>` / self and
@@ -1056,11 +936,116 @@ test "relay: the record's lifecycle over the libp2p provider's answers — accep
     }
 }
 
+test "relay: the validator named (0.4.0) — submit dials the peer given; this node's own peer is handed to its own validator program in-VM: wait, called again, answered; failed; timeout" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var book = try relay.Book.load(a, ms.store(), null);
+    test_env = .{ .book = &book };
+    const p = try buildPair(a);
+    var dummy: u8 = 0;
+    const args = try fromSdk(a, try submitArgs(a, p, null));
+
+    // Another node's peer named: recorded as given, not local; the relay dials it.
+    test_env.self_peer = "16Uiu2HAmL3ee25zUdPHFTUVToTuzBgBjt8yoxAd952pYyvfbmDT9";
+    const env: relay.Env = .{ .book = &book, .now = t_now, .commission = ours, .ctx = &dummy, .self_peer = test_env.self_peer, .launchFn = testLaunch };
+    var r = (try relay.submit(a, env, args)).launched;
+    try testing.expectEqualStrings(named_peer, r.peer.?);
+    try testing.expect(!r.local);
+    const start = try relay.advance(a, &r, .start, t_now, null);
+    try testing.expectEqualStrings("dial", start.emits[0].box);
+    try testing.expectEqualStrings(named_peer, start.emits[0].body.getText("peer").?);
+    try testing.expectEqualStrings(relay.swap_protocol, start.emits[0].body.getText("protocol").?);
+    // Unknown self (no handle): never local.
+    try testing.expect(!relay.isSelf(.{ .book = &book, .now = t_now, .commission = ours, .ctx = &dummy, .launchFn = testLaunch }, named_peer));
+
+    // This node's own peer named: local, kept so in the stored record (not in the answer).
+    var book2 = try relay.Book.load(a, ms.store(), null);
+    const self_env: relay.Env = .{ .book = &book2, .now = t_now, .commission = ours, .ctx = &dummy, .self_peer = named_peer, .launchFn = testLaunch };
+    const fresh = (try relay.submit(a, self_env, args)).launched;
+    try testing.expect(fresh.local);
+    try testing.expectEqualStrings(named_peer, fresh.peer.?);
+    const back = (try book2.get(a, fresh.id)).?;
+    try testing.expect(back.local);
+    try testing.expect((readBack(a, try back.answer(a))).get("local") == null);
+
+    // Launched: call the validator (no dial, nothing emitted). It awaited its submission: rest.
+    {
+        var l = fresh;
+        const fx = relay.advanceLocal(&l, .start, t_now);
+        try testing.expect(fx.call and !fx.done and fx.emits.len == 0 and fx.dial == null);
+        const waiting = relay.localAnswer(a, &l, readBack(a, .{ .map = &.{.{ .key = "wait", .value = .{ .boolean = true } }} }), "");
+        try testing.expect(waiting.rest and !waiting.done);
+        try testing.expectEqual(relay.Status.pending, l.status);
+        // Stepped by the engine's answer: called again; the handler answers the reply frame.
+        const again = relay.advanceLocal(&l, .again, t_now + 10);
+        try testing.expect(again.call);
+        const signed = "the signed swap";
+        const done = relay.localAnswer(a, &l, readBack(a, .{ .map = &.{
+            .{ .key = "verdict", .value = .{ .text = "accept" } },
+            .{ .key = "body", .value = .{ .bytes = try frameOf(a, .{ .map = &.{
+                .{ .key = "ok", .value = .{ .boolean = true } },
+                .{ .key = "tx", .value = .{ .bytes = signed } },
+                .{ .key = "txid", .value = .{ .text = "ab" ** 32 } },
+            } }) } },
+        } }), "");
+        try testing.expect(done.done and done.emits.len == 0);
+        try testing.expectEqual(relay.Status.accepted, l.status);
+        try testing.expectEqualStrings(signed, l.tx.?);
+        // Settled: nothing more.
+        try testing.expect(relay.advanceLocal(&l, .again, t_now + 20).done);
+    }
+    // A refusal at once: refused with the reason.
+    {
+        var l = fresh;
+        _ = relay.advanceLocal(&l, .start, t_now);
+        const fx = relay.localAnswer(a, &l, readBack(a, .{ .map = &.{
+            .{ .key = "verdict", .value = .{ .text = "accept" } },
+            .{ .key = "body", .value = .{ .bytes = try frameOf(a, .{ .map = &.{
+                .{ .key = "ok", .value = .{ .boolean = false } },
+                .{ .key = "reason", .value = .{ .text = "not_validating" } },
+            } }) } },
+        } }), "");
+        try testing.expect(fx.done);
+        try testing.expectEqual(relay.Status.refused, l.status);
+        try testing.expectEqualStrings("not_validating", l.reason.?);
+    }
+    // The call fails (no validator program, the handler errors): failed, retryable; no body: failed.
+    {
+        var l = fresh;
+        _ = relay.advanceLocal(&l, .start, t_now);
+        try testing.expect(relay.localAnswer(a, &l, null, "NoValidatorProgram").done);
+        try testing.expectEqual(relay.Status.failed, l.status);
+        try testing.expectEqualStrings("validator_failed", l.reason.?);
+        try testing.expectEqualStrings("NoValidatorProgram", l.detail.?);
+        try testing.expect(l.status.retryable());
+        var l2 = fresh;
+        _ = relay.localAnswer(a, &l2, readBack(a, .{ .map = &.{.{ .key = "verdict", .value = .{ .text = "accept" } }} }), "");
+        try testing.expectEqualStrings("bad_reply", l2.reason.?);
+    }
+    // Woken before `expires`: rest; at `expires`: timeout. Launched after it: timeout, no call.
+    {
+        var l = fresh;
+        _ = relay.advanceLocal(&l, .start, t_now);
+        try testing.expect(relay.advanceLocal(&l, .woke, t_expires - 1).rest);
+        const late = relay.advanceLocal(&l, .woke, t_expires);
+        try testing.expect(late.done and !late.call);
+        try testing.expectEqual(relay.Status.timeout, l.status);
+        var l2 = fresh;
+        const fx = relay.advanceLocal(&l2, .start, t_expires);
+        try testing.expect(fx.done and !fx.call);
+        try testing.expectEqual(relay.Status.timeout, l2.status);
+    }
+}
+
 // --- the dispatch, by the app's manifest (app/etc/app.json), with the functions over memory ---
 
 const TestEnv = struct {
     book: *relay.Book,
-    live: bool = true,
+    /// This node's own peer ID, as main.zig's `selfPeerText` gives it (null: unknown).
+    self_peer: ?[]const u8 = null,
     launched: usize = 0,
     commission: relay.Commission = ours,
     seen_writes: ?bool = null,
@@ -1068,8 +1053,15 @@ const TestEnv = struct {
 };
 var test_env: TestEnv = undefined;
 
-fn testPeer(_: *anyopaque, _: Allocator, _: [33]u8) anyerror!?[]const u8 {
-    return if (test_env.live) "16Uiu2HAm6mP74uTowae2xMtAKJpqw1Dt2NhcgSdXgyDoyfmkwGqq" else null;
+/// The validator's peer ID as the page names it (taken from the runtime's liveness read).
+const named_peer = "16Uiu2HAm6mP74uTowae2xMtAKJpqw1Dt2NhcgSdXgyDoyfmkwGqq";
+
+/// `args` with `peerId` set to `peer`, or removed (null).
+fn withPeer(a: Allocator, args: scbor.Value, peer: ?[]const u8) !scbor.Value {
+    var es: std.ArrayList(cbor.Entry) = .empty;
+    for ((try fromSdk(a, args)).map) |e| if (!eql(u8, e.key, "peerId")) try es.append(a, e);
+    if (peer) |x| try es.append(a, .{ .key = "peerId", .value = .{ .text = x } });
+    return toSdk(a, .{ .map = es.items });
 }
 fn testLaunch(_: *anyopaque, _: Allocator, kind: relay.Kind, _: [32]u8) anyerror![]const u8 {
     test_env.launched += 1;
@@ -1085,7 +1077,7 @@ fn toSdk(a: Allocator, v: Value) !scbor.Value {
 fn testSubmit(c: *app.Call) anyerror!scbor.Value {
     test_env.seen_writes = c.writes;
     var dummy: u8 = 0;
-    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .peerFn = testPeer, .launchFn = testLaunch };
+    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .self_peer = test_env.self_peer, .launchFn = testLaunch };
     return switch (try relay.submit(c.a, env, try fromSdk(c.a, c.args))) {
         .refused => |r| sk.report(try relay.refusalText(c.a, r)),
         .launched, .pending, .settled => |r| toSdk(c.a, try r.answer(c.a)),
@@ -1116,6 +1108,7 @@ fn submitArgs(a: Allocator, p: Pair, extra: ?cbor.Entry) !scbor.Value {
         .{ .key = "swap", .value = .{ .bytes = p.swap } },
         .{ .key = "pool", .value = .{ .text = p.pool } },
         .{ .key = "validator", .value = .{ .bytes = &p.validator } },
+        .{ .key = "peerId", .value = .{ .text = named_peer } },
         .{ .key = "expires", .value = .{ .uint = t_expires } },
     });
     if (extra) |e| try es.append(a, e);
@@ -1186,11 +1179,18 @@ test "relay: dispatch by the manifest (app/etc/app.json, amm.swap/1) — submit 
     // A refusal is the function's error, and nothing is recorded or launched.
     const none = try buildPairWith(a, .{ .commission = .{0x22} ** 20 });
     try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try submitArgs(a, none, null), null), .failed, "commission_missing");
-    test_env.live = false;
+    // 0.4.0: the caller names the validator's peer; no liveness is looked at. No peerId: the
+    // declared shape refuses it; one that is no peer ID text: bad_peer. Nothing recorded or launched.
     const other = try buildPairWith(a, .{ .fee = 600 });
-    try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try submitArgs(a, other, null), null), .failed, "validator_offline");
+    try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try withPeer(a, try submitArgs(a, other, null), null), null), .@"bad-args", "args.peerId: missing");
+    try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try withPeer(a, try submitArgs(a, other, null), ""), null), .failed, "bad_peer");
+    try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try withPeer(a, try submitArgs(a, other, null), "/ip4/1.2.3.4/tcp/1"), null), .failed, "bad_peer");
     try testing.expectEqual(@as(usize, 1), test_env.launched);
     try testing.expect((try book.get(a, relay.idOf(other.swap))) == null);
+    // The record dials the peer named, not this node's own.
+    const named = (try book.get(a, relay.idOf(p.swap))).?;
+    try testing.expectEqualStrings(named_peer, named.peer.?);
+    try testing.expect(!named.local);
 
     // terms: the relay's commission pkh, read-only as declared; none configured, null; no args taken.
     try testing.expect(!(try app.declOf(a, m, relay.fn_terms)).?.get("writes").?.bool);
@@ -1211,7 +1211,6 @@ test "relay: dispatch by the manifest (app/etc/app.json, amm.swap/1) — submit 
     var r = (try book.get(a, relay.idOf(p.swap))).?;
     r.status = .timeout;
     try book.put(a, r);
-    test_env.live = true;
     _ = try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_submit, try submitArgs(a, p, null), null);
     try testing.expectEqual(@as(usize, 2), test_env.launched);
     try testing.expectEqual(relay.Status.pending, (try book.get(a, relay.idOf(p.swap))).?.status);
@@ -1539,7 +1538,7 @@ test "pool relay: the record's lifecycle — dial /amm-validator/1/deploy; accep
 fn testPoolSubmit(c: *app.Call) anyerror!scbor.Value {
     test_env.seen_writes = c.writes;
     var dummy: u8 = 0;
-    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .peerFn = testPeer, .launchFn = testLaunch };
+    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .self_peer = test_env.self_peer, .launchFn = testLaunch };
     return switch (try relay.submitDeploy(c.a, env, try fromSdk(c.a, c.args))) {
         .refused => |r| sk.report(try relay.refusalText(c.a, r)),
         .launched, .pending, .settled => |r| toSdk(c.a, try r.answer(c.a)),
@@ -1567,6 +1566,7 @@ fn poolArgs(a: Allocator, d: DeployFx, extra: ?cbor.Entry) !scbor.Value {
         .{ .key = "funding", .value = .{ .bytes = d.funding_beef } },
         .{ .key = "deploy", .value = .{ .bytes = d.deploy_beef } },
         .{ .key = "validator", .value = .{ .bytes = &d.validator } },
+        .{ .key = "peerId", .value = .{ .text = named_peer } },
         .{ .key = "expires", .value = .{ .uint = t_expires } },
     });
     if (extra) |e| try es.append(a, e);
@@ -1618,9 +1618,9 @@ test "pool relay: dispatch by the manifest (app/etc/app.json, amm.pool/1) — su
     try expectErr(try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try poolArgs(a, wrong, null), null), .failed, "wrong_validator_key");
     const unsigned = try buildDeploy(a, .{ .sign_deploy = false });
     try expectErr(try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try poolArgs(a, unsigned, null), null), .failed, "deploy_unsigned");
-    test_env.live = false;
     const nf = try buildDeploy(a, .{ .with_funding = false, .fee = 500 });
-    try expectErr(try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try poolArgs(a, nf, null), null), .failed, "validator_offline");
+    try expectErr(try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try withPeer(a, try poolArgs(a, nf, null), null), null), .@"bad-args", "args.peerId: missing");
+    try expectErr(try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try withPeer(a, try poolArgs(a, nf, null), "a peer"), null), .failed, "bad_peer");
     try testing.expectEqual(@as(usize, 1), test_env.launched);
     try testing.expect((try book.getKind(a, .pool, relay.idOf(wrong.deploy))) == null);
     try testing.expect((try book.getKind(a, .pool, relay.idOf(nf.deploy))) == null);
@@ -1629,9 +1629,11 @@ test "pool relay: dispatch by the manifest (app/etc/app.json, amm.pool/1) — su
     var r = (try book.getKind(a, .pool, relay.idOf(d.deploy))).?;
     r.status = .failed;
     try book.put(a, r);
-    test_env.live = true;
+    // Relayed again to this node's own validator: the peer named is this node's (local).
+    test_env.self_peer = named_peer;
     _ = try app.run(a, in, relay.app_name, m, &pool_fns, relay.fn_pool_submit, try poolArgs(a, d, null), null);
     try testing.expectEqual(@as(usize, 2), test_env.launched);
+    try testing.expect((try book.getKind(a, .pool, relay.idOf(d.deploy))).?.local);
 }
 
 // ================================================================ AddLiquidity through the relay (amm.liquidity/1)
@@ -1955,7 +1957,7 @@ test "liquidity relay: the record's lifecycle — dial /amm-validator/1/addLiqui
 fn testLiquiditySubmit(c: *app.Call) anyerror!scbor.Value {
     test_env.seen_writes = c.writes;
     var dummy: u8 = 0;
-    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .peerFn = testPeer, .launchFn = testLaunch };
+    const env: relay.Env = .{ .book = test_env.book, .now = t_now, .commission = ours, .ctx = &dummy, .self_peer = test_env.self_peer, .launchFn = testLaunch };
     return switch (try relay.submitAdd(c.a, env, try fromSdk(c.a, c.args))) {
         .refused => |r| sk.report(try relay.refusalText(c.a, r)),
         .launched, .pending, .settled => |r| toSdk(c.a, try r.answer(c.a)),
@@ -1985,6 +1987,7 @@ fn liquidityArgs(a: Allocator, d: AddFx, extra: ?cbor.Entry) !scbor.Value {
         .{ .key = "add", .value = .{ .bytes = d.add_beef } },
         .{ .key = "pool", .value = .{ .text = d.pool } },
         .{ .key = "validator", .value = .{ .bytes = &d.validator } },
+        .{ .key = "peerId", .value = .{ .text = named_peer } },
         .{ .key = "expires", .value = .{ .uint = t_expires } },
     });
     if (extra) |e| try es.append(a, e);
@@ -2037,10 +2040,10 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     try expectErr(try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try liquidityArgs(a, lpu, null), null), .failed, "lp_unsigned");
     const outs = try buildAdd(a, .{ .extra_output = true });
     try expectErr(try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try liquidityArgs(a, outs, null), null), .failed, "bad_outputs: outputs past the contract's");
-    test_env.live = false;
     // Another add (its _changePKH another: no change, so the contract's outputs are the same).
     const off = try buildAdd(a, .{ .pushes = &.{.{ 7, try pushData(a, &(.{0x11} ** 20)) }} });
-    try expectErr(try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try liquidityArgs(a, off, null), null), .failed, "validator_offline");
+    try expectErr(try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try withPeer(a, try liquidityArgs(a, off, null), null), null), .@"bad-args", "args.peerId: missing");
+    try expectErr(try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try withPeer(a, try liquidityArgs(a, off, null), ""), null), .failed, "bad_peer");
     try testing.expectEqual(@as(usize, 1), test_env.launched);
     try testing.expect((try book.getKind(a, .liquidity, relay.idOf(lpu.add))) == null);
     try testing.expect((try book.getKind(a, .liquidity, relay.idOf(off.add))) == null);
@@ -2049,7 +2052,6 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     var r = (try book.getKind(a, .liquidity, relay.idOf(d.add))).?;
     r.status = .timeout;
     try book.put(a, r);
-    test_env.live = true;
     _ = try app.run(a, in, relay.app_name, m, &liquidity_fns, relay.fn_liquidity_submit, try liquidityArgs(a, d, null), null);
     try testing.expectEqual(@as(usize, 2), test_env.launched);
     try testing.expectEqual(relay.Status.pending, (try book.getKind(a, .liquidity, relay.idOf(d.add))).?.status);

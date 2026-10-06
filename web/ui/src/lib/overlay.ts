@@ -6,7 +6,8 @@
  *   GET  <base>/listTopicManagers            {tm_<txid>: {name, shortDescription}, …}: the registered token topics
  *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_mandala: …, ls_mandala_deploys: …}
  *   POST <base>/lookup   {service: "ls_amm", query: {tokenId, …}}   BRC-24
- *   GET  <base>/live                          {now, thresholdMs, validators: [...]}
+ *   GET  <base>/.live/tm_<txid>-live          [{sender, at, body, from}]: the validators beating on a
+ *                                             token, kept by the runtime's liveness tool (skein#138)
  *
  * A skein takes no unsigned HTTP but GET/HEAD: a POST without a BRC-104
  * session is 401. The GETs are plain `fetch`; every POST (the lookups here,
@@ -28,6 +29,8 @@
  * names its token (`tokenId`: `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`).
  */
 import type { PoolState } from "@amm-poc/matching-engine";
+import { Utils } from "@bsv/sdk";
+import { decode as decodeCbor } from "cbor2";
 
 // ---------------------------------------------------------------------------
 // Names
@@ -127,43 +130,86 @@ export function parseOutputList(answer: unknown): LookupOutput[] {
     .map((o) => ({ beef: o.beef as number[], outputIndex: o.outputIndex as number }));
 }
 
-/** A validator from `GET /amm/live` (programs/amm-p2p `liveHttp`). */
+/**
+ * The liveness window, ms: a validator whose last beat is older is not offered
+ * (the app's `config.amm.ammP2p.offlineSeconds`, 40 s against a 30 s beat; the
+ * instance's own read already keeps only the beats within its window).
+ */
+export const LIVE_WINDOW_MS = 40_000;
+
+/** A validator seen beating on a token's `tm_<txid>-live` (the runtime's liveness read). */
 export interface LiveValidator {
   identityKey: string;
-  /** libp2p peer ID, text form. */
+  /** libp2p peer ID, text (base58): what the swap names for the relay to dial. */
   peerId: string;
-  /** Last heartbeat, ms epoch. */
+  /** The beat's time, ms epoch. */
   at: number;
   ageMs: number;
-  /** Last heartbeat within the instance's threshold. */
+  /** The beat is within the window. */
   live: boolean;
 }
 
 export interface LiveAnswer {
   now: number;
-  thresholdMs: number;
+  windowMs: number;
   validators: LiveValidator[];
+  /** False when the instance keeps no liveness for the topic (404: not a market for it). */
+  kept: boolean;
 }
 
-/** `{now, thresholdMs, validators: [{identityKey, peerId, at, ageMs, live}]}`; tolerant of missing fields. */
-export function parseLiveAnswer(answer: unknown): LiveAnswer {
-  const a = (answer ?? {}) as { now?: unknown; thresholdMs?: unknown; validators?: unknown };
-  const now = typeof a.now === "number" ? a.now : Date.now();
-  const thresholdMs = typeof a.thresholdMs === "number" ? a.thresholdMs : 90_000;
-  const validators: LiveValidator[] = [];
-  for (const v of Array.isArray(a.validators) ? (a.validators as Record<string, unknown>[]) : []) {
-    if (typeof v.identityKey !== "string") continue;
-    const at = typeof v.at === "number" ? v.at : 0;
-    const ageMs = typeof v.ageMs === "number" ? v.ageMs : Math.max(0, now - at);
-    validators.push({
-      identityKey: v.identityKey.toLowerCase(),
-      peerId: typeof v.peerId === "string" ? v.peerId : typeof v.peerIdText === "string" ? v.peerIdText : "",
-      at,
-      ageMs,
-      live: typeof v.live === "boolean" ? v.live : ageMs <= thresholdMs,
-    });
+/** The beacon topic of a token topic: `tm_<txid>` → `tm_<txid>-live`. */
+export function liveTopicOf(topic: string): string {
+  return `${topic}-live`;
+}
+
+/** `GET <base>/.live/<topic>`: the runtime's liveness read (skein docs/MESSAGES.md "Liveness (#138)"). */
+export function liveUrl(base: string, liveTopic: string): string {
+  return `${base.replace(/\/+$/, "")}/.live/${encodeURIComponent(liveTopic)}`;
+}
+
+function bytesHex(b: Uint8Array): string {
+  return Utils.toHex(Array.from(b));
+}
+
+/**
+ * The liveness read's answer, `[{sender: <hex>, at: <ms>, body: <base64>, from: <peer ID>}]`
+ * newest first, as the validators live: each `body` is the beacon's (programs/amm-p2p
+ * liveness.zig `Body`), dag-cbor `{identityKey: bytes(33), peerId: bytes}`. A beat whose body
+ * does not decode or names another identity than its (verified) `sender` is skipped; the latest
+ * beat per identity is kept; `live` when within `windowMs` of `now`.
+ */
+export function parseLiveBeats(answer: unknown, now: number, windowMs: number = LIVE_WINDOW_MS): LiveAnswer {
+  const byKey = new Map<string, LiveValidator>();
+  for (const x of Array.isArray(answer) ? (answer as Record<string, unknown>[]) : []) {
+    if (!x || typeof x !== "object" || typeof x.sender !== "string" || typeof x.body !== "string") continue;
+    const at = typeof x.at === "number" ? x.at : 0;
+    let body: { identityKey?: unknown; peerId?: unknown };
+    try {
+      body = decodeCbor(Uint8Array.from(Utils.toArray(x.body, "base64"))) as typeof body;
+    } catch {
+      continue;
+    }
+    if (!(body?.identityKey instanceof Uint8Array) || !(body.peerId instanceof Uint8Array) || body.peerId.length === 0) continue;
+    const identityKey = bytesHex(body.identityKey);
+    if (identityKey !== x.sender.toLowerCase()) continue;
+    const prev = byKey.get(identityKey);
+    if (prev && prev.at >= at) continue;
+    const ageMs = Math.max(0, now - at);
+    byKey.set(identityKey, { identityKey, peerId: Utils.toBase58(Array.from(body.peerId)), at, ageMs, live: ageMs <= windowMs });
   }
-  return { now, thresholdMs, validators };
+  return { now, windowMs, validators: [...byKey.values()].sort((p, q) => q.at - p.at), kept: true };
+}
+
+/** No liveness kept for the topic (the read's 404). */
+export function noLiveness(now: number, windowMs: number = LIVE_WINDOW_MS): LiveAnswer {
+  return { now, windowMs, validators: [], kept: false };
+}
+
+/** Several topics' answers as one: the latest beat per identity. */
+export function mergeLive(answers: LiveAnswer[], now: number = Date.now(), windowMs: number = LIVE_WINDOW_MS): LiveAnswer {
+  const byKey = new Map<string, LiveValidator>();
+  for (const a of answers) for (const v of a.validators) if (!byKey.has(v.identityKey) || byKey.get(v.identityKey)!.at < v.at) byKey.set(v.identityKey, v);
+  return { now, windowMs, validators: [...byKey.values()].sort((p, q) => q.at - p.at), kept: answers.some((a) => a.kept) };
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +280,35 @@ export async function lookupPoolOutput(af: SignedFetch | null, base: string, tok
   return outs[0]!;
 }
 
-export async function fetchLive(base: string): Promise<LiveAnswer> {
-  return parseLiveAnswer(await getJson(`${base}/live`));
+/**
+ * The validators live on a token topic (`tm_<txid>`): `GET <base>/.live/tm_<txid>-live`; a 404
+ * (the instance keeps no liveness for it) is `kept: false` with none.
+ */
+export async function fetchLive(
+  base: string,
+  topic: string,
+  windowMs: number = LIVE_WINDOW_MS,
+  fetchFn: (url: string, init?: RequestInit) => Promise<Pick<Response, "ok" | "status" | "json" | "text">> = fetch,
+): Promise<LiveAnswer> {
+  const url = liveUrl(base, liveTopicOf(topic));
+  const res = await fetchFn(url, { headers: { accept: "application/json" } });
+  const now = Date.now();
+  if (res.status === 404) return noLiveness(now, windowMs);
+  if (!res.ok) throw new Error(`GET ${url}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  return parseLiveBeats(await res.json(), now, windowMs);
+}
+
+/** `fetchLive` for each token topic: tokenId → its answer (or the error reading it). */
+export async function fetchLiveByToken(base: string, topics: TokenTopic[], windowMs: number = LIVE_WINDOW_MS): Promise<Map<string, LiveAnswer | Error>> {
+  const out = new Map<string, LiveAnswer | Error>();
+  await Promise.all(
+    topics.map(async (t) => {
+      try {
+        out.set(t.tokenId, await fetchLive(base, t.topic, windowMs));
+      } catch (e) {
+        out.set(t.tokenId, e instanceof Error ? e : new Error(String(e)));
+      }
+    }),
+  );
+  return out;
 }

@@ -35,10 +35,11 @@ export interface DeployRelayContext {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export async function relayPoolDeploy(c: DeployRelayContext, p: PreparedPoolDeploy): Promise<DeployOutcome> {
+/** `peerId`: the chosen validator's libp2p peer ID, from the liveness read (the relay dials it). */
+export async function relayPoolDeploy(c: DeployRelayContext, p: PreparedPoolDeploy, peerId: string): Promise<DeployOutcome> {
   let first: PoolRecord;
   try {
-    first = await submitPoolDeploy(c.authFetch, c.base, { funding: p.funding.atomicBeef, deploy: p.atomicBeef, validator: p.validator, expires: p.expires });
+    first = await submitPoolDeploy(c.authFetch, c.base, { funding: p.funding.atomicBeef, deploy: p.atomicBeef, validator: p.validator, peerId, expires: p.expires });
   } catch (err) {
     if (err instanceof RelayError) {
       // The relay answered with an error: it recorded nothing and sent nothing on.

@@ -1,7 +1,8 @@
 /**
  * The Swap page's market view, shaped from the instance's answers (pure):
  * the token topics it serves, each token's pools from its lookup, each pool's
- * marginal price, and its validator's liveness from `GET /amm/live`. Token
+ * marginal price, and its validator's liveness from the runtime's liveness
+ * read of the token's beacon topic (`GET <base>/.live/tm_<txid>-live`). Token
  * metadata (symbol, decimals, icon) comes from the wallet when it holds the
  * token's deploy output (the LP page's inventory); otherwise only the id.
  */
@@ -18,9 +19,9 @@ export interface TokenMeta {
 
 export interface ValidatorStatus {
   identityKey: string;
-  /** Seen by heartbeat within the instance's threshold. */
+  /** Its last beat on the token's `-live` topic is within the window. */
   live: boolean;
-  /** Present in `/amm/live` at all. */
+  /** Present in the token's liveness read at all. */
   seen: boolean;
   peerId?: string;
   at?: number;
@@ -39,8 +40,12 @@ export interface MarketToken {
   topic: TokenTopic;
   meta?: TokenMeta;
   pools: PoolRow[];
+  /** The validators live on the token (`GET <base>/.live/tm_<txid>-live`), or null when unread. */
+  live: LiveAnswer | null;
   /** The lookup failed for this token. */
   error?: string;
+  /** The liveness read failed for this token. */
+  liveError?: string;
 }
 
 export const PRICE_DECIMALS = 8;
@@ -80,13 +85,15 @@ export function withLastSeen(pools: PoolState[], live: LiveAnswer | null): PoolS
 export function buildMarketView(
   topics: TokenTopic[],
   pools: Map<string, PoolState[] | Error>,
-  live: LiveAnswer | null,
+  liveByToken: Map<string, LiveAnswer | Error>,
   meta: Map<string, TokenMeta>,
 ): MarketToken[] {
   return topics.map((topic) => {
     const m = meta.get(topic.tokenId);
     const answer = pools.get(topic.tokenId);
-    const token: MarketToken = { topic, pools: [], ...(m ? { meta: m } : {}) };
+    const read = liveByToken.get(topic.tokenId);
+    const live = read && !(read instanceof Error) ? read : null;
+    const token: MarketToken = { topic, pools: [], live, ...(m ? { meta: m } : {}), ...(read instanceof Error ? { liveError: read.message } : {}) };
     if (answer instanceof Error) return { ...token, error: answer.message };
     const dec = m?.dec;
     token.pools = (answer ?? [])

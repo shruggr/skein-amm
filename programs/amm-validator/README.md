@@ -6,6 +6,10 @@ The AMM validator as a [skein](https://github.com/shruggr/skein) handler program
 zig build test-amm-validator   # from the repo root: the package, the protocol, the refusals, signing against the Go fixtures, and the submission, natively
 ```
 
+## 0.4.0: called in-VM by this instance's own relay
+
+When a taker names this node as the validator to its own relay (amm-p2p's `amm.*.submit` with `peerId` this node's), the relay cannot dial itself: its relay thread calls this program's fn (`swap`, `deploy`, `addLiquidity`) in-VM from its step, with the argument the front door gives a frame's handler — `{transport: "local", protocol, body: <the same signed package>, match: {program, fn, app}}`, plus `reply` / `resolved` when called again (amm-p2p `callValidator`). `directCall` takes `transport: "local"` beside `libp2p`; everything else is unchanged, and the `{wait: true}` and its `await` are the relay thread's.
+
 ## 0.3.2: the validated set gates every signature
 
 "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating" (David 2026-10-06): one setting. A `swap`, `addLiquidity` or `deploy` direct call (the libp2p streams `/amm-validator/1/*`) is answered only for a token whose topic `tm_<txid>` is in amm-p2p's validated set — the `validated` of the record under the head `amm/p2p`, read at each call (`main.zig` `validatedSet`, into `Config.validated`). Otherwise `{ok: false, reason: "not_validating", detail: "this validator does not validate tm_<txid>"}`, before anything else is checked, the oracle is not asked and nothing is signed or submitted. For a spend the check comes right after the pool is found ours (check 2 below); for a deploy, right after its ValidatorIdentity is found ours, before the retry path. Taking on new liquidity means receiving it: signing an LP's `addLiquidity` and consenting to an LP's pool `deploy` as the pool's validator; the node's own funds are not involved. There is no setting of the validator's own: the owner's `validate` / `unvalidate` (box `amm/validate`, amm-p2p) are the only writers of the set. No head yet means nothing is validated: every call is refused.

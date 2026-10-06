@@ -4,7 +4,7 @@
  * hosted by programs/amm-p2p (not provided yet; this is the shape the page
  * codes against):
  *
- *   amm.liquidity.submit  (writes)  {funding, add, pool, validator, expires} → the record
+ *   amm.liquidity.submit  (writes)  {funding, add, pool, validator, peerId, expires} → the record
  *   amm.liquidity.status  (reads)   {id} → the record
  *
  *   funding    bytes: the funding transaction as the wallet's AtomicBEEF
@@ -12,6 +12,7 @@
  *              inputs' sources with it), every input signed but the pool
  *              input's validator slot (`OP_0`)
  *   pool       text `<txid>_<vout>`; validator bytes(33); expires unix ms
+ *   peerId     text: the validator's libp2p peer ID, from the liveness read
  *
  * The record is the swap's (`parseSwapRecord`): `{id, status: pending |
  * accepted | refused | timeout | failed, tx?, txid?, reason?, detail?,
@@ -41,13 +42,15 @@ export interface LiquiditySubmit {
   add: number[];
   pool: string;
   validator: string;
+  /** The validator's libp2p peer ID (text): what the relay dials. */
+  peerId: string;
   expires: number;
 }
 
 export function liquiditySubmitBody(s: LiquiditySubmit): { fn: string; args: Record<string, unknown> } {
   return {
     fn: LIQUIDITY_SUBMIT_FN,
-    args: { funding: dagBytes(s.funding), add: dagBytes(s.add), pool: s.pool, validator: dagBytes(Utils.toArray(s.validator, "hex")), expires: s.expires },
+    args: { funding: dagBytes(s.funding), add: dagBytes(s.add), pool: s.pool, validator: dagBytes(Utils.toArray(s.validator, "hex")), peerId: s.peerId, expires: s.expires },
   };
 }
 
@@ -80,10 +83,11 @@ export interface AddRelayContext {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export async function relayAddLiquidity(c: AddRelayContext, p: PreparedAddLiquidity): Promise<AddOutcome> {
+/** `peerId`: the pool's validator's libp2p peer ID, from the liveness read (the relay dials it). */
+export async function relayAddLiquidity(c: AddRelayContext, p: PreparedAddLiquidity, peerId: string): Promise<AddOutcome> {
   let first: SwapRecord;
   try {
-    first = await submitAddLiquidity(c.authFetch, c.base, { funding: p.funding.atomicBeef, add: p.atomicBeef, pool: p.pool, validator: p.validator, expires: p.expires });
+    first = await submitAddLiquidity(c.authFetch, c.base, { funding: p.funding.atomicBeef, add: p.atomicBeef, pool: p.pool, validator: p.validator, peerId, expires: p.expires });
   } catch (err) {
     if (err instanceof RelayError) {
       // The relay answered with an error: it recorded nothing and sent nothing on.

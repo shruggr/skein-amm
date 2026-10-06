@@ -37,6 +37,12 @@
 //!   thread comes to rest"). Later answers (each proof) find nothing
 //!   awaiting them.
 //!
+//! **Local** (0.4.0): when a taker names this node as the validator to its own relay, amm-p2p
+//! cannot dial itself; its relay thread calls this program's fn in-VM, from its step, with the
+//! argument the front door gives a frame's handler (`transport: "local"`, `protocol`, `body`: the
+//! same package, `match`, and `reply` / `resolved` when called again). Everything else is as above:
+//! the `{wait: true}` and its `await` are the relay thread's.
+//!
 //! The validated set (0.3.2): a swap, addLiquidity or deploy is signed only for a token whose
 //! topic `tm_<txid>` is in amm-p2p's validated set (the `validated` of the head `amm/p2p`, written
 //! by the owner's `validate` / `unvalidate` in box `amm/validate`); else refused `not_validating`.
@@ -149,9 +155,12 @@ fn answerWait(a: std.mem.Allocator) !void {
     try vm.answer(a, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "wait", .value = .{ .boolean = true } }}) });
 }
 
-/// fn `swap`, `addLiquidity`, `deploy`: a frame of a direct call (above).
+/// fn `swap`, `addLiquidity`, `deploy`: a frame of a direct call, or the relay's local call (above).
 fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !void {
-    if (!std.mem.eql(u8, arg.getText("transport") orelse "", "libp2p")) return error.NotADirectCall;
+    // A frame on a direct call (the front door's), or (0.4.0) the same package handed in-VM by this
+    // instance's own relay when the validator the caller named is this node (amm-p2p `callValidator`).
+    const transport = arg.getText("transport") orelse "";
+    if (!std.mem.eql(u8, transport, "libp2p") and !std.mem.eql(u8, transport, "local")) return error.NotADirectCall;
     const oracle: Oracle = .{ .ptr = &oracle_dummy, .callFn = oracleCall };
     const identity = try identityOf(a, in, oracle);
     const body = switch (try messages.open(a, arg.getBytes("body") orelse "", identity, op)) {

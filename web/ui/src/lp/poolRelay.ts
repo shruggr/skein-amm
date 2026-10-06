@@ -4,7 +4,7 @@
  * hosted by programs/amm-p2p (the Zig side is not built yet; this is the
  * shape the page codes against):
  *
- *   amm.pool.submit  (writes)  {funding, deploy, validator, expires} → the record
+ *   amm.pool.submit  (writes)  {funding, deploy, validator, peerId, expires} → the record
  *   amm.pool.status  (reads)   {id} → the record
  *
  *   funding    bytes: the funding transaction as the wallet's AtomicBEEF
@@ -14,6 +14,8 @@
  *              source transactions (the validator's topic check needs the
  *              token inputs, which no overlay may hold yet)
  *   validator  bytes(33): the identity named in the pool (ValidatorIdentity)
+ *   peerId     text: the validator's libp2p peer ID, from the liveness read
+ *              (`GET <base>/.live/tm_<txid>-live`): what the relay dials
  *   expires    unix ms after which the relay gives up (the funding's hold lapses)
  *
  * The relay checks the pair (the deploy spends the funding output; output 0
@@ -43,6 +45,8 @@ export interface PoolSubmit {
   deploy: number[];
   /** The pool's validator identity key (hex; sent as 33 bytes). */
   validator: string;
+  /** The validator's libp2p peer ID (text): what the relay dials. */
+  peerId: string;
   expires: number;
 }
 
@@ -56,7 +60,7 @@ export type PoolRecord =
 export function poolSubmitBody(s: PoolSubmit): { fn: string; args: Record<string, unknown> } {
   return {
     fn: POOL_SUBMIT_FN,
-    args: { funding: dagBytes(s.funding), deploy: dagBytes(s.deploy), validator: dagBytes(Utils.toArray(s.validator, "hex")), expires: s.expires },
+    args: { funding: dagBytes(s.funding), deploy: dagBytes(s.deploy), validator: dagBytes(Utils.toArray(s.validator, "hex")), peerId: s.peerId, expires: s.expires },
   };
 }
 

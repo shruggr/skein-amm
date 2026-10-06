@@ -7,15 +7,16 @@
  *   AMM_OVERLAY        the AMM app's base URL: `https://<handle>.<host>/<app>`
  *                      or a host's dev form `<host>/@<handle>/<app>` (GET
  *                      listTopicManagers, GET listLookupServiceProviders,
- *                      POST lookup, POST submit, GET live, POST call under
+ *                      POST lookup, POST submit, GET .live/tm_<txid>-live, POST call under
  *                      it). The pages are the app's `www/`, served at
  *                      `<base>/` (index.html), so the base is the page's own
  *                      directory (`appBaseOf`); `VITE_AMM_OVERLAY` overrides
  *                      it (a dev server on another origin)
  *   VITE_AMM_PEER_OVERLAY  another instance's AMM base URL (no default): the
  *                      Validator page reads this instance's liveness (and
- *                      peer ID) from the peer's GET live (a node never hears
- *                      itself)
+ *                      peer ID) from the peer's liveness read of its token
+ *                      topics (GET .live/tm_<txid>-live, kept where the peer
+ *                      is a market for the token)
  *   VITE_AMM_OWNER_IDENTITY  optional: the instance owner's identity key
  *                      (public), when known from the deploy. No route
  *                      exposes the owner to a non-owner; the Validator page
@@ -70,7 +71,7 @@ export const AMM_OVERLAY = (
 /** How often the Swap page re-reads the instance (topics, pools, live validators). `VITE_AMM_REFRESH_MS`. */
 export const REFRESH_MS = Number(env?.VITE_AMM_REFRESH_MS ?? 10_000);
 
-/** The peer instance whose `GET live` tells us whether our heartbeat is heard. `VITE_AMM_PEER_OVERLAY`; unset or "" disables. */
+/** The peer instance whose liveness read (`GET .live/tm_<txid>-live`) tells us whether our heartbeat is heard. `VITE_AMM_PEER_OVERLAY`; unset or "" disables. */
 export const AMM_PEER_OVERLAY = (env?.VITE_AMM_PEER_OVERLAY ?? "").replace(/\/+$/, "");
 
 /** The owner's identity key if configured (public key, compressed hex), else "". `VITE_AMM_OWNER_IDENTITY`. */

@@ -3,11 +3,16 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.3.6**: on skein-overlay 0.7.8 (skein-sdk 0.7.1)
-and skein-mandala 0.6.2; a host serving a market subscribes the beacons
-(0.3.0, shruggr/skein#120), a node beacons only the topics its owner
-has set up validation for, per topic (0.3.1, David 2026-10-06), and its
-validator signs only for those topics, one setting (0.3.2). Ported from amm-poc (b-open-io/amm-poc, its
+and its pages. Version **0.4.0**: on skein-overlay 0.7.8 (skein-sdk 0.7.1)
+and skein-mandala 0.6.2; a node beacons only the topics its owner has set up
+validation for, per topic (0.3.1, David 2026-10-06), and its validator signs
+only for those topics, one setting (0.3.2); validator liveness is the
+runtime's (0.4.0, shruggr/skein#120 and #138, David 2026-10-06): a host
+serving a market asks the runtime's liveness tool per token, the page reads
+`GET <base>/.live/tm_<txid>-live`, plans over the pools whose validator is
+there and names that validator (identity key and peer ID) in the swap, and
+the relay dials the peer it is given — or, when it is its own node, hands the
+request to its own validator program in-VM. Ported from amm-poc (b-open-io/amm-poc, its
 `programs/`, `pool/` and `web/`) in 0.1.0 (shruggr/skein#120).
 
 ## What it is
@@ -19,7 +24,7 @@ validator signs only for those topics, one setting (0.3.2). Ported from amm-poc 
 | `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.6.2's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools of every token topic the overlay serves, each query naming its token |
 | `amm-validator` | `programs/amm-validator` | the validator: checks a taker's or an LP's transaction against the pool, signs the pool input last, submits it to its own overlay by message and answers on the engine's answer (`swap`, `addLiquidity`, `deploy`, libp2p direct calls) |
-| `amm-p2p` | `programs/amm-p2p` | the validator liveness beacon (and, on a market host, the beacons' subscription and the validator map), the marketplace relay (`amm.swap/1`, `amm.pool/1`, `amm.liquidity/1`: a transaction carried to its validator), and the pages (`www/`, served from the app's own tree) |
+| `amm-p2p` | `programs/amm-p2p` | the validator liveness beacon (and, on a market host, the `liveness` request per served token), the marketplace relay (`amm.swap/1`, `amm.pool/1`, `amm.liquidity/1`: a transaction carried to the validator the caller names), and the pages (`www/`, served from the app's own tree) |
 | | `src/pool.zig` | the Pool contract as the overlay sees it: recognising a pool, its state, the pool checks (module `pool`, over the `mandala` parser) |
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
@@ -120,19 +125,35 @@ wildcard DNS, `<host>/@<handle>/amm`).
    ends them and keeps the set, so the next start beacons it again.
 
    **The market role** (`config.amm.ammP2p.market`, default `false`): a host
-   serving a market sets it, and the same start also subscribes each served
-   token's `tm_<txid>-live` to amm-p2p's `validateLive` (shruggr/skein#119),
-   which keeps the validator map the relay picks from; a later start
-   subscribes a newly registered topic and unsubscribes a deregistered one,
-   and the stop unsubscribes all. Without it the map stays empty and the relay
-   refuses a swap `validator_offline`. The Validator page's Start sends the same
-   start; it does not show the role.
+   serving a market sets it, and the same start also asks the runtime's
+   liveness tool, once per served token, `{event: "liveness", topic:
+   "tm_<txid>-live", window: offlineSeconds × 1000}` (shruggr/skein#138;
+   `offlineSeconds` default 40 against `heartbeatSeconds` 30, both config):
+   the host subscribes the topic without admitting its messages, verifies
+   each beat and keeps the ones within the window in memory, served at `GET
+   <base>/.live/tm_<txid>-live` → `[{sender, at, body, from}]` (404 when no
+   liveness is kept). A later start asks it for a newly registered topic and
+   ends it (`unliveness`) for a deregistered one; the stop ends all. Nothing
+   of it is in the graph: amm-p2p keeps no validator map (0.3.x's `live` map,
+   `validateLive` and its `amm-live` entries are gone; a 0.3.x state's
+   `subscribe`s are unsubscribed at the first start or stop). The Validator
+   page's Start sends the same start; it does not show the role.
+
+   **The validator named** (0.4.0): the Swap page reads each token's
+   `.live` read, decodes each beat's body `{identityKey, peerId}`, plans only
+   over the pools whose validator beat within the window, and sends
+   `amm.swap.submit` with that validator's `peerId` beside its `validator`
+   key (`amm.pool.submit` and `amm.liquidity.submit` the same, from the
+   Pools page). The relay looks at no liveness: it dials `peerId`, or, when
+   `peerId` is its own node's, calls its own `amm-validator` in-VM with the
+   same package, as the front door calls the route's handler for a frame.
 5. **The pages** at `<base>/`, served from the app's own tree (`www/`):
    Tokens (the wallet's tokens), Pools (create a pool, add and remove
    liquidity), Swap, Validator (this instance as a validator); the Mandala
    pages at `<base>/mandala/`. They call `<base>/lookup` (`ls_amm`,
-   `ls_mandala`), `<base>/live`, `<base>/call` (the relay) and
-   `<base>/submit`.
+   `ls_mandala`), `<base>/.live/tm_<txid>-live` (the runtime's liveness read),
+   `<base>/call` (the relay) and `<base>/submit`. `<base>/live` (the row is
+   kept until the manifest's `reads[]` arrive, #135) answers 410 since 0.4.0.
 
 **Submit and look up** (skein-overlay 0.7.2+: a submission is a message, answered later to the submitter's box; BRC-24):
 
@@ -154,11 +175,11 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.3.6 |
+| this app | 0.4.0 |
 | skein-overlay | v0.7.8 (a570188) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-mandala | v0.6.2 (253f1cd) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
-| skein | main 387e057 (the beacon's signed frame, docs/MESSAGES.md "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
+| skein | main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain v0.3.2) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions` 0.0.228, `@1sat/connect` 0.0.99, `@1sat/react` 0.0.97, `@1sat/templates` 0.0.39 (Mandala from 1sat-sdk 183c0ce3), `@bsv/sdk` 2.8.10 (`web/ui/package-lock.json`) |

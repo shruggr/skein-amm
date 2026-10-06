@@ -39,7 +39,8 @@ export interface RelayContext {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export async function relaySwap(c: RelayContext, p: PreparedSwap): Promise<SwapOutcome> {
+/** `peerId`: the chosen validator's libp2p peer ID, from the token's liveness read (the relay dials it). */
+export async function relaySwap(c: RelayContext, p: PreparedSwap, peerId: string): Promise<SwapOutcome> {
   let first: SwapRecord;
   try {
     first = await submitSwap(c.authFetch, c.base, {
@@ -47,6 +48,7 @@ export async function relaySwap(c: RelayContext, p: PreparedSwap): Promise<SwapO
       swap: p.swap.toBinary(),
       pool: p.pool,
       validator: p.validator,
+      peerId,
       expires: p.expires,
     });
   } catch (err) {

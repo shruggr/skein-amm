@@ -17,32 +17,18 @@
 //! dag-cbor `{kind: "beacon", topic, body, at, sender}` — the topic is
 //! signed, not carried (skein src/host/p2p.ts `beaconPreimage`).
 //!
-//! The verdict (`judge`), given the topic and the GossipSub sender `from`:
-//!
-//! - the frame or the body does not decode, `identityKey` is not `sender`,
-//!   `peerId` is not `from`, or the signature does not verify → **reject**;
-//! - `at` more than `max_skew_ms` ahead of this node's clock, or older than
-//!   the offline threshold → **ignore** (not forwarded, no penalty);
-//! - otherwise **accept**, answered with the entry it becomes (skein#57:
-//!   the front door admits it after the message's own `p2p` entry), in this
-//!   program's own box `amm-p2p`:
-//!
-//!     {kind: "amm-live", topic, body, at, sender, signature}
-//!
-//!   Stepped (main.zig), it is re-verified and applied to the last-seen
-//!   map `live` (identity key → at ‖ peer ID) under the program's own head:
-//!   a later `at` replaces an earlier one, never the reverse.
-//!
-//! Who judges (shruggr/skein#120, David 2026-10-06): a host serving a
-//! market (`ammP2p.market`) subscribes `tm_<txid>-live` to `validateLive`
-//! for each token it serves (`subscribeEvent`, `plan`); no other host does.
+//! Who reads it (0.4.0; shruggr/skein#120, #138, David 2026-10-06): not this program. A host
+//! serving a market (`ammP2p.market`) asks the runtime's liveness tool once per token it serves,
+//! `{event: "liveness", topic: "tm_<txid>-live", window: offlineSeconds × 1000}` (`livenessEvent`,
+//! `plan`); the tool subscribes the topic without admitting its messages, verifies each beat's
+//! signature against `sender` and keeps the beats newer than `window`, the latest per sender, in
+//! host memory, served at `GET /<app>/.live/<topic>` (skein docs/MESSAGES.md "Liveness (#138)").
+//! The page reads that and names the validator; nothing of it is in this program's state. The body
+//! (`Body`) stays this app's: the page decodes it.
 //!
 //! Who beacons (0.3.1, David 2026-10-06): not a role — a node beacons
 //! `tm_<txid>-live` for the topics it validates, set up per topic by the
 //! owner (`validate` / `unvalidate`, `validation`).
-//!
-//! Consumer: `live(map, identityKey, now, threshold)` → the peer ID and
-//! time, while `now - at <= threshold`.
 const std = @import("std");
 const w = @import("chain");
 
@@ -58,16 +44,13 @@ pub const protocol = kd.Protocol{ .security_level = 2, .name = "metanet handles 
 pub const key_id = "send";
 
 pub const default_interval_s: u64 = 30;
-pub const default_offline_s: u64 = 90;
-/// How far ahead of our clock a heartbeat may be dated.
-pub const max_skew_ms: u64 = 60_000;
+/// The liveness window (`ammP2p.offlineSeconds`): a margin over the 30 s beat (David 2026-10-06).
+pub const default_offline_s: u64 = 40;
 
 /// What amm-p2p declares: who it is and its peer ID.
 pub const Body = struct { identity_key: [33]u8, peer_id: []const u8 };
 /// A beat as published: the declared body (its bytes), the beat's time, the instance, its signature.
 pub const Beat = struct { body: []const u8, at: u64, sender: [33]u8, signature: []const u8 };
-/// A beat heard on `topic`, its body read.
-pub const Heard = struct { topic: []const u8, beat: Beat, body: Body };
 
 /// The beacon (shruggr/skein#126, docs/MESSAGES.md "emit"): the host's libp2p node publishes
 /// a frame of `body` on `topic` every `every_ms`, without subscribing it.
@@ -90,23 +73,28 @@ pub fn unbeaconEvent(a: Allocator, topic: []const u8) !Value {
 
 // ---------------------------------------------------------------- the market role
 
-/// What the kernel delivers a `-live` beat to (shruggr/skein#119 `subscribe {topic, program, fn}`):
-/// this program's role in the app's record and the handler that judges a frame.
-pub const live_program = "amm-p2p";
-pub const live_fn = "validateLive";
-
-/// A market's subscription (shruggr/skein#120, David 2026-10-06: liveness by role): deliver each
-/// beat on `topic` (`tm_<txid>-live`) to amm-p2p's `validateLive`.
-pub fn subscribeEvent(a: Allocator, topic: []const u8) !Value {
+/// A market's liveness (shruggr/skein#138, David 2026-10-06): the runtime's liveness tool keeps the
+/// verified beats on `topic` (`tm_<txid>-live`) newer than `window_ms`, served at
+/// `GET /<app>/.live/<topic>`. Recorded once; no answer comes.
+pub fn livenessEvent(a: Allocator, topic: []const u8, window_ms: u64) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "event", .value = .{ .text = "subscribe" } },
+        .{ .key = "event", .value = .{ .text = "liveness" } },
         .{ .key = "topic", .value = .{ .text = topic } },
-        .{ .key = "program", .value = .{ .text = live_program } },
-        .{ .key = "fn", .value = .{ .text = live_fn } },
+        .{ .key = "window", .value = .{ .uint = window_ms } },
     }) };
 }
 
-/// The subscription to `topic` ended (the app's own: shruggr/skein#119).
+/// The liveness on `topic` ended (its set is gone).
+pub fn unlivenessEvent(a: Allocator, topic: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = "unliveness" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+    }) };
+}
+
+/// 0.3.x's subscription of `topic` (`subscribe {topic, program: "amm-p2p", fn: "validateLive"}`,
+/// shruggr/skein#119) ended: emitted once per topic that 0.3.x left standing, at the first start or
+/// stop under 0.4.0 (main.zig `market`), since `validateLive` is gone.
 pub fn unsubscribeEvent(a: Allocator, topic: []const u8) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "event", .value = .{ .text = "unsubscribe" } },
@@ -114,17 +102,17 @@ pub fn unsubscribeEvent(a: Allocator, topic: []const u8) !Value {
     }) };
 }
 
-/// The subscriptions to change: the token topics `want`ed and not `standing` (subscribe), and the
-/// ones `standing` and no longer wanted (unsubscribe). A market wants every served token topic
-/// while started; a stop, or a host that is not a market, wants none.
-pub const Plan = struct { subscribe: []const []const u8, unsubscribe: []const []const u8 };
+/// The liveness to change: the token topics `want`ed and not `standing` (liveness), and the ones
+/// `standing` and no longer wanted (unliveness). A market wants every served token topic while
+/// started; a stop, or a host that is not a market, wants none. Only a standing topic is ended.
+pub const Plan = struct { liveness: []const []const u8, unliveness: []const []const u8 };
 
 pub fn plan(a: Allocator, standing: []const []const u8, want: []const []const u8) !Plan {
-    var sub: std.ArrayList([]const u8) = .empty;
-    var unsub: std.ArrayList([]const u8) = .empty;
-    for (want) |t| if (!contains(standing, t) and !contains(sub.items, t)) try sub.append(a, t);
-    for (standing) |t| if (!contains(want, t)) try unsub.append(a, t);
-    return .{ .subscribe = sub.items, .unsubscribe = unsub.items };
+    var on: std.ArrayList([]const u8) = .empty;
+    var off: std.ArrayList([]const u8) = .empty;
+    for (want) |t| if (!contains(standing, t) and !contains(on.items, t)) try on.append(a, t);
+    for (standing) |t| if (!contains(want, t)) try off.append(a, t);
+    return .{ .liveness = on.items, .unliveness = off.items };
 }
 
 /// Validation (0.3.1, David 2026-10-06: beaconing is not a role, it comes with validating a topic).
@@ -252,71 +240,4 @@ pub fn sign(a: Allocator, root: ec.PrivateKey, topic: []const u8, body: []const 
     const child = try kd.KeyDeriver.init(root).derivePrivateKey(a, protocol, key_id, .{ .type_ = .anyone });
     const s = try child.signDigest(try digest(a, topic, body, at, sender));
     return .{ .body = body, .at = at, .sender = sender, .signature = try a.dupe(u8, s.asSlice()) };
-}
-
-pub const Outcome = union(enum) {
-    accept: Heard,
-    reject: []const u8,
-    ignore: []const u8,
-};
-
-/// A beat checked: its body read, the body's identity the sender, the signature the sender's.
-fn heard(a: Allocator, topic: []const u8, beat: Beat) !Heard {
-    const body = try decodeBody(a, beat.body);
-    if (!std.mem.eql(u8, &body.identity_key, &beat.sender)) return error.WrongIdentity;
-    if (!verify(a, topic, beat)) return error.BadSignature;
-    return .{ .topic = topic, .beat = beat, .body = body };
-}
-
-/// The verdict on a frame on `topic` from GossipSub sender `from`, at our time `now` (ms).
-pub fn judge(a: Allocator, topic: []const u8, frame: []const u8, from: []const u8, now: u64, offline_ms: u64) Outcome {
-    const beat = decodeFrame(a, frame) catch return .{ .reject = "Malformed" };
-    const h = heard(a, topic, beat) catch |e| return .{ .reject = @errorName(e) };
-    if (!std.mem.eql(u8, h.body.peer_id, from)) return .{ .reject = "WrongPeer" };
-    if (beat.at > now + max_skew_ms) return .{ .ignore = "FromTheFuture" };
-    if (now > beat.at and now - beat.at > offline_ms) return .{ .ignore = "Stale" };
-    return .{ .accept = h };
-}
-
-/// The entry an accepted heartbeat becomes (box `amm-p2p`), applied by `apply`: the frame and its topic.
-pub fn liveEvent(a: Allocator, h: Heard) !Value {
-    const fields = try beatFields(a, h.beat);
-    return .{ .map = try std.mem.concat(a, cbor.Entry, &.{ &.{
-        .{ .key = "kind", .value = .{ .text = "amm-live" } },
-        .{ .key = "topic", .value = .{ .text = h.topic } },
-    }, fields }) };
-}
-
-// ---------------------------------------------------------------- the last-seen map
-
-pub const Seen = struct { peer_id: []const u8, at: u64 };
-
-pub fn seenOf(v: w.store.MValue) ?Seen {
-    if (v != .bytes or v.bytes.len < 9) return null;
-    return .{ .at = std.mem.readInt(u64, v.bytes[0..8], .big), .peer_id = v.bytes[8..] };
-}
-
-/// The last heartbeat recorded for an identity.
-pub fn lastSeen(m: *w.store.Map, identity: [33]u8) !?Seen {
-    return seenOf((try m.get(&identity)) orelse return null);
-}
-
-/// Apply an `amm-live` entry (re-verified: an entry is only as good as its
-/// signature) to the map: a later `at` replaces an earlier one. → whether it changed.
-pub fn apply(a: Allocator, m: *w.store.Map, event: Value) !bool {
-    const h = try heard(a, event.getText("topic") orelse return error.Malformed, try beatOf(event));
-    const at = h.beat.at;
-    if (try lastSeen(m, h.body.identity_key)) |s| if (s.at >= at) return false;
-    var be: [8]u8 = undefined;
-    std.mem.writeInt(u64, &be, at, .big);
-    try m.put(&h.body.identity_key, .{ .bytes = try std.mem.concat(a, u8, &.{ &be, h.body.peer_id }) });
-    return true;
-}
-
-/// Consumer API: the identity's peer ID and last heartbeat, while live
-/// (`now - at <= threshold`, all ms); null when never seen or offline.
-pub fn live(m: *w.store.Map, identity: [33]u8, now: u64, threshold: u64) !?Seen {
-    const s = (try lastSeen(m, identity)) orelse return null;
-    if (now > s.at and now - s.at > threshold) return null;
-    return s;
 }

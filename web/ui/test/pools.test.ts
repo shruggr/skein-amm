@@ -25,7 +25,8 @@ import {
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PoolTemplate } from "../src/pool";
-import { parseLiveAnswer, parseTokenTopic, type SignedFetch } from "../src/lib/overlay";
+import { parseLiveBeats, parseTokenTopic, type SignedFetch } from "../src/lib/overlay";
+import { PEER } from "./liveRead";
 import { choiceFor, livenessOf, originOf, parseIdentityKey, parsePickerInput, resolveHandle, type FetchLike } from "../src/lp/validators";
 import {
   POOL_TAG,
@@ -55,7 +56,7 @@ import { BRC29, brc29Side, isBrc29, type KeyArgs } from "./brc29Wallet";
 import { tokenInputsOf } from "../src/market/swapAction";
 import { buildInventory } from "../src/lp/inventory";
 import { loadWalletAssets, mandalaBasket } from "../src/lp/wallet";
-import liveJson from "./fixtures/instance-v2/live.json";
+import liveRead from "./fixtures/live-read.json";
 import v from "./fixtures/amm-topic-vectors.json";
 
 // Keys and transactions of programs/amm-topic/gen/main.go.
@@ -112,8 +113,8 @@ describe("validator picker: BRC-169 resolver", () => {
       "http://127.0.0.1:8400/.well-known/metanet-handles/resolve?handle=amm3%40localhost",
     ]);
     expect(r).toMatchObject({ handle: "amm3@localhost:8400", identityKey: AMM3, messagebox: "http://amm3.localhost:8400" });
-    const live = parseLiveAnswer(liveJson);
-    expect(choiceFor(r.identityKey, live, r.handle)).toEqual({ identityKey: AMM3, peerId: live.validators[0]!.peerId, handle: "amm3@localhost:8400" });
+    const live = parseLiveBeats(liveRead, 1790844766808);
+    expect(choiceFor(r.identityKey, live, r.handle)).toEqual({ identityKey: AMM3, peerId: PEER, handle: "amm3@localhost:8400" });
     expect(livenessOf(AMM3, live)).toBe("live");
   });
 
@@ -125,8 +126,8 @@ describe("validator picker: BRC-169 resolver", () => {
     const r = await resolveHandle("val", "example.com", f);
     expect(r.identityKey).toBe(AMM2);
     expect(r.resolveUrl).toBe("https://example.com/.well-known/metanet-handles/resolve");
-    // amm2's key is not in this instance's live list: still choosable, "not seen live".
-    const live = parseLiveAnswer(liveJson);
+    // amm2's key is not in this instance's liveness read: still choosable, "not seen live" (no peer ID to name).
+    const live = parseLiveBeats(liveRead, 1790844766808);
     expect(choiceFor(AMM2, live, r.handle)).toEqual({ identityKey: AMM2, handle: "val@example.com" });
     expect(livenessOf(AMM2, live)).toBe("not seen live");
   });
@@ -506,7 +507,7 @@ describe("pool deploy: amm.pool.submit / amm.pool.status", () => {
     );
     const before = calls.length;
     const seen: string[] = [];
-    const o = await relayPoolDeploy({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared);
+    const o = await relayPoolDeploy({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared, PEER);
     expect(http.map((c) => [c.url, c.method, c.body.fn])).toEqual([
       ["http://amm2.localhost:8300/amm/call", "POST", "amm.pool.submit"],
       ["http://amm2.localhost:8300/amm/call", "POST", "amm.pool.status"],
@@ -516,6 +517,7 @@ describe("pool deploy: amm.pool.submit / amm.pool.status", () => {
       funding: dagBytes(prepared.funding.atomicBeef),
       deploy: dagBytes(prepared.atomicBeef),
       validator: dagBytes(Utils.toArray(v.identity, "hex")),
+      peerId: PEER,
       expires: 121_000,
     });
     expect(Beef.fromBinary(readBytes(http[0]!.body.args.funding)!).atomicTxid).toBe(prepared.funding.txid);
@@ -541,18 +543,18 @@ describe("pool deploy: amm.pool.submit / amm.pool.status", () => {
   it("accepted without tx / txid: ours is internalized; a different transaction is refused before the wallet is asked", async () => {
     const a = await deployPool();
     const bare = fakeRelay((fn) => ok(fn, { id: ID, status: "accepted" }));
-    expect(await relayPoolDeploy({ wallet: a.wallet, authFetch: bare.af, base: "http://x/amm", sleep: noSleep }, a.prepared)).toMatchObject({ status: "accepted", completed: { internalized: true } });
+    expect(await relayPoolDeploy({ wallet: a.wallet, authFetch: bare.af, base: "http://x/amm", sleep: noSleep }, a.prepared, PEER)).toMatchObject({ status: "accepted", completed: { internalized: true } });
 
     const b = await deployPool();
     const other = fakeRelay((fn) => ok(fn, { id: ID, status: "accepted", txid: "ab".repeat(32) }));
-    await expect(relayPoolDeploy({ wallet: b.wallet, authFetch: other.af, base: "http://x/amm", sleep: noSleep }, b.prepared)).rejects.toThrow(/not ours/);
+    await expect(relayPoolDeploy({ wallet: b.wallet, authFetch: other.af, base: "http://x/amm", sleep: noSleep }, b.prepared, PEER)).rejects.toThrow(/not ours/);
     expect(b.calls.some((c) => c.method === "internalizeAction")).toBe(false);
   });
 
   it("refused: abortAction of the funding, nothing internalized", async () => {
     const { wallet, calls, prepared } = await deployPool();
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "refused", reason: "fees_unacceptable", detail: "commissionBps" }));
-    expect(await relayPoolDeploy({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared)).toEqual({ status: "refused", id: ID, reason: "fees_unacceptable: commissionBps" });
+    expect(await relayPoolDeploy({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).toEqual({ status: "refused", id: ID, reason: "fees_unacceptable: commissionBps" });
     expect(calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
     expect(calls.some((c) => c.method === "internalizeAction" || c.method === "relinquishOutput")).toBe(false);
   });
@@ -560,24 +562,24 @@ describe("pool deploy: amm.pool.submit / amm.pool.status", () => {
   it("timeout: abortAction; an error answer to submit (no amm.pool.submit on the instance): abortAction", async () => {
     const a = await deployPool();
     const t = fakeRelay((fn, _a, n) => ok(fn, { id: ID, status: n === 1 ? "pending" : "timeout" }));
-    expect(await relayPoolDeploy({ wallet: a.wallet, authFetch: t.af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, a.prepared)).toEqual({ status: "timeout", id: ID });
+    expect(await relayPoolDeploy({ wallet: a.wallet, authFetch: t.af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, a.prepared, PEER)).toEqual({ status: "timeout", id: ID });
     expect(a.calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
 
     const b = await deployPool();
     const e = fakeRelay((fn) => ({ status: 404, body: { fn, error: { code: "unknown-fn", message: "amm.pool.submit is not provided" } } }));
-    expect(await relayPoolDeploy({ wallet: b.wallet, authFetch: e.af, base: "http://x/amm", sleep: noSleep }, b.prepared)).toEqual({ status: "failed", reason: "amm.pool.submit: unknown-fn: amm.pool.submit is not provided" });
+    expect(await relayPoolDeploy({ wallet: b.wallet, authFetch: e.af, base: "http://x/amm", sleep: noSleep }, b.prepared, PEER)).toEqual({ status: "failed", reason: "amm.pool.submit: unknown-fn: amm.pool.submit is not provided" });
     expect(b.calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
   });
 
   it("no answer (network, the relay's transport failure, pending past expiry): nothing aborted; Check again settles it", async () => {
     const { wallet, calls, prepared } = await deployPool();
     const lost: AuthFetchLike = { fetch: async () => { throw new Error("network down"); } };
-    expect(await relayPoolDeploy({ wallet, authFetch: lost, base: "http://x/amm" }, prepared)).toEqual({ status: "unknown", reason: "amm.pool.submit: network down" });
+    expect(await relayPoolDeploy({ wallet, authFetch: lost, base: "http://x/amm" }, prepared, PEER)).toEqual({ status: "unknown", reason: "amm.pool.submit: network down" });
     const failed = fakeRelay((fn) => ok(fn, { id: ID, status: "failed", reason: "dial" }));
-    expect(await relayPoolDeploy({ wallet, authFetch: failed.af, base: "http://x/amm", sleep: noSleep }, prepared)).toEqual({ status: "unknown", id: ID, reason: "the relay could not reach the validator (dial)" });
+    expect(await relayPoolDeploy({ wallet, authFetch: failed.af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).toEqual({ status: "unknown", id: ID, reason: "the relay could not reach the validator (dial)" });
     let t = 0;
     const pending = fakeRelay((fn) => ok(fn, { id: ID, status: "pending" }));
-    expect(await relayPoolDeploy({ wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (t += 60_000), now: () => t }, prepared)).toEqual({ status: "unknown", id: ID, reason: "still pending past the deploy's expiry" });
+    expect(await relayPoolDeploy({ wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (t += 60_000), now: () => t }, prepared, PEER)).toEqual({ status: "unknown", id: ID, reason: "still pending past the deploy's expiry" });
     expect(calls.some((c) => c.method === "abortAction")).toBe(false);
     const later = fakeRelay((fn) => ok(fn, { id: ID, status: "accepted", txid: prepared.txid }));
     expect(await checkPoolDeployAgain({ wallet, authFetch: later.af, base: "http://x/amm" }, prepared, ID)).toMatchObject({ status: "accepted", txid: prepared.txid });

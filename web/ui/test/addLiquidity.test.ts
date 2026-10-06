@@ -10,6 +10,7 @@
 import { BigNumber, Beef, ECDSA, LockingScript, P2PKH, PrivateKey, Transaction, UnlockingScript, Utils, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { describe, expect, it } from "vitest";
+import { PEER } from "./liveRead";
 import { PoolTemplate, PoolBuildError } from "../src/pool";
 import { FUNDING_TAG, spendValid, swapTxSize, tokenInputsOf } from "../src/market/swapAction";
 import { dagBytes, readBytes, type AuthFetchLike } from "../src/market/relay";
@@ -280,7 +281,7 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
     });
     const before = calls.length;
     const seen: string[] = [];
-    const o = await relayAddLiquidity({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared);
+    const o = await relayAddLiquidity({ wallet, authFetch: af, base: "http://amm2.localhost:8300/amm", sleep: noSleep, now: () => 0, onRecord: (r) => seen.push(r.status) }, prepared, PEER);
     expect(http.map((c) => [c.url, c.method, c.body.fn])).toEqual([
       ["http://amm2.localhost:8300/amm/call", "POST", "amm.liquidity.submit"],
       ["http://amm2.localhost:8300/amm/call", "POST", "amm.liquidity.status"],
@@ -291,6 +292,7 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
       add: dagBytes(prepared.atomicBeef),
       pool: POOL_ID,
       validator: dagBytes(Utils.toArray(v.identity, "hex")),
+      peerId: PEER,
       expires: 121_000,
     });
     expect(http[1]!.body.args).toEqual({ id: ID });
@@ -320,7 +322,7 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
   it("accepted with a transaction that is not ours: refused before the wallet is asked", async () => {
     const { wallet, calls, prepared } = await add();
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "accepted", tx: dagBytes(swap1.toBinary()), txid: swap1.id("hex") }));
-    await expect(relayAddLiquidity({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared)).rejects.toThrow(/not the add we built/);
+    await expect(relayAddLiquidity({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER)).rejects.toThrow(/not the add we built/);
     expect(calls.some((c) => c.method === "internalizeAction")).toBe(false);
   });
 
@@ -328,7 +330,7 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
     const { wallet, calls, prepared } = await add();
     const wirePool = { outpoint: "ab".repeat(32) + "_0", bsvReserve: 1_100_000, tokenReserve: 4_800_000, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 10, validatorIdentity: v.identity };
     const { af } = fakeRelay((fn) => ok(fn, { id: ID, status: "refused", reason: "stale_pool", poolState: wirePool }));
-    const o = await relayAddLiquidity({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared);
+    const o = await relayAddLiquidity({ wallet, authFetch: af, base: "http://x/amm", sleep: noSleep }, prepared, PEER);
     expect(o).toEqual({
       status: "refused",
       id: ID,
@@ -342,12 +344,12 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
   it("timeout and an error answer to submit: abortAction; no answer: nothing aborted, Check again settles it", async () => {
     const a = await add();
     const t = fakeRelay((fn, _a, n) => ok(fn, { id: ID, status: n === 1 ? "pending" : "timeout" }));
-    expect(await relayAddLiquidity({ wallet: a.wallet, authFetch: t.af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, a.prepared)).toEqual({ status: "timeout", id: ID });
+    expect(await relayAddLiquidity({ wallet: a.wallet, authFetch: t.af, base: "http://x/amm", sleep: noSleep, now: () => 0 }, a.prepared, PEER)).toEqual({ status: "timeout", id: ID });
     expect(a.calls.at(-1)).toEqual({ method: "abortAction", args: { reference: "ref-1" } });
 
     const b = await add();
     const e = fakeRelay((fn) => ({ status: 404, body: { fn, error: { code: "unknown-fn", message: "amm.liquidity.submit is not provided" } } }));
-    expect(await relayAddLiquidity({ wallet: b.wallet, authFetch: e.af, base: "http://x/amm", sleep: noSleep }, b.prepared)).toEqual({
+    expect(await relayAddLiquidity({ wallet: b.wallet, authFetch: e.af, base: "http://x/amm", sleep: noSleep }, b.prepared, PEER)).toEqual({
       status: "failed",
       reason: "amm.liquidity.submit: unknown-fn: amm.liquidity.submit is not provided",
     });
@@ -355,10 +357,10 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
 
     const c = await add();
     const lost: AuthFetchLike = { fetch: async () => { throw new Error("network down"); } };
-    expect(await relayAddLiquidity({ wallet: c.wallet, authFetch: lost, base: "http://x/amm" }, c.prepared)).toEqual({ status: "unknown", reason: "amm.liquidity.submit: network down" });
+    expect(await relayAddLiquidity({ wallet: c.wallet, authFetch: lost, base: "http://x/amm" }, c.prepared, PEER)).toEqual({ status: "unknown", reason: "amm.liquidity.submit: network down" });
     let now = 0;
     const pending = fakeRelay((fn) => ok(fn, { id: ID, status: "pending" }));
-    expect(await relayAddLiquidity({ wallet: c.wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (now += 60_000), now: () => now }, c.prepared)).toEqual({
+    expect(await relayAddLiquidity({ wallet: c.wallet, authFetch: pending.af, base: "http://x/amm", sleep: async () => void (now += 60_000), now: () => now }, c.prepared, PEER)).toEqual({
       status: "unknown",
       id: ID,
       reason: "still pending past the deposit's expiry",

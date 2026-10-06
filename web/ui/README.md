@@ -17,6 +17,20 @@ Validator page reads the policy from the app record's `config.amm` through
 the explorer. The records of runs against "v2/amm3" below are amm-poc's
 deploy.
 
+**skein-amm 0.4.0: liveness is the runtime's read** (shruggr/skein#120,
+#138). Every page that showed `GET <base>/live` now reads, per token topic,
+`GET <base>/.live/tm_<txid>-live` → `[{sender, at, body, from}]` newest first
+(404: the instance keeps no liveness for it), decodes each `body` (dag-cbor
+`{identityKey, peerId}`, the beacon's) and keeps the validators within the
+window (`LIVE_WINDOW_MS`, 40 s; `src/lib/overlay.ts` `fetchLive`,
+`parseLiveBeats`). The Swap page plans only over the pools whose validator
+is there (`src/market/plan.ts` `livePools`) and names that validator in the
+swap: `amm.swap.submit` carries its `peerId` beside `validator`, as
+`amm.pool.submit` and `amm.liquidity.submit` do from the Pools page (whose
+picker lists the validators live on any served token, merged). The Validator
+page reads the peer's `.live` read of this instance's token topics. Where the
+text below says `/live`, `thresholdMs` or "heartbeat seen", read this.
+
 ## Not built (all pages)
 
 Each is shown in the UI where it applies, with its reason. Details in the
@@ -74,7 +88,7 @@ untracked, or the environment):
 | variable | default | what |
 |---|---|---|
 | `VITE_AMM_OVERLAY` | the page's own directory (`appBaseOf`) | the AMM app's base URL (every page); its origin is the instance (messagebox, `/.well-known/auth`, `/explore`). Set it for a dev server on another origin |
-| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `/live`; unset disables |
+| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_<txid>-live` reads (0.4.0); unset disables |
 | `VITE_AMM_OWNER_IDENTITY` | (none) | optional, the instance owner's public identity key, only to tell the user whether the connected wallet is the owner |
 | `VITE_AMM_REFRESH_MS` | `10000` | the Swap page's refresh |
 | `VITE_FEE_RATE` | `100` | the swap's miner fee rate, sats per 1000 bytes: the funding output carries `ceil(size × rate / 1000)` for the final swap (below, "Funding") |
@@ -427,7 +441,7 @@ src/
     images.ts           image bytes from an inscription or a B file
     deploy.ts           the Mandala deploy createAction (keys, outputs, tags, customInstructions)
     amounts.ts          decimals formatting / parsing
-    validators.ts       validator picker model: /amm/live rows, BRC-169 handle resolution, raw keys
+    validators.ts       validator picker model: liveness-read rows, BRC-169 handle resolution, raw keys
     poolRows.ts         how a pool held as LP is filed in bsv21 (and why it is no balance / token input)
     poolDeploy.ts       poolable tokens, deposit selection, the deploy plan (lockDeploy), funding + deploy built and signed, completion
     poolRelay.ts        amm.pool.submit / amm.pool.status: wire shapes
@@ -442,7 +456,7 @@ src/
     brc29.ts               BRC-29 payouts to self: derivation, customInstructions, internalizeAction
     pendingPayouts.ts      durable pending-payout records (localStorage), BEEF from the instance, "Internalize now"
   validator/
-    instance.ts         this instance: origin -> handle -> identity (BRC-169), peer's /live, pools served
+    instance.ts         this instance: origin -> handle -> identity (BRC-169), peer's .live reads, pools served
     control.ts          heartbeat start/stop via POST /sendMessage (BRC-33), the explorer's genesis read
   market/
     view.ts             market view: tokens, pools, marginal prices, validator liveness
@@ -456,7 +470,7 @@ src/
     Pools.tsx            Pools page: validator picker, create pool, my pools / add and remove liquidity
     Swap.tsx             Swap page
     Validator.tsx        Validator page
-    LiveTable.tsx        the /live validators table (picker and Validator page)
+    LiveTable.tsx        the liveness-read validators table (picker and Validator page)
     PendingPayouts.tsx   the shell's Pending payouts panel
 test/
   keys.test.ts          LP/validator key derivation, pinned vector

@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useWallet } from "../wallet/AppWalletProvider";
 import { LiveTable } from "./LiveTable";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB } from "../lib/config";
-import { fetchLive, listTokenTopics, type LiveAnswer } from "../lib/overlay";
+import { fetchLiveByToken, listTokenTopics, mergeLive, type LiveAnswer } from "../lib/overlay";
 import { loadWalletAssets, type WalletAssets } from "../lp/wallet";
 import { buildInventory } from "../lp/inventory";
 import { formatAmount, parseAmount } from "../lp/amounts";
@@ -103,7 +103,7 @@ export function ValidatorPicker(props: { live: LiveAnswer | null; value: Validat
       {live && live.validators.length > 0 ? (
         <LiveTable live={live} selected={value?.identityKey} onSelect={(k) => onChange(choiceFor(k, live))} />
       ) : (
-        <p><small>The instance lists no validators heartbeating ({AMM_OVERLAY}/live).</small></p>
+        <p><small>No validator is live in this instance&apos;s liveness read ({AMM_OVERLAY}/.live/tm_&lt;txid&gt;-live, for the tokens it serves).</small></p>
       )}
       <div className="form-row">
         <label>
@@ -123,7 +123,7 @@ export function ValidatorPicker(props: { live: LiveAnswer | null; value: Validat
           <small>
             <span className={`dot ${status === "live" ? "dot-live" : "dot-off"}`} /> {status}
             {value.peerId && <> · peer <code>{value.peerId}</code></>}
-            {status === "not seen live" && " · no heartbeat from this key on this instance; it can still be chosen"}
+            {status === "not seen live" && " · not in this instance's liveness read: no peer ID to name, so the relay cannot be asked to reach it"}
           </small>
         </p>
       )}
@@ -222,6 +222,12 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
   async function create() {
     const ctx = relayCtx();
     if (!ctx || typeof plan === "string" || "error" in form || !validator) return;
+    // The deploy names the validator's peer (from the liveness read) for the relay to dial.
+    const peerId = validator.peerId;
+    if (!peerId) {
+      setError("the chosen validator is not in this instance's liveness read: no peer ID to name for the relay");
+      return;
+    }
     setBusy(true);
     setError(null);
     let prepared: PreparedPoolDeploy;
@@ -238,7 +244,7 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
       return;
     }
     setDeploy({ prepared });
-    const outcome = await relayPoolDeploy(ctx, prepared).catch((e): DeployOutcome => ({ status: "unknown", reason: errText(e) }));
+    const outcome = await relayPoolDeploy(ctx, prepared, peerId).catch((e): DeployOutcome => ({ status: "unknown", reason: errText(e) }));
     setDeploy({ prepared, outcome });
     setBusy(false);
     props.onSigned();
@@ -517,7 +523,7 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
   );
 }
 
-function AddForm({ p, meta, tokenRows, onDone }: { p: MyPool; meta?: { sym?: string; dec?: number }; tokenRows: WalletAssets["tokenRows"]; onDone: () => void }) {
+function AddForm({ p, meta, tokenRows, peerId, onDone }: { p: MyPool; meta?: { sym?: string; dec?: number }; tokenRows: WalletAssets["tokenRows"]; peerId?: string; onDone: () => void }) {
   const { wallet } = useWallet();
   const authFetch = useAuthFetch();
   const [bsv, setBsv] = useState("");
@@ -553,6 +559,10 @@ function AddForm({ p, meta, tokenRows, onDone }: { p: MyPool; meta?: { sym?: str
   async function submit() {
     const ctx = relayCtx();
     if (!ctx || !("addBsv" in form)) return;
+    if (!peerId) {
+      setError("the pool's validator is not in this instance's liveness read: no peer ID to name for the relay");
+      return;
+    }
     setBusy(true);
     setError(null);
     let prepared: PreparedAddLiquidity;
@@ -574,7 +584,7 @@ function AddForm({ p, meta, tokenRows, onDone }: { p: MyPool; meta?: { sym?: str
       return;
     }
     setAdd({ prepared });
-    const outcome = await relayAddLiquidity(ctx, prepared).catch((e): AddOutcome => ({ status: "unknown", reason: errText(e) }));
+    const outcome = await relayAddLiquidity(ctx, prepared, peerId).catch((e): AddOutcome => ({ status: "unknown", reason: errText(e) }));
     setAdd({ prepared, outcome });
     setBusy(false);
     // Accepted: the pool moved; refused: the pool's state changed — reload "my pools" to replan from it.
@@ -746,7 +756,7 @@ function MyPools(props: { assets: WalletAssets; live: LiveAnswer | null; refresh
               </small>
             </p>
             {open?.outpoint === p.state.outpoint && open.form === "remove" && <RemoveForm p={p} meta={m} onDone={() => void load()} />}
-            {open?.outpoint === p.state.outpoint && open.form === "add" && <AddForm p={p} meta={m} tokenRows={props.assets.tokenRows} onDone={() => void load()} />}
+            {open?.outpoint === p.state.outpoint && open.form === "add" && <AddForm p={p} meta={m} tokenRows={props.assets.tokenRows} peerId={v?.live ? v.peerId : undefined} onDone={() => void load()} />}
             {open?.outpoint !== p.state.outpoint && (
               <>
                 <button type="button" onClick={() => setOpen({ outpoint: p.state.outpoint, form: "add" })}>Add liquidity</button>{" "}
@@ -775,9 +785,13 @@ export function PoolsSection() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setLive(await fetchLive(AMM_OVERLAY));
+      // The validators live on any token the instance serves (each token's liveness read, merged).
+      const reads = await fetchLiveByToken(AMM_OVERLAY, await listTokenTopics(AMM_OVERLAY));
+      setLive(mergeLive([...reads.values()].filter((r): r is LiveAnswer => !(r instanceof Error))));
+      const failed = [...reads.entries()].filter(([, r]) => r instanceof Error);
+      if (failed.length) setError(`${AMM_OVERLAY}/.live: ${failed.map(([k, r]) => `${shortOutpoint(k)}: ${(r as Error).message}`).join("; ")}`);
     } catch (e) {
-      setError(`${AMM_OVERLAY}/live: ${errText(e)}`);
+      setError(`${AMM_OVERLAY}/.live: ${errText(e)}`);
     }
     if (wallet && status === "connected") {
       try {

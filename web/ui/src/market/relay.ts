@@ -5,7 +5,7 @@
  * AMM app's box, hosted by programs/amm-p2p:
  *
  *   amm.swap.terms   (reads)   {} → {commissionPkh: bytes(20) | null}
- *   amm.swap.submit  (writes)  {funding, swap, pool, validator, expires} → the record
+ *   amm.swap.submit  (writes)  {funding, swap, pool, validator, peerId, expires} → the record
  *   amm.swap.status  (reads)   {id} → the record
  *
  *   commissionPkh  the address the relay takes the pool's commission at
@@ -19,6 +19,10 @@
  *              funding against parents in the BEEF)
  *   swap       bytes: the raw swap, the validator's slot `OP_0`
  *   pool       text `<txid>_<vout>`; validator bytes(33); expires unix ms
+ *   peerId     text: the validator's libp2p peer ID, from the token's liveness
+ *              read (`GET <base>/.live/tm_<txid>-live`, the beat's body): the
+ *              relay dials it (or, when it is the relay's own node, hands the
+ *              swap to its own validator program); it looks at no liveness
  *
  * record (programs/amm-p2p relay.zig `Record.answer`; id = sha256 of the swap, hex):
  *   {id, status: "pending" | "accepted" | "refused" | "timeout" | "failed", pool, expires, …,
@@ -66,6 +70,8 @@ export interface SwapSubmit {
   pool: string;
   /** The pool's validator identity key (hex; sent as 33 bytes). */
   validator: string;
+  /** The validator's libp2p peer ID (text), as the liveness read gave it: what the relay dials. */
+  peerId: string;
   /** Unix ms after which the relay gives up (and the funding's hold lapses). */
   expires: number;
 }
@@ -111,7 +117,7 @@ export function callUrl(base: string): string {
 export function submitBody(s: SwapSubmit): { fn: string; args: Record<string, unknown> } {
   return {
     fn: SWAP_SUBMIT_FN,
-    args: { funding: dagBytes(s.funding), swap: dagBytes(s.swap), pool: s.pool, validator: dagBytes(Utils.toArray(s.validator, "hex")), expires: s.expires },
+    args: { funding: dagBytes(s.funding), swap: dagBytes(s.swap), pool: s.pool, validator: dagBytes(Utils.toArray(s.validator, "hex")), peerId: s.peerId, expires: s.expires },
   };
 }
 

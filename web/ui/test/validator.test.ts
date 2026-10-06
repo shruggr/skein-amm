@@ -9,6 +9,7 @@ import { parseLookupAnswer, parseTokenTopic } from "../src/lib/overlay";
 import type { FetchLike } from "../src/lp/validators";
 import { ago } from "../src/lp/validators";
 import { hostLabel, instanceAddress, livenessLine, loadThisInstance, poolsServedBy } from "../src/validator/instance";
+import { beatEntry } from "./liveRead";
 import {
   dagBytesHex,
   heartbeatRequest,
@@ -186,8 +187,10 @@ describe("this instance", () => {
     expect(hostLabel("http://amm3.localhost:8400/amm")).toBe("amm3.localhost:8400");
   });
 
-  /** The router (manifest, resolve) and both instances' /amm/live, as recorded 2026-10-01. */
-  function fakeFetch(amm3Live: unknown): { fetchFn: FetchLike; urls: string[] } {
+  /** The router (manifest, resolve) as recorded 2026-10-01, and the peer's liveness read of one token topic (skein #138). */
+  const TOPIC = `tm_${"ab".repeat(32)}`;
+  const READ = `http://amm3.localhost:8400/amm/.live/${TOPIC}-live`;
+  function fakeFetch(amm3Read: unknown, status = 200): { fetchFn: FetchLike; urls: string[] } {
     const urls: string[] = [];
     const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
     const fetchFn: FetchLike = async (url) => {
@@ -195,50 +198,48 @@ describe("this instance", () => {
       if (url === "http://localhost:8300/manifest.json") return ok({ metanet: { handles: { resolve: "http://127.0.0.1:8300/.well-known/metanet-handles/resolve" } } });
       if (url === "http://127.0.0.1:8300/.well-known/metanet-handles/resolve?handle=amm2%40localhost")
         return ok({ handle: "amm2", domain: "localhost", identityKey: AMM2, messagebox: "http://amm2.localhost:8300" });
-      if (url === "http://amm3.localhost:8400/amm/live") return ok(amm3Live);
+      if (url === READ && status === 200) return ok(amm3Read);
       return { ok: false, status: 404, json: async () => ({}), text: async () => "not found" };
     };
     return { fetchFn, urls };
   }
 
-  it("identity from resolve, peer ID and liveness from the peer's /amm/live", async () => {
-    const amm3Live = {
-      now: 1790846296911,
-      thresholdMs: 90000,
-      validators: [{ identityKey: AMM2, peerId: AMM2_PEER, at: 1790846271647, ageMs: 25264, live: true }],
-    };
-    const { fetchFn, urls } = fakeFetch(amm3Live);
-    const t = await loadThisInstance("http://amm2.localhost:8300/amm", "http://amm3.localhost:8400/amm", fetchFn);
+  it("identity from resolve, peer ID and liveness from the peer's liveness read of our token topics", async () => {
+    const { fetchFn, urls } = fakeFetch([beatEntry(AMM2, AMM2_PEER, 1790846271647)]);
+    const t = await loadThisInstance("http://amm2.localhost:8300/amm", "http://amm3.localhost:8400/amm", [TOPIC], fetchFn, 1790846296911);
     expect(urls).toEqual([
       "http://localhost:8300/manifest.json",
       "http://127.0.0.1:8300/.well-known/metanet-handles/resolve?handle=amm2%40localhost",
-      "http://amm3.localhost:8400/amm/live",
+      READ,
     ]);
     expect(t.address.origin).toBe("http://amm2.localhost:8300");
     expect(t.handle).toBe("amm2@localhost:8300");
     expect(t.identityKey).toBe(AMM2);
     expect(t.peerId).toBe(AMM2_PEER);
     expect(t.peer?.entry?.live).toBe(true);
-    expect(livenessLine(t, ago)).toBe("last heartbeat seen by amm3.localhost:8400: 25 s ago (live)");
+    expect(livenessLine(t, ago)).toBe("last beat seen by amm3.localhost:8400: 25 s ago (live)");
   });
 
-  it("unknown until a peer sees us (our own /amm/live never lists us)", async () => {
-    // amm2's own live list (the recorded fixture) names only amm3: a node never hears itself.
-    const { fetchFn } = fakeFetch(fixture("live.json"));
-    const t = await loadThisInstance("http://amm2.localhost:8300/amm", "http://amm3.localhost:8400/amm", fetchFn);
+  it("unknown until the peer keeps a beat of ours: another validator only; or no liveness kept (404)", async () => {
+    const { fetchFn } = fakeFetch(fixture("../live-read.json"));
+    const t = await loadThisInstance("http://amm2.localhost:8300/amm", "http://amm3.localhost:8400/amm", [TOPIC], fetchFn, 1790846296911);
     expect(t.identityKey).toBe(AMM2);
     expect(t.peerId).toBeUndefined();
-    expect(livenessLine(t, ago)).toBe("amm3.localhost:8400 has not seen a heartbeat from this identity");
+    expect(livenessLine(t, ago)).toBe("amm3.localhost:8400 has no beat from this identity within its window");
+    const none = await loadThisInstance("http://amm2.localhost:8300/amm", "http://amm3.localhost:8400/amm", [TOPIC], fakeFetch(null, 404).fetchFn);
+    expect(none.peer?.live?.kept).toBe(false);
+    expect(livenessLine(none, ago)).toBe("amm3.localhost:8400 keeps no liveness for this instance's tokens");
   });
 
   it("a resolve failure and an unreachable peer are reported, not thrown", async () => {
     const { fetchFn } = fakeFetch({});
-    const t = await loadThisInstance("http://amm9.localhost:8300/amm", "http://amm4.localhost:8500/amm", fetchFn);
+    const failing: FetchLike = async (url) => (url.includes("/.live/") ? { ok: false, status: 502, json: async () => ({}), text: async () => "bad gateway" } : fetchFn(url));
+    const t = await loadThisInstance("http://amm9.localhost:8300/amm", "http://amm4.localhost:8500/amm", [TOPIC], failing);
     expect(t.identityKey).toBeUndefined();
     expect(t.resolveError).toMatch(/404/);
-    expect(t.peer?.error).toMatch(/404/);
-    expect(livenessLine(t, ago)).toMatch(/^could not read amm4.localhost:8500\/live/);
-    const noPeer = await loadThisInstance("http://amm2.localhost:8300/amm", "", fetchFn);
+    expect(t.peer?.error).toMatch(/502/);
+    expect(livenessLine(t, ago)).toMatch(/^could not read amm4.localhost:8500's liveness/);
+    const noPeer = await loadThisInstance("http://amm2.localhost:8300/amm", "", [TOPIC], fetchFn);
     expect(noPeer.peer).toBeUndefined();
     expect(livenessLine(noPeer, ago)).toMatch(/no peer configured/);
   });
