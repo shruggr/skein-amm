@@ -88,11 +88,11 @@ describe("heartbeat start / stop (BRC-33 sendMessage)", () => {
   });
 });
 
-describe("validation per topic (0.3.1): validate / unvalidate into box amm/amm-p2p; the set read through the explorer", () => {
+describe("validation per topic (0.3.1; box 0.3.2): validate / unvalidate into box amm/validate; the set read through the explorer", () => {
   const T = `tm_${"ab".repeat(32)}`;
   it("builds {fn, args: {topic}} for the same box as start/stop", () => {
     expect(validationRequest("validate", T, AMM2.toUpperCase())).toEqual({
-      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { fn: "validate", args: { topic: T } } },
+      message: { recipient: AMM2, messageBox: "amm/validate", body: { fn: "validate", args: { topic: T } } },
     });
     expect(validationRequest("unvalidate", T, AMM2).message.body).toEqual({ fn: "unvalidate", args: { topic: T } });
   });

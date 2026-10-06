@@ -5,7 +5,9 @@
 //! A spend is signed only if, in order:
 //!   1. the transaction parses and spends the named pool outpoint;
 //!   2. the pool is an output this instance's overlay holds, and it is a
-//!      pool (the compiled Pool code) whose ValidatorIdentity is ours;
+//!      pool (the compiled Pool code) whose ValidatorIdentity is ours,
+//!      and its token topic is one this instance validates (`Config.validated`,
+//!      amm-p2p's validated set; else `not_validating`, 0.3.2);
 //!   3. it is still live in the topic; if a transaction we hold spent it,
 //!      the refusal carries the pool's newest state (continuations are
 //!      always output 0: followed from spender to spender) — unless that
@@ -104,7 +106,23 @@ pub const Config = struct {
     max_lp_fee_bps: i64 = 10_000,
     max_commission_bps: ?i64 = null,
     now_ms: i64 = 0,
+    /// The topics this instance validates (0.3.2): amm-p2p's validated set, the `validated` of
+    /// the head `amm/p2p`, which the owner's `validate` / `unvalidate` write (box `amm/validate`).
+    /// "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating" (David
+    /// 2026-10-06): a swap, an addLiquidity or a deploy for a token whose topic is not in it is
+    /// refused `not_validating`, before anything is checked or signed. Empty: nothing is signed.
+    validated: []const []const u8 = &.{},
 };
+
+/// Whether `topic` is in the validated set (`Config.validated`).
+pub fn validating(cfg: Config, topic: []const u8) bool {
+    for (cfg.validated) |t| if (std.mem.eql(u8, t, topic)) return true;
+    return false;
+}
+
+fn notValidating(a: std.mem.Allocator, topic: []const u8) !Reply {
+    return refuse(.not_validating, try std.fmt.allocPrint(a, "this validator does not validate {s}", .{topic}));
+}
 
 pub const Reason = enum {
     bad_request,
@@ -148,6 +166,8 @@ pub const Reason = enum {
     wrong_validator_key,
     /// A Swap's or an AddLiquidity's outputs are not the contract's: detail which.
     bad_outputs,
+    /// The pool's token topic is not in the validated set (`Config.validated`, 0.3.2): detail the topic.
+    not_validating,
 };
 
 /// A pool's state, as the rejection of a stale request carries it.
@@ -416,6 +436,7 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     if (!std.mem.eql(u8, &cur.pool.identity, &cfg.identity)) return refuse(.not_our_pool, null);
     const id = cur.pool.asset_id;
     const topic = try topicOf(a, id);
+    if (!validating(cfg, topic)) return notValidating(a, topic);
 
     // 3. Still live in the topic.
     const previous = try v.previousCoins(a, topic, tx);
@@ -701,6 +722,7 @@ pub fn deploy(a: std.mem.Allocator, req: DeployRequest, cfg: Config, v: View, or
     if (tx.outputs.len == 0) return refuse(.not_a_pool, null);
     const p = poolAt(tx.outputs[0].locking_script.bytes) orelse return refuse(.not_a_pool, null);
     if (!std.mem.eql(u8, &p.pool.identity, &cfg.identity)) return refuse(.not_our_pool, null);
+    if (!validating(cfg, try topicOf(a, p.pool.asset_id))) return notValidating(a, try topicOf(a, p.pool.asset_id));
     const deploy_txid = beef.txidOf(sub.raw);
     const deploy_op: Outpoint = .{ .txid = deploy_txid, .vout = 0 };
     if ((try v.rawTx(a, deploy_txid)) != null) return .{ .ok = .{ .tx = sub.raw, .txid = deploy_txid, .submission = .{

@@ -2054,3 +2054,22 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     try testing.expectEqual(@as(usize, 2), test_env.launched);
     try testing.expectEqual(relay.Status.pending, (try book.getKind(a, .liquidity, relay.idOf(d.add))).?.status);
 }
+
+test "validate is gated by a row (0.3.2): the manifest's row {address: validate, sender: $owner, program: amm-p2p}; amm-p2p takes validate / unvalidate in box amm/validate only" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const m = try dagjson.decode(a, manifest_json);
+    var found = false;
+    for (m.get("dispatch").?.array) |row| {
+        if (!std.mem.eql(u8, scbor.Value.str(row.get("address")) orelse "", "validate")) continue;
+        try testing.expectEqualStrings("$owner", scbor.Value.str(row.get("sender")).?);
+        try testing.expectEqualStrings("amm-p2p", scbor.Value.str(row.get("program")).?);
+        found = true;
+    }
+    try testing.expect(found);
+    // Taken in the row's box only: not in the app's own box, amm-p2p's box or the register box.
+    try testing.expectEqualStrings("amm/validate", names.validate_box);
+    try testing.expect(names.mayValidate("amm/validate"));
+    for ([_]?[]const u8{ null, "amm", "amm/amm-p2p", "amm/register", "amm/validated" }) |b| try testing.expect(!names.mayValidate(b));
+}

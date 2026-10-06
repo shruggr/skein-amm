@@ -228,7 +228,9 @@ const Fx = struct {
     fn init(a: std.mem.Allocator, names: []const []const u8) !*Fx {
         const f = try a.create(Fx);
         const id = w.beef.txidOf(unhex(a, vec.token_deploy));
-        f.* = .{ .a = a, .id = id, .mem = MemView.init(a, id), .cfg = .{ .identity = key33(vec.identity) } };
+        // Validating the fixture token's topic (0.3.2: the validated set gates every signature).
+        const validated = try a.dupe([]const u8, &.{try validator.topicOf(a, id)});
+        f.* = .{ .a = a, .id = id, .mem = MemView.init(a, id), .cfg = .{ .identity = key33(vec.identity), .validated = validated } };
         for (names) |n| _ = try f.mem.hold(f.raw(n));
         return f;
     }
@@ -956,6 +958,46 @@ test "refused: not our pool, not a pool input, unknown pool, wrong method, slot 
     // Not a transaction.
     try expectRefused(try f.spend(.swap, "nonsense", op), .bad_transaction);
     try testing.expectEqual(@as(usize, 0), f.oracle.calls);
+}
+
+test "the validated set (0.3.2): in it, a swap, an addLiquidity and a deploy are signed as before; not in it, each is refused not_validating, nothing signed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy" });
+    const req = try request(a, f.raw("swap_bsv_in"), 0);
+    const op: Outpoint = .{ .txid = txidOf(f.raw("pool_deploy")), .vout = 0 };
+    const topic = try validator.topicOf(a, f.id);
+
+    // In the set: signed.
+    try testing.expect(validator.validating(f.cfg, topic));
+    try testing.expect((try f.spend(.swap, req, op)) == .ok);
+    const calls = f.oracle.calls;
+
+    // Not in it (nothing validated; another token's topic only): refused, the oracle not asked.
+    var none = f.cfg;
+    none.validated = &.{};
+    var other = f.cfg;
+    other.validated = &.{"tm_" ++ "00" ** 32};
+    for ([_]validator.Config{ none, other }) |cfg| {
+        const r = try validator.spend(a, .swap, .{ .tx = req, .pool = op }, cfg, f.mem.view(), f.oracle.oracle());
+        try expectRefused(r, .not_validating);
+        try testing.expect(std.mem.indexOf(u8, r.refused.detail.?, topic) != null);
+        try expectRefused(try validator.spend(a, .add_liquidity, .{ .tx = req, .pool = op }, cfg, f.mem.view(), f.oracle.oracle()), .not_validating);
+    }
+    try testing.expectEqual(calls, f.oracle.calls);
+
+    // A deploy: consent in the set; refused out of it (the token not yet held, and held already).
+    const g = try Fx.init(a, &.{ "fund", "token_deploy" });
+    const d = g.raw("pool_deploy");
+    try expectRefused(try validator.deploy(a, .{ .tx = d, .pool = 0 }, none, g.mem.view(), g.oracle.oracle()), .not_validating);
+    try expectRefused(try validator.deploy(a, .{ .tx = d, .pool = 0 }, other, g.mem.view(), g.oracle.oracle()), .not_validating);
+    try testing.expect((try g.deploy(d, 0)) == .ok);
+    try expectRefused(try validator.deploy(a, .{ .tx = d, .pool = 0 }, none, f.mem.view(), f.oracle.oracle()), .not_validating);
+
+    // Through the protocol: the refusal's reply body.
+    const body = try messages.replyValue(a, try validator.spend(a, .swap, .{ .tx = req, .pool = op }, none, f.mem.view(), f.oracle.oracle()));
+    try testing.expectEqualStrings("not_validating", body.getText("reason").?);
 }
 
 test "refused: the topic would not admit it" {

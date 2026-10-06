@@ -261,8 +261,10 @@ function ValidationSection(props: { t: ThisInstance | null; refreshKey: number }
       <p>
         <small>
           Per topic, the owner sets up validation: <code>{"{fn: \"validate\" | \"unvalidate\", args: {topic}}"}</code>{" "}
-          in box <code>amm/amm-p2p</code>. A validated topic is beaconed on <code>tm_&lt;txid&gt;-live</code> while the
-          heartbeat runs. The set is read through the explorer (owner only).
+          in box <code>amm/validate</code> (the owner's row: nobody else's message is admitted there). One setting: a
+          validated topic is beaconed on <code>tm_&lt;txid&gt;-live</code> while the heartbeat runs, and this instance
+          signs its swaps and takes on its new liquidity (addLiquidity, pool deploys); a topic not validated is refused
+          (<code>not_validating</code>). The set is read through the explorer (owner only).
         </small>
       </p>
       {topics === null ? (

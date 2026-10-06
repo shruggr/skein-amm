@@ -24,10 +24,13 @@
 //!   amm.pool.submit, amm.pool.status   an in-VM call of the interface amm.pool/1 (relay.zig: the pool deploy)
 //!   amm.liquidity.submit, amm.liquidity.status   an in-VM call of the interface amm.liquidity/1 (relay.zig: AddLiquidity)
 //!
-//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`):
+//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`; from the owner on
+//! `amm/validate`):
 //!
 //!   event   {kind: "amm-live", …}                      an accepted heartbeat: the last-seen map
-//!   message {fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}   from the owner (0.3.1): the
+//!   message {fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}   in box `amm/validate` only
+//!                                                     (0.3.2: the row from `$owner` is the permission;
+//!                                                     the set gates amm-validator's signing): the
 //!                                                     topic into (out of) the validated set, its
 //!                                                     `beacon` (`unbeacon`) on `tm_<txid>-live`;
 //!                                                     idempotent; answered {topic, validating}
@@ -636,12 +639,15 @@ fn textArray(a: Allocator, xs: []const []const u8) !Value {
     return .{ .array = out };
 }
 
-/// `{fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/amm-p2p`, from the
-/// owner: the topic into (or out of) the validated set, its beacon asked (or ended); idempotent.
+/// `{fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/validate` (0.3.2): the
+/// topic into (or out of) the validated set, its beacon asked (or ended); idempotent. The row
+/// `{"address": "validate", "sender": "$owner", "program": "amm-p2p"}` is the permission: taken in
+/// that box only (`names.mayValidate`; elsewhere the step errors `NotTakenHere`), with no sender
+/// check here. The set is also the validator's: amm-validator signs for no topic outside it.
 /// Answered to the sender (box `amm`, when the address book reaches it) with `{topic, validating}`.
 fn validationMessage(a: Allocator, in: Value, st: *State, args: Value, body: Value, func: []const u8, op: liveness.ValidationOp, fields: *std.ArrayList(cbor.Entry)) !void {
     const sender = args.getBytes("sender") orelse return error.BadInput;
-    if (!eql(u8, sender, in.getBytes("owner") orelse "")) return error.NotTheOwner;
+    if (!names.mayValidate(args.getText("box"))) return error.NotTakenHere;
     const call_args = body.get("args") orelse return error.BadMessage;
     const topic = call_args.getText("topic") orelse return error.BadMessage;
     const n = names.parse(topic) orelse return error.BadTopic;

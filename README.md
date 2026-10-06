@@ -3,10 +3,11 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.3.1**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
+and its pages. Version **0.3.2**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
 and skein-mandala 0.5.2; a host serving a market subscribes the beacons
-(0.3.0, shruggr/skein#120), and a node beacons only the topics its owner
-has set up validation for, per topic (0.3.1, David 2026-10-06). Ported from amm-poc (b-open-io/amm-poc, its
+(0.3.0, shruggr/skein#120), a node beacons only the topics its owner
+has set up validation for, per topic (0.3.1, David 2026-10-06), and its
+validator signs only for those topics, one setting (0.3.2). Ported from amm-poc (b-open-io/amm-poc, its
 `programs/`, `pool/` and `web/`) in 0.1.0 (shruggr/skein#120).
 
 ## What it is
@@ -90,22 +91,28 @@ wildcard DNS, `<host>/@<handle>/amm`).
    ```
 
    `tm_mandala_deploys` (the discovery topic) is registered the same way.
-4. **Validate topics, per topic** (0.3.1): beaconing is not a role; a node
-   beacons `tm_<txid>-live` for the topics it validates. The owner sets that
-   up per topic, like a registration, in box `amm/amm-p2p` (the Validator
-   page's Validate / Stop validating):
+4. **Validate topics, per topic** (0.3.1, 0.3.2): one setting — "If I'm
+   validating, I'm pinging, I'm taking on new liquidity, and I'm validating"
+   (David 2026-10-06). For a topic it validates, a node beacons
+   `tm_<txid>-live`, and its validator takes on new liquidity (signs an LP's
+   addLiquidity, consents to an LP's pool deploy: liquidity received, not
+   the node's own) and signs swaps; for any other token the validator
+   refuses all three, `not_validating`. The owner sets it up per topic, like
+   a registration, in box `amm/validate` (the Validator page's Validate /
+   Stop validating):
 
    ```
-   box:  amm/amm-p2p
+   box:  amm/validate
    body: {"fn": "validate", "args": {"topic": "tm_<txid>"}}
    body: {"fn": "unvalidate", "args": {"topic": "tm_<txid>"}}
    ```
 
    Each is idempotent and answered `{topic, validating}`; `validate` adds the
    topic to the validated set (`validated` in the head `amm/p2p`) and asks the
-   host for its beacon, `unvalidate` removes it and ends the beacon. The row
-   (`amm-p2p` from `*`) admits anyone; amm-p2p acts only on the owner's
-   (`NotTheOwner` errors the step otherwise).
+   host for its beacon, `unvalidate` removes it and ends the beacon;
+   amm-validator reads the set at each call. The row (`validate` from
+   `$owner`) is the permission: it admits only the owner into the box, and
+   amm-p2p takes the two calls in that box only.
 
    **Start the beacon**: the manifest's `start`, `{kind: "amm-p2p-start"}`
    in box `amm` (or the Validator page's Start, box `amm/amm-p2p`), reaches
@@ -147,7 +154,7 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.3.1 |
+| this app | 0.3.2 |
 | skein-overlay | v0.7.7 (9e30a64) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-mandala | v0.5.2 (cd9ae27) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

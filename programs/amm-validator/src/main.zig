@@ -37,6 +37,12 @@
 //!   thread comes to rest"). Later answers (each proof) find nothing
 //!   awaiting them.
 //!
+//! The validated set (0.3.2): a swap, addLiquidity or deploy is signed only for a token whose
+//! topic `tm_<txid>` is in amm-p2p's validated set (the `validated` of the head `amm/p2p`, written
+//! by the owner's `validate` / `unvalidate` in box `amm/validate`); else refused `not_validating`.
+//! "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating" (David
+//! 2026-10-06): one setting, no other.
+//!
 //! Config: the app record's `config.amm.ammValidator` (`{"minValidatorFeeBps": n,
 //! "maxLpFeeBps": n, "maxCommissionBps": n?}`; maxCommissionBps optional:
 //! absent or null, any commission), else genesis `defaults.ammValidator` (the
@@ -91,6 +97,21 @@ fn settings(a: std.mem.Allocator, in: Value) !Settings {
         break :blk d.getText("ammValidator") orelse return .{};
     };
     return std.json.parseFromSliceLeaky(Settings, a, text, .{ .ignore_unknown_fields = true }) catch error.BadConfig;
+}
+
+/// The head amm-p2p keeps its state under (amm-p2p relay.zig `p2p_head`).
+const p2p_head = "amm/p2p";
+
+/// The validated set (0.3.2): the `validated` of amm-p2p's record under the head `amm/p2p`, which
+/// the owner's `validate` / `unvalidate` write (box `amm/validate`). The one source: a topic not in
+/// it is not signed for. No head yet (nothing validated): empty.
+fn validatedSet(a: std.mem.Allocator) ![]const []const u8 {
+    const c = (try vm.head(a, p2p_head)) orelse return &.{};
+    const rec = try vm.store().getValue(a, c);
+    const vs = rec.getArray("validated") orelse return &.{};
+    var out: std.ArrayList([]const u8) = .empty;
+    for (vs) |v| if (v == .text) try out.append(a, v.text);
+    return out.items;
 }
 
 /// The app's overlay state (`<app>/state`) over the chain app's (`chain/state`), as the step sees them.
@@ -153,7 +174,7 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
     const s = try settings(a, in);
     const now: i64 = if (in.getUint("now")) |n| @intCast(n) else 0;
     const served = try messages.respond(a, op, body, .{
-        .config = .{ .identity = identity, .min_validator_fee_bps = s.minValidatorFeeBps, .max_lp_fee_bps = s.maxLpFeeBps, .max_commission_bps = s.maxCommissionBps, .now_ms = now },
+        .config = .{ .identity = identity, .min_validator_fee_bps = s.minValidatorFeeBps, .max_lp_fee_bps = s.maxLpFeeBps, .max_commission_bps = s.maxCommissionBps, .now_ms = now, .validated = try validatedSet(a) },
         .view = ovv.view(),
         .oracle = oracle,
         .st = st,

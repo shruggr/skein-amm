@@ -21,6 +21,14 @@ Ported from amm-poc `programs/amm-p2p` (skein-overlay 0.2.0, skein-sdk 0.3.0) on
 - **STOP: the heartbeat topic is not routed.** The heartbeat is still published on `tm_<txid>-live` for each served token topic, and `validateLive` still judges it, but no row in the app routes `tm_<txid>-live` to it: amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`), templated per instance, and a dynamic overlay's manifest names no token. How validator liveness per token is addressed is not decided (`liveVerdict`, src/main.zig).
 - **The peer ID.** amm-poc filled `ammP2p.peerId` per instance (`{{PEER_ID}}`). skein gives a program no way to learn its own peer ID (a step's input has `self.identity`, no peer ID; the host derives the libp2p key from the master secret, `[2, "skein instance"]`, key ID `libp2p:<handle>`), so the manifest carries none; without it `amm-p2p-start` schedules no heartbeat (catch-up only).
 
+## 0.3.2 (one setting; validate gated by a row)
+
+This section supersedes what the rest of this file says where they differ.
+
+- **One setting** (David 2026-10-06): "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating." The validated set (`validated` under `amm/p2p`) is the one switch: for a topic in it the node beacons `tm_<txid>-live`, and amm-validator signs its swaps and takes on its new liquidity (signs an LP's `addLiquidity`, consents to an LP's pool `deploy`: liquidity received, not the node's own funds); for any other token amm-validator refuses all three calls `not_validating`. amm-validator reads this program's record for it; nothing else writes the set.
+- **Gated by a row, not by code.** `validate` / `unvalidate` are taken in box `amm/validate` only (`names.mayValidate`; in any other box, `amm/amm-p2p` included, the step errors `NotTakenHere`), which the manifest's row `{"address": "validate", "sender": "$owner", "program": "amm-p2p"}` admits the owner into: the row is the permission, as the engine's `register` in `amm/register`. The `in.owner` check is gone for them. The answer still goes to the sender's box `amm`. Start / stop are unchanged (box `amm` or `amm/amm-p2p`, the owner or the cron provider, `NotTheOwner` otherwise).
+- **The 0.3.1 STOP is gone**: amm-validator's signing is gated on the set (programs/amm-validator/README.md "0.3.2").
+
 ## 0.3.1 (validation per topic)
 
 This section supersedes what the rest of this file says where they differ.

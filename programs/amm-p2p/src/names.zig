@@ -19,6 +19,17 @@ pub const proofs_protocol = "/amm/proofs/1.0.0";
 /// the start/stop messages.
 pub const own_box = "amm/amm-p2p";
 
+/// The box the owner's `validate` / `unvalidate` are taken in (0.3.2): the manifest's row
+/// `{"address": "validate", "sender": "$owner", "program": "amm-p2p"}`, resolved. The row is the
+/// permission (as the engine's `register` in `<app>/register`): amm-p2p takes the two calls in this
+/// box only, from whoever the row admits, and checks no sender itself.
+pub const validate_box = "amm/validate";
+
+/// Whether a `validate` / `unvalidate` may be taken in `box` (the step's `args.box`).
+pub fn mayValidate(box: ?[]const u8) bool {
+    return std.mem.eql(u8, box orelse "", validate_box);
+}
+
 pub const Kind = enum { overlay, live };
 
 /// A topic name of ours: the overlay topic it belongs to and what it is.

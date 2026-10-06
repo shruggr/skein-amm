@@ -91,8 +91,8 @@ event (skein-overlay 0.7.6), answered to the sender in this box; `register` / `d
 | `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (the owner too) |
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
-| the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 2) | the instance itself, events |
-| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the subscriptions); `{fn: "validate" \| "unvalidate", args: {topic}}` (0.3.1: the validated set) | the owner |
+| the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 3) | the instance itself, events |
+| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the subscriptions) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
 action) and the swap, deploy or add, checks the pair, records it under
@@ -107,8 +107,15 @@ published by the host's beacon (below), and subscribed by a host serving a
 market (below, "The market role").
 
 **Box `amm/amm-p2p`**: the owner's `{kind: "amm-p2p-start" | "amm-p2p-stop"}`
-and `{fn: "validate" | "unvalidate", args: {topic}}` (the Validator page), the cron provider's ticks (the fallback, `jobs`), and
+(the Validator page), the cron provider's ticks (the fallback, `jobs`), and
 admitted heartbeats (`amm-live`, on a market host: below).
+
+**Box `amm/validate`** (0.3.2): the owner's `{fn: "validate" | "unvalidate",
+args: {topic}}` (the Validator page). The row `validate` from `$owner` is the
+permission: nobody else's message is admitted into the box, and amm-p2p takes
+the two calls in this box only (elsewhere its step errors `NotTakenHere`),
+with no sender check of its own — as the engine takes `register` in
+`amm/register` only.
 
 **Validation, per topic** (0.3.1, David 2026-10-06: beaconing is not a
 role; it comes with validating a topic). The owner sets it up like a
@@ -116,10 +123,23 @@ topic's registration: `{fn: "validate", args: {topic: "tm_<txid>"}}` adds
 the topic to the validated set (the record's `validated` under `amm/p2p`)
 and emits its beacon; `{fn: "unvalidate", args: {topic}}` removes it and
 emits `unbeacon`. Both are idempotent and answered `{topic, validating}` to
-the sender's box `amm` (when the address book reaches it). Row 5 admits
-anyone into `amm/amm-p2p`; amm-p2p acts only on a message from `in.owner`
-(the step errors `NotTheOwner` otherwise). The market role is independent:
-a node may validate, host a market, or both.
+the sender's box `amm` (when the address book reaches it). They are taken in
+box `amm/validate` only, which row 2 (`validate` from `$owner`) admits the
+owner into (0.3.2). The market role is independent: a node may validate,
+host a market, or both.
+
+**One setting** (0.3.2, David 2026-10-06): "If I'm validating, I'm pinging,
+I'm taking on new liquidity, and I'm validating." The validated set is the
+one switch, and there is no other: for a topic in it the node beacons
+`tm_<txid>-live` (pinging), its validator accepts an LP's liquidity —
+signs an `addLiquidity` and consents to a pool `deploy` as the pool's
+validator (taking on new liquidity means receiving it, not the node putting
+up funds of its own) — and signs swaps. For a token whose topic is not in
+the set, amm-validator refuses every direct call, `swap`, `addLiquidity` and
+`deploy`, with `{ok: false, reason: "not_validating", detail}` before
+checking or signing anything. It reads the set from amm-p2p's record (the
+`validated` of the head `amm/p2p`) at each call; `validate` / `unvalidate`
+are the only writers.
 
 **The beacon** (shruggr/skein#126): on start amm-p2p emits, per validated
 topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds ×
@@ -177,23 +197,24 @@ In table order; mailbox addresses are relative to the app (shruggr/skein#128:
 the package's transport and address whose sender rule admits the sender:
 
 1. `register` from `$owner` → `overlay` (register / deregister)
-2. `""` from `event` → `overlay`
-3. `""` from `$self` → `overlay` (the engine's own watch, resume)
-4. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
-5. `amm-p2p` from `*` → `amm-p2p`
-6. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
-7. http `/listTopicManagers`, `/listLookupServiceProviders`,
+2. `validate` from `$owner` → `amm-p2p` (validate / unvalidate; 0.3.2)
+3. `""` from `event` → `overlay`
+4. `""` from `$self` → `overlay` (the engine's own watch, resume)
+5. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
+6. `amm-p2p` from `*` → `amm-p2p`
+7. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
+8. http `/listTopicManagers`, `/listLookupServiceProviders`,
    `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider`
    → `overlay`
-8. http `/live` → `amm-p2p` `live`; `/call` → `amm-p2p` `call`
-9. http `/` (prefix) → `amm-p2p` `serve`, `root: "www"`, `index: "index.html"`
-10. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
-   `amm-validator`
+9. http `/live` → `amm-p2p` `live`; `/call` → `amm-p2p` `call`
+10. http `/` (prefix) → `amm-p2p` `serve`, `root: "www"`, `index: "index.html"`
+11. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
+   `amm-validator` (each refused `not_validating` for a topic outside the validated set)
 
 then, derived by the install from `config.overlay`: http `/submit` (`filter:
 beef`) and `/lookup` → `overlay` (exact paths match before the `/` prefix).
 
-Rows 2 and 3 are the derived engine rows, listed so they come before row 4:
+Rows 3 and 4 are the derived engine rows, listed so they come before row 5:
 a `*` row admits events and the instance's own messages too, so after it
 the engine would get neither.
 
@@ -215,9 +236,6 @@ the engine would get neither.
   alone): on a market host a topic registered after the start is subscribed
   at the next start; one deregistered is unsubscribed at the next start or
   stop. Beacons follow the validated set, not the registrations.
-- **The validator's per-topic gate.** amm-validator signs for any topic its
-  overlay admits; it reads no validated set (0.3.1: amm-p2p's set gates the
-  beacon only).
 - **Governance per token** (#120 item 4) and the other Mandala queries:
   skein-mandala docs/MANDALA.md "Not built".
 - **Run end to end.** The programs are tested natively and the pages

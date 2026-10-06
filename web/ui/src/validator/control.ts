@@ -16,10 +16,15 @@
  *   Start asks the host for a beacon per validated token topic
  *   (`tm_<txid>-live`); stop ends them and keeps the validated set.
  *
- * - validate / unvalidate (skein-amm 0.3.1): `{fn: "validate" |
- *   "unvalidate", args: {topic: "tm_<txid>"}}` in the same box, per topic:
- *   the topic into (out of) amm-p2p's validated set, its beacon asked
- *   (ended). The set is read through the explorer (`readValidated`).
+ * - validate / unvalidate (skein-amm 0.3.1; box 0.3.2): `{fn: "validate" |
+ *   "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/validate`, per
+ *   topic: the topic into (out of) amm-p2p's validated set, its beacon asked
+ *   (ended). The set is read through the explorer (`readValidated`). One
+ *   setting: a validated topic is beaconed and amm-validator signs its swaps,
+ *   addLiquidity and deploys; outside the set it refuses them
+ *   (`not_validating`). The box's row, `{"address": "validate", "sender":
+ *   "$owner", "program": "amm-p2p"}`, is the permission: the messagebox
+ *   admits only the owner there (403 `ERR_NOT_SUBSCRIBED` for anyone else).
  *
  *   The sender is the key the session proved. For the instance's own key as
  *   recipient the messagebox admits the message when the subscription table
@@ -47,6 +52,8 @@ export interface AuthFetchLike {
 }
 
 export const AMM_P2P_BOX = "amm/amm-p2p";
+/** The box `validate` / `unvalidate` are taken in (0.3.2): the manifest's row `validate` from `$owner`. */
+export const VALIDATE_BOX = "amm/validate";
 
 export type HeartbeatAction = "start" | "stop";
 
@@ -81,16 +88,16 @@ export function heartbeatRequest(action: HeartbeatAction, instanceIdentityKey: s
 
 /**
  * The BRC-33 sendMessage body for `validate` / `unvalidate` of one token
- * topic, into the same box as start/stop: amm-p2p acts on it only from the
- * instance's owner (it errors its step otherwise, `NotTheOwner`), adds the
- * topic to (or removes it from) its validated set and asks (or ends) the
- * topic's beacon on `tm_<txid>-live`.
+ * topic, into box `amm/validate` (0.3.2), which only the owner's row
+ * admits: amm-p2p adds the topic to (or removes it from) its validated set
+ * and asks (or ends) the topic's beacon on `tm_<txid>-live`; amm-validator
+ * signs for the topics in the set only.
  */
 export function validationRequest(action: ValidationAction, topic: string, instanceIdentityKey: string): SendMessageRequest {
   return {
     message: {
       recipient: instanceIdentityKey.toLowerCase(),
-      messageBox: AMM_P2P_BOX,
+      messageBox: VALIDATE_BOX,
       body: { fn: action, args: { topic } },
     },
   };
