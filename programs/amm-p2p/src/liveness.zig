@@ -2,26 +2,32 @@
 //! `tm_<txid>-live` that says "I am validator X (root identity key) and my
 //! peer ID is Y", which is also the validator's discovery record.
 //!
-//! Body (dag-cbor): `{identityKey: bytes(33), peerId: bytes, sig: bytes, at: uint}`.
+//! The host beats it (shruggr/skein#126, skein docs/MESSAGES.md "Beacons"):
+//! amm-p2p declares the body once; the host's libp2p node publishes a new
+//! frame every beat, signed by the instance's signer:
 //!
-//! - `at` is milliseconds since the Unix epoch.
-//! - `sig` is a DER ECDSA signature over sha256(peerId ‖ at as 8 bytes
-//!   big-endian) — BRC-100 `createSignature` over that data — by the BRC-42
-//!   child of `identityKey` under BRC-43 security level 1, protocol
-//!   `amm live`, key ID `1`, counterparty `anyone` (invoice `1-amm live-1`),
-//!   which anyone can derive from the identity key alone.
+//!   frame: dag-cbor {body: bytes, at: uint (ms since the epoch, the host's
+//!          clock), sender: bytes(33) (the instance's identity key),
+//!          signature: bytes (DER)}
+//!   body:  dag-cbor {identityKey: bytes(33), peerId: bytes}
 //!
-//! The verdict (`judge`), given the GossipSub sender `from`:
+//! `signature` is BRC-100 `createSignature` by the instance under
+//! `[2, "metanet handles envelope"]`, key ID `send`, counterparty `anyone`
+//! (verified with the anyone-derived child of `sender`), over sha2-256 of
+//! dag-cbor `{kind: "beacon", topic, body, at, sender}` — the topic is
+//! signed, not carried (skein src/host/p2p.ts `beaconPreimage`).
 //!
-//! - the body does not decode, `peerId` is not `from`, or the signature does
-//!   not verify against the derived key → **reject**;
+//! The verdict (`judge`), given the topic and the GossipSub sender `from`:
+//!
+//! - the frame or the body does not decode, `identityKey` is not `sender`,
+//!   `peerId` is not `from`, or the signature does not verify → **reject**;
 //! - `at` more than `max_skew_ms` ahead of this node's clock, or older than
 //!   the offline threshold → **ignore** (not forwarded, no penalty);
 //! - otherwise **accept**, answered with the entry it becomes (skein#57:
 //!   the front door admits it after the message's own `p2p` entry), in this
 //!   program's own box `amm-p2p`:
 //!
-//!     {kind: "amm-live", identityKey, peerId, at, sig}
+//!     {kind: "amm-live", topic, body, at, sender, signature}
 //!
 //!   Stepped (main.zig), it is re-verified and applied to the last-seen
 //!   map `live` (identity key → at ‖ peer ID) under the program's own head:
@@ -39,18 +45,24 @@ const bsvz = w.bsvz;
 const kd = bsvz.primitives.key_deriver;
 const ec = bsvz.primitives.ec;
 
-pub const protocol = kd.Protocol{ .security_level = 1, .name = "amm live" };
-pub const key_id = "1";
+/// The instance's signing protocol for a beat (skein providers.ts `SIGN_PROTOCOL`, `MESSAGE_KEY_ID`).
+pub const protocol = kd.Protocol{ .security_level = 2, .name = "metanet handles envelope" };
+pub const key_id = "send";
 
 pub const default_interval_s: u64 = 30;
 pub const default_offline_s: u64 = 90;
 /// How far ahead of our clock a heartbeat may be dated.
 pub const max_skew_ms: u64 = 60_000;
 
-pub const Body = struct { identity_key: [33]u8, peer_id: []const u8, sig: []const u8, at: u64 };
+/// What amm-p2p declares: who it is and its peer ID.
+pub const Body = struct { identity_key: [33]u8, peer_id: []const u8 };
+/// A beat as published: the declared body (its bytes), the beat's time, the instance, its signature.
+pub const Beat = struct { body: []const u8, at: u64, sender: [33]u8, signature: []const u8 };
+/// A beat heard on `topic`, its body read.
+pub const Heard = struct { topic: []const u8, beat: Beat, body: Body };
 
 /// The beacon (shruggr/skein#126, docs/MESSAGES.md "emit"): the host's libp2p node publishes
-/// `body` on `topic` every `every_ms`, without subscribing it.
+/// a frame of `body` on `topic` every `every_ms`, without subscribing it.
 pub fn beaconEvent(a: Allocator, topic: []const u8, every_ms: u64, body: []const u8) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "event", .value = .{ .text = "beacon" } },
@@ -72,86 +84,116 @@ pub fn encodeBody(a: Allocator, b: Body) ![]u8 {
     return cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "identityKey", .value = .{ .bytes = try a.dupe(u8, &b.identity_key) } },
         .{ .key = "peerId", .value = .{ .bytes = b.peer_id } },
-        .{ .key = "sig", .value = .{ .bytes = b.sig } },
-        .{ .key = "at", .value = .{ .uint = b.at } },
     }) });
 }
 
 pub fn decodeBody(a: Allocator, bytes: []const u8) !Body {
     const v = cbor.decode(a, bytes) catch return error.Malformed;
-    return bodyOf(v);
-}
-
-fn bodyOf(v: Value) !Body {
     const ik = v.getBytes("identityKey") orelse return error.Malformed;
     if (ik.len != 33) return error.Malformed;
     const pid = v.getBytes("peerId") orelse return error.Malformed;
     if (pid.len == 0) return error.Malformed;
+    return .{ .identity_key = ik[0..33].*, .peer_id = pid };
+}
+
+fn beatFields(a: Allocator, b: Beat) ![]cbor.Entry {
+    return a.dupe(cbor.Entry, &.{
+        .{ .key = "body", .value = .{ .bytes = b.body } },
+        .{ .key = "at", .value = .{ .uint = b.at } },
+        .{ .key = "sender", .value = .{ .bytes = try a.dupe(u8, &b.sender) } },
+        .{ .key = "signature", .value = .{ .bytes = b.signature } },
+    });
+}
+
+/// The frame as the host publishes it (p2p.ts `beaconFrame`).
+pub fn encodeFrame(a: Allocator, b: Beat) ![]u8 {
+    return cbor.encode(a, .{ .map = try beatFields(a, b) });
+}
+
+fn beatOf(v: Value) !Beat {
+    const sender = v.getBytes("sender") orelse return error.Malformed;
+    if (sender.len != 33) return error.Malformed;
     return .{
-        .identity_key = ik[0..33].*,
-        .peer_id = pid,
-        .sig = v.getBytes("sig") orelse return error.Malformed,
+        .body = v.getBytes("body") orelse return error.Malformed,
         .at = v.getUint("at") orelse return error.Malformed,
+        .sender = sender[0..33].*,
+        .signature = v.getBytes("signature") orelse return error.Malformed,
     };
 }
 
-/// The signed data: peerId ‖ at (u64 big-endian).
-pub fn message(a: Allocator, peer_id: []const u8, at: u64) ![]u8 {
-    var be: [8]u8 = undefined;
-    std.mem.writeInt(u64, &be, at, .big);
-    return std.mem.concat(a, u8, &.{ peer_id, &be });
+pub fn decodeFrame(a: Allocator, bytes: []const u8) !Beat {
+    const v = cbor.decode(a, bytes) catch return error.Malformed;
+    return beatOf(v);
 }
 
-/// What is signed: sha256 of the data (BRC-100 createSignature over data).
-pub fn digest(a: Allocator, peer_id: []const u8, at: u64) ![32]u8 {
-    return bsvz.crypto.hash.sha256(try message(a, peer_id, at)).bytes;
+/// What a beat's signature covers: dag-cbor {kind: "beacon", topic, body, at, sender} (p2p.ts `beaconPreimage`).
+pub fn preimage(a: Allocator, topic: []const u8, body: []const u8, at: u64, sender: [33]u8) ![]u8 {
+    return cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "kind", .value = .{ .text = "beacon" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+        .{ .key = "body", .value = .{ .bytes = body } },
+        .{ .key = "at", .value = .{ .uint = at } },
+        .{ .key = "sender", .value = .{ .bytes = try a.dupe(u8, &sender) } },
+    }) });
 }
 
-/// The attestation key: the anyone-counterparty child of the identity key.
-pub fn attestationKey(a: Allocator, identity: [33]u8) !ec.PublicKey {
+/// What is signed: sha256 of the preimage (BRC-100 createSignature over data).
+pub fn digest(a: Allocator, topic: []const u8, body: []const u8, at: u64, sender: [33]u8) ![32]u8 {
+    return bsvz.crypto.hash.sha256(try preimage(a, topic, body, at, sender)).bytes;
+}
+
+/// The key a beat verifies against: the anyone-counterparty child of the sender.
+pub fn signingKey(a: Allocator, sender: [33]u8) !ec.PublicKey {
     const anyone = kd.KeyDeriver.init(null);
-    return anyone.derivePublicKey(a, protocol, key_id, .{ .type_ = .other, .public_key = try ec.PublicKey.fromSec1(&identity) }, false);
+    return anyone.derivePublicKey(a, protocol, key_id, .{ .type_ = .other, .public_key = try ec.PublicKey.fromSec1(&sender) }, false);
 }
 
-/// Whether `sig` is the identity's attestation of `peer_id` at `at`.
-pub fn verify(a: Allocator, b: Body) bool {
-    const key = attestationKey(a, b.identity_key) catch return false;
-    const der = bsvz.crypto.DerSignature.fromDer(b.sig) catch return false;
-    return key.verifyDigest(digest(a, b.peer_id, b.at) catch return false, der) catch false;
+/// Whether `b` is the sender's beat on `topic`.
+pub fn verify(a: Allocator, topic: []const u8, b: Beat) bool {
+    const key = signingKey(a, b.sender) catch return false;
+    const der = bsvz.crypto.DerSignature.fromDer(b.signature) catch return false;
+    return key.verifyDigest(digest(a, topic, b.body, b.at, b.sender) catch return false, der) catch false;
 }
 
-/// Sign an attestation with the root private key (tests; a validator signs through its wallet).
-pub fn sign(a: Allocator, root: ec.PrivateKey, peer_id: []const u8, at: u64) !Body {
+/// A beat signed with the root private key (tests; the host signs through the instance's signer).
+pub fn sign(a: Allocator, root: ec.PrivateKey, topic: []const u8, body: []const u8, at: u64) !Beat {
+    const sender = (try root.publicKey()).toCompressedSec1();
     const child = try kd.KeyDeriver.init(root).derivePrivateKey(a, protocol, key_id, .{ .type_ = .anyone });
-    const s = try child.signDigest(try digest(a, peer_id, at));
-    return .{ .identity_key = (try root.publicKey()).toCompressedSec1(), .peer_id = peer_id, .sig = try a.dupe(u8, s.asSlice()), .at = at };
+    const s = try child.signDigest(try digest(a, topic, body, at, sender));
+    return .{ .body = body, .at = at, .sender = sender, .signature = try a.dupe(u8, s.asSlice()) };
 }
 
 pub const Outcome = union(enum) {
-    accept: Body,
+    accept: Heard,
     reject: []const u8,
     ignore: []const u8,
 };
 
-/// The verdict on a heartbeat from GossipSub sender `from`, at our time `now` (ms).
-pub fn judge(a: Allocator, body_bytes: []const u8, from: []const u8, now: u64, offline_ms: u64) Outcome {
-    const b = decodeBody(a, body_bytes) catch return .{ .reject = "Malformed" };
-    if (!std.mem.eql(u8, b.peer_id, from)) return .{ .reject = "WrongPeer" };
-    if (!verify(a, b)) return .{ .reject = "BadSignature" };
-    if (b.at > now + max_skew_ms) return .{ .ignore = "FromTheFuture" };
-    if (now > b.at and now - b.at > offline_ms) return .{ .ignore = "Stale" };
-    return .{ .accept = b };
+/// A beat checked: its body read, the body's identity the sender, the signature the sender's.
+fn heard(a: Allocator, topic: []const u8, beat: Beat) !Heard {
+    const body = try decodeBody(a, beat.body);
+    if (!std.mem.eql(u8, &body.identity_key, &beat.sender)) return error.WrongIdentity;
+    if (!verify(a, topic, beat)) return error.BadSignature;
+    return .{ .topic = topic, .beat = beat, .body = body };
 }
 
-/// The entry an accepted heartbeat becomes (box `amm-p2p`), applied by `apply`.
-pub fn liveEvent(a: Allocator, b: Body) !Value {
-    return .{ .map = try a.dupe(cbor.Entry, &.{
+/// The verdict on a frame on `topic` from GossipSub sender `from`, at our time `now` (ms).
+pub fn judge(a: Allocator, topic: []const u8, frame: []const u8, from: []const u8, now: u64, offline_ms: u64) Outcome {
+    const beat = decodeFrame(a, frame) catch return .{ .reject = "Malformed" };
+    const h = heard(a, topic, beat) catch |e| return .{ .reject = @errorName(e) };
+    if (!std.mem.eql(u8, h.body.peer_id, from)) return .{ .reject = "WrongPeer" };
+    if (beat.at > now + max_skew_ms) return .{ .ignore = "FromTheFuture" };
+    if (now > beat.at and now - beat.at > offline_ms) return .{ .ignore = "Stale" };
+    return .{ .accept = h };
+}
+
+/// The entry an accepted heartbeat becomes (box `amm-p2p`), applied by `apply`: the frame and its topic.
+pub fn liveEvent(a: Allocator, h: Heard) !Value {
+    const fields = try beatFields(a, h.beat);
+    return .{ .map = try std.mem.concat(a, cbor.Entry, &.{ &.{
         .{ .key = "kind", .value = .{ .text = "amm-live" } },
-        .{ .key = "identityKey", .value = .{ .bytes = try a.dupe(u8, &b.identity_key) } },
-        .{ .key = "peerId", .value = .{ .bytes = b.peer_id } },
-        .{ .key = "at", .value = .{ .uint = b.at } },
-        .{ .key = "sig", .value = .{ .bytes = b.sig } },
-    }) };
+        .{ .key = "topic", .value = .{ .text = h.topic } },
+    }, fields }) };
 }
 
 // ---------------------------------------------------------------- the last-seen map
@@ -171,12 +213,12 @@ pub fn lastSeen(m: *w.store.Map, identity: [33]u8) !?Seen {
 /// Apply an `amm-live` entry (re-verified: an entry is only as good as its
 /// signature) to the map: a later `at` replaces an earlier one. → whether it changed.
 pub fn apply(a: Allocator, m: *w.store.Map, event: Value) !bool {
-    const b = try bodyOf(event);
-    if (!verify(a, b)) return error.BadSignature;
-    if (try lastSeen(m, b.identity_key)) |s| if (s.at >= b.at) return false;
+    const h = try heard(a, event.getText("topic") orelse return error.Malformed, try beatOf(event));
+    const at = h.beat.at;
+    if (try lastSeen(m, h.body.identity_key)) |s| if (s.at >= at) return false;
     var be: [8]u8 = undefined;
-    std.mem.writeInt(u64, &be, b.at, .big);
-    try m.put(&b.identity_key, .{ .bytes = try std.mem.concat(a, u8, &.{ &be, b.peer_id }) });
+    std.mem.writeInt(u64, &be, at, .big);
+    try m.put(&h.body.identity_key, .{ .bytes = try std.mem.concat(a, u8, &.{ &be, h.body.peer_id }) });
     return true;
 }
 

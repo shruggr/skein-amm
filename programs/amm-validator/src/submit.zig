@@ -1,9 +1,10 @@
 //! Getting a signed transaction into this instance's own overlay: the
 //! validator only adds its signature; the submission is the overlay engine's
-//! (skein-overlay 0.7.4 docs/OVERLAY.md "Submitting", shruggr/skein#112). A
+//! (skein-overlay 0.7.5 docs/OVERLAY.md "Submitting", shruggr/skein#112). A
 //! submission is a message: the validator sends `{fn: "submit", args: {beef,
-//! topics: [tm_<txid>]}}` from this instance to itself, in the app's box
-//! `<app>` (the manifest's row from `$self` takes it to the engine), with the
+//! topics: [tm_<txid>]}}` from this instance to itself, in the submissions
+//! box `<app>/submit` (the manifest's row `submit` from `*` takes it to the
+//! engine; shruggr/skein#128: one box per function class), with the
 //! signed BEEF — the request's BEEF (the taker's ancestry and BUMPs) with its
 //! subject replaced by the signed transaction (`submissionBeef`). The engine
 //! routes it in its step on the message (decoded, checked against the chain
@@ -22,6 +23,11 @@ const w = @import("chain");
 const cbor = w.cbor;
 const Value = cbor.Value;
 const beef = w.beef;
+
+/// The box a submission goes to: `<app>/submit` (the manifest's mailbox address `submit`).
+pub fn box(a: std.mem.Allocator, app: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "{s}/submit", .{app});
+}
 
 /// The submission message's body: `{fn: "submit", args: {beef: <bytes>, topics: [topic]}}`.
 pub fn body(a: std.mem.Allocator, signed_beef: []const u8, topic: []const u8) !Value {

@@ -914,6 +914,8 @@ test "sign: a request as a BEEF: an unheld parent's source verifies the taker's 
     // A raw request: a V1 BEEF of the signed transaction alone.
     const rb = try w.beef.parse(a, try submit.submissionBeef(a, r.ok.tx.?, null));
     try testing.expectEqual(@as(usize, 1), rb.entries.len);
+    // It goes to the submissions box `<app>/submit` (skein-overlay 0.7.5, shruggr/skein#128).
+    try testing.expectEqualStrings("amm/submit", try submit.box(a, "amm"));
 
     // The taker's funding input's signature is verified in full from the
     // BEEF's parent: a bad one is refused (it is only "present" without it).

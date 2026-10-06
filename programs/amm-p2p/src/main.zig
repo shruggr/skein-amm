@@ -292,10 +292,11 @@ fn validateLive(a: Allocator, in: Value, arg: Value) !Value {
 /// The skein node never subscribes `-live` (David, 2026-10-05): the matchmaking is the client's,
 /// which reads the beacons itself. The verdict is kept for a node that does.
 fn liveVerdict(a: Allocator, in: Value, msg: libp2p.Inbound) !libp2p.Verdict {
-    const t = names.parse(msg.topic orelse return error.NoTopic) orelse return error.UnknownTopic;
+    const topic = msg.topic orelse return error.NoTopic;
+    const t = names.parse(topic) orelse return error.UnknownTopic;
     if (t.kind != .live) return error.WrongTopic;
     const cfg = try config(a, in);
-    return switch (liveness.judge(a, msg.body, msg.from, in.getUint("now") orelse 0, cfg.offline_s * 1000)) {
+    return switch (liveness.judge(a, topic, msg.body, msg.from, in.getUint("now") orelse 0, cfg.offline_s * 1000)) {
         .accept => |b| .{ .accept = try a.dupe(libp2p.Admit, &.{.{ .box = names.own_box, .event = try liveness.liveEvent(a, b) }}) },
         .reject => |why| .{ .reject = why },
         .ignore => |why| .{ .ignore = why },
@@ -424,9 +425,9 @@ fn walletCall(a: Allocator, frame: []const u8) ![]const u8 {
 /// This instance's libp2p peer ID (David, 2026-10-05): the signer's public key for protocol
 /// `[2, "skein instance"]` (skein src/host/signer.ts `INSTANCE_PROTOCOL`), key ID
 /// `libp2p:<handle>`, counterparty self, as an identity multihash (libp2p.zig `peerIdOf`).
-/// STOP (docs/AMM.md "Not wired"): skein's host derives the node's key from the router's master
-/// secret (signer.ts `peerKey`), not from the instance's root, which is the key this signer holds;
-/// until one of them changes, this is not the peer ID the node runs.
+/// The host derives its node's key the same way, from the instance's root (skein 387e057,
+/// src/host/signer.ts `peerKey`: `[2, "skein instance"]` / `libp2p:<handle>` / self), so this
+/// is the peer ID the node runs.
 fn selfPeerId(a: Allocator, in: Value) ![]const u8 {
     const me = in.get("self") orelse return error.NoSelf;
     const handle = me.getText("handle") orelse return error.NoHandle;
@@ -522,22 +523,31 @@ fn step(a: Allocator, in: Value) !void {
     _ = try vm.finish(a, s, .{ .map = es.items });
 }
 
-/// The heartbeat body (opldotdev/amm-poc#3): this instance's identity and peer ID, signed at `at`
-/// through the signer (the `wallet` import).
-fn heartbeatBody(a: Allocator, in: Value, at: u64) ![]const u8 {
-    const identity = try wire.publicKeyResult(try walletCall(a, try wire.identityKeyFrame(a)));
-    const peer = try selfPeerId(a, in);
-    const d = try liveness.digest(a, peer, at);
-    const sig = try wire.signatureResult(try walletCall(a, try wire.createSignatureFrame(a, liveness.protocol.security_level, liveness.protocol.name, liveness.key_id, .anyone, d)));
-    return liveness.encodeBody(a, .{ .identity_key = identity, .peer_id = peer, .sig = sig, .at = at });
+fn identityKey(a: Allocator) ![33]u8 {
+    return wire.publicKeyResult(try walletCall(a, try wire.identityKeyFrame(a)));
 }
 
-/// The cron fallback's heartbeat (a tick): the body on each topic's `-live` topic, published
-/// through the libp2p provider (its answer is not awaited).
+/// The heartbeat body (opldotdev/amm-poc#3): this instance's identity and peer ID. The beat's
+/// time and signature are the host's frame (skein docs/MESSAGES.md "Beacons"; liveness.zig).
+fn heartbeatBody(a: Allocator, in: Value) ![]const u8 {
+    return liveness.encodeBody(a, .{ .identity_key = try identityKey(a), .peer_id = try selfPeerId(a, in) });
+}
+
+/// The cron fallback's heartbeat (a tick): the frame the host's beacon would publish — the body,
+/// the tick's time, signed here through the signer (the same key and protocol the host uses) — on
+/// each topic's `-live` topic, through the libp2p provider (its answer is not awaited).
 fn heartbeat(a: Allocator, in: Value, fields: *std.ArrayList(cbor.Entry)) !void {
     const cfg = try config(a, in);
-    const body = try heartbeatBody(a, in, in.getUint("at") orelse return error.BadInput);
-    for (cfg.topics) |t| _ = try toLibp2p(a, try libp2p.publish(a, try names.live(a, t), body));
+    const at = in.getUint("at") orelse return error.BadInput;
+    const body = try heartbeatBody(a, in);
+    const sender = try identityKey(a);
+    for (cfg.topics) |t| {
+        const topic = try names.live(a, t);
+        const d = try liveness.digest(a, topic, body, at, sender);
+        const sig = try wire.signatureResult(try walletCall(a, try wire.createSignatureFrame(a, liveness.protocol.security_level, liveness.protocol.name, liveness.key_id, .anyone, d)));
+        const frame = try liveness.encodeFrame(a, .{ .body = body, .at = at, .sender = sender, .signature = sig });
+        _ = try toLibp2p(a, try libp2p.publish(a, topic, frame));
+    }
     try fields.append(a, .{ .key = "published", .value = .{ .uint = cfg.topics.len } });
 }
 
@@ -545,16 +555,13 @@ fn heartbeat(a: Allocator, in: Value, fields: *std.ArrayList(cbor.Entry)) !void 
 /// token topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds × 1000, body}`
 /// — the host's libp2p node publishes `body` on it every `every` ms, logging nothing per beat — and
 /// an `unbeacon` for a topic beaconed before and no longer served (deregistered meanwhile); on
-/// stop, an `unbeacon` for each standing one. The standing set is the map `beacons`.
-///
-/// STOP (docs/AMM.md "Not wired"): the host sends the same body on every beat, so its `at` and
-/// signature are the start's; a receiver's `liveness.judge` ignores a body older than the offline
-/// threshold. How the beat carries freshness is David's to decide.
+/// stop, an `unbeacon` for each standing one. The standing set is the map `beacons`. Each beat is
+/// the host's frame `{body, at, sender, signature}` (liveness.zig): fresh and signed per beat.
 fn beacons(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields: *std.ArrayList(cbor.Entry)) !void {
     const at: u64 = in.getUint("at") orelse return error.BadInput;
     var asked: std.ArrayList(Value) = .empty;
     var ended: std.ArrayList(Value) = .empty;
-    const body: ?[]const u8 = if (start and cfg.topics.len > 0) try heartbeatBody(a, in, at) else null;
+    const body: ?[]const u8 = if (start and cfg.topics.len > 0) try heartbeatBody(a, in) else null;
     for (try st.beacons.prefixed("")) |kv| {
         const served = start and for (cfg.topics) |t| {
             if (eql(u8, t, kv.key)) break true;

@@ -10,7 +10,7 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.7.4 (`bin/overlay.wasm`, copied) | a submission by message (or `/submit`, delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
+| `overlay` | skein-overlay 0.7.5 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit` (or `/submit`, delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
 | `mandala-topic` | skein-mandala 0.5.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala_deploys` admits every deploy |
 | `mandala-lookup` | skein-mandala 0.5.0 (copied) | `ls_mandala`, `ls_mandala_deploys` |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
@@ -56,7 +56,8 @@ state.
   outputs are the contract's, every other input (and every unproven parent)
   is signed. Then it signs the pool input through the signer and submits
   the transaction to its own overlay by message — `{fn: "submit", args:
-  {beef, topics: [tm_<txid>]}}` from the instance to itself, box `amm` —
+  {beef, topics: [tm_<txid>]}}` from the instance to itself, box
+  `amm/submit` —
   and answers the direct call on the engine's first answer (`admitted`,
   `rejected`).
 
@@ -75,7 +76,12 @@ state.
 
 **Box `amm/overlay`** (the manifest's `"overlay"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
-{topic}`, from the owner.
+{topic}`, from the owner. skein-overlay 0.7.5 takes them in this box only.
+
+**Box `amm/submit`** (the manifest's `"submit"`, `filter: "beef"`): the
+engine's `submit {beef, topics, offChainValues?}` from anyone (the
+validator's own submissions among them), answered to the sender in this
+box; `register` / `deregister` here are refused (`bad-args`).
 
 **Box `amm`** (a message `{fn, args}`, skein docs/APPS.md §4):
 
@@ -84,7 +90,7 @@ shruggr/skein#128): the engine's `register {topic, program}`, `deregister
 | `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (the owner too) |
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
-| the engine's | `submit {beef, topics}` (and its own `watch`, `resume`) | the instance itself (the validator) |
+| the engine's | its own `watch`, `resume` (and `/submit`'s submission event, row 2) | the instance itself, events |
 | amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
@@ -108,10 +114,20 @@ topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds ×
 ms, logging nothing per beat — and `unbeacon {topic}` for a topic it
 beaconed that is no longer served; on stop, `unbeacon` for each (the set
 under `amm/p2p`, map `beacons`). `body` is amm-poc#3's signed heartbeat
-`{identityKey, peerId, sig, at}`. A start that names `jobs` asks the cron
-provider instead (the 0.1.0 path, kept as the fallback). The peer ID is
-derived: the signer's public key for `[2, "skein instance"]`, key ID
-`libp2p:<handle>`, counterparty self, as an identity multihash.
+`{identityKey, peerId}`; each beat is the host's signed frame (skein
+387e057, docs/MESSAGES.md "Beacons"): dag-cbor `{body, at, sender,
+signature}`, `at` the beat's time, `sender` the instance's identity key,
+`signature` the instance's under `[2, "metanet handles envelope"]` / `send`
+/ anyone over sha2-256 of dag-cbor `{kind: "beacon", topic, body, at,
+sender}`. A reader (`liveness.judge`) checks the frame's signature against
+`sender` (over the topic it heard it on), `at` against its clock, then the
+body: `identityKey` is `sender` and `peerId` is the GossipSub publisher. A
+start that names `jobs` asks the cron provider instead (the 0.1.0 path,
+kept as the fallback; it signs the same frame itself, through the signer).
+The peer ID is derived: the signer's public key for `[2, "skein
+instance"]`, key ID `libp2p:<handle>`, counterparty self, as an identity
+multihash — the key the host's node runs (skein 387e057, signer.ts
+`peerKey`, from the instance's root).
 
 ## The manifest
 
@@ -131,15 +147,16 @@ the package's transport and address whose sender rule admits the sender:
 
 1. `overlay` from `$owner` → `overlay` (register / deregister)
 2. `""` from `event` → `overlay`
-3. `""` from `$self` → `overlay` (the validator's submissions; the engine's own watch, resume)
+3. `""` from `$self` → `overlay` (the engine's own watch, resume)
 4. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
 5. `amm-p2p` from `*` → `amm-p2p`
-6. http `/listTopicManagers`, `/listLookupServiceProviders`,
+6. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone; skein-overlay 0.7.5)
+7. http `/listTopicManagers`, `/listLookupServiceProviders`,
    `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider`
    → `overlay`
-7. http `/live` → `amm-p2p` `live`; `/call` → `amm-p2p` `call`
-8. http `/` (prefix) → `amm-p2p` `serve`, `root: "www"`, `index: "index.html"`
-9. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
+8. http `/live` → `amm-p2p` `live`; `/call` → `amm-p2p` `call`
+9. http `/` (prefix) → `amm-p2p` `serve`, `root: "www"`, `index: "index.html"`
+10. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
    `amm-validator`
 
 then, derived by the install from `config.overlay`: http `/submit` (`filter:
@@ -151,27 +168,15 @@ the engine would get neither.
 
 ## Not wired
 
-- **The engine's submit row from anyone.** skein-overlay 0.7.2+ asks for
-  `{"address": "", "sender": "*", "program": "overlay", "filter": "beef"}`
-  (a submission by message from anyone, into the app's box). Row 4 has that
-  key (transport, address, prefix, sender) for amm-p2p, and only one row
-  may. The engine takes `submit` in any box routed to it, but a `*` row on
-  another box (`overlay`) opens `register` / `deregister` there to anyone
-  too (skein-overlay src/topics.zig `mayRegister`: only the app's own box
-  limits them to the instance). Not decided: the manifest has neither. What
-  submits still works: `POST /submit` (delivery only), gossip, and the
-  validator's own submissions (row 3).
+- **`POST /submit` into `amm/submit`.** skein-overlay 0.7.5's derived
+  `/submit` route admits its submission event into the app's own box
+  `amm` (src/routes.zig: `admitOne(a, ev, app)`), not `amm/submit`; row 2
+  (`""` from `event`) takes it to the engine, which answers it in box
+  `amm`. The pages' `/submit` (removeLiquidity) is unchanged.
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
   0.7.1+'s manifest row): not carried, as skein-mandala 0.5.0 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
-- **The beacon's freshness.** The host re-sends the same body every beat,
-  so its `at` and signature are the start's; a receiver's `liveness.judge`
-  ignores a body older than the offline threshold. How a beat carries
-  freshness is not decided.
-- **The peer ID.** The host derives the node's key from the router's master
-  secret (skein src/host/signer.ts `peerKey`), not from the instance's root
-  key the signer holds, so the derived peer ID is not the node's yet.
 - **`tm_<txid>-live` subscription.** The skein node never subscribes `-live`
   (matchmaking is the client's): `validateLive` and the last-seen map stay,
   routed by nothing, so `/live` lists no one and the relay finds no

@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "amm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "programs": {
     "overlay": "bin/overlay.wasm",
     "mandala-topic": "bin/mandala-topic.wasm",
@@ -234,6 +234,12 @@
       "program": "amm-p2p"
     },
     {
+      "address": "submit",
+      "sender": "*",
+      "program": "overlay",
+      "filter": "beef"
+    },
+    {
       "transport": "http",
       "address": "/listTopicManagers",
       "sender": "*",
@@ -317,5 +323,5 @@
       "kind": "amm-p2p-stop"
     }
   },
-  "description": "An AMM over Mandala tokens (docs/AMM.md): the overlay engine (shruggr/skein-overlay 0.7.4, required: chain/1) with the Mandala components (shruggr/skein-mandala 0.5.0: the topic manager mandala-topic, one topic per token tm_<txid> and the discovery topic tm_mandala_deploys; the lookups ls_mandala and ls_mandala_deploys), the pool liquidity lookup ls_amm (amm-lookup, one service over every token topic, each query naming its token), the validator (amm-validator: swap, addLiquidity, deploy as libp2p direct calls; it submits the signed transaction to its own overlay by message, {fn: \"submit\"} in the app's box, and answers the call on the engine's answer) and amm-p2p: the validator liveness beacon (a beacon event per served token topic, tm_<txid>-live, published by the host), the marketplace relay (amm.swap/1, amm.pool/1, amm.liquidity/1: a taker's or an LP's transaction carried to its validator) and the pages, www/ served from the app's own tree (skein-sdk files.serve). The manifest declares no topics: the owner registers each token topic with the engine, a message in the app's box overlay (<app>/overlay once installed) {fn: \"register\", args: {topic, program: \"mandala-topic\"}}, and drops it with {fn: \"deregister\", args: {topic}}. The owner starts the beacon with the manifest's start, {kind: \"amm-p2p-start\"} in the app's box."
+  "description": "An AMM over Mandala tokens (docs/AMM.md): the overlay engine (shruggr/skein-overlay 0.7.5, required: chain/1) with the Mandala components (shruggr/skein-mandala 0.5.0: the topic manager mandala-topic, one topic per token tm_<txid> and the discovery topic tm_mandala_deploys; the lookups ls_mandala and ls_mandala_deploys), the pool liquidity lookup ls_amm (amm-lookup, one service over every token topic, each query naming its token), the validator (amm-validator: swap, addLiquidity, deploy as libp2p direct calls; it submits the signed transaction to its own overlay by message, {fn: \"submit\"} in the box submit (<app>/submit), and answers the call on the engine's answer) and amm-p2p: the validator liveness beacon (a beacon event per served token topic, tm_<txid>-live, published by the host), the marketplace relay (amm.swap/1, amm.pool/1, amm.liquidity/1: a taker's or an LP's transaction carried to its validator) and the pages, www/ served from the app's own tree (skein-sdk files.serve). Anyone submits to the engine by message in the box submit (<app>/submit; the app's own box <app> is amm-p2p's). The manifest declares no topics: the owner registers each token topic with the engine, a message in the app's box overlay (<app>/overlay once installed) {fn: \"register\", args: {topic, program: \"mandala-topic\"}}, and drops it with {fn: \"deregister\", args: {topic}}. The owner starts the beacon with the manifest's start, {kind: \"amm-p2p-start\"} in the app's box."
 }

@@ -21,6 +21,13 @@ Ported from amm-poc `programs/amm-p2p` (skein-overlay 0.2.0, skein-sdk 0.3.0) on
 - **STOP: the heartbeat topic is not routed.** The heartbeat is still published on `tm_<txid>-live` for each served token topic, and `validateLive` still judges it, but no row in the app routes `tm_<txid>-live` to it: amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`), templated per instance, and a dynamic overlay's manifest names no token. How validator liveness per token is addressed is not decided (`liveVerdict`, src/main.zig).
 - **The peer ID.** amm-poc filled `ammP2p.peerId` per instance (`{{PEER_ID}}`). skein gives a program no way to learn its own peer ID (a step's input has `self.identity`, no peer ID; the host derives the libp2p key from the master secret, `[2, "skein instance"]`, key ID `libp2p:<handle>`), so the manifest carries none; without it `amm-p2p-start` schedules no heartbeat (catch-up only).
 
+## 0.2.1 (skein-overlay 0.7.5; skein 387e057)
+
+This section supersedes what the rest of this file says where they differ.
+
+- **The beat is the host's signed frame** (skein docs/MESSAGES.md "Beacons"). The declared body is `{identityKey, peerId}` (no `at`, no `sig`); the host publishes dag-cbor `{body, at, sender, signature}` every beat — `at` the beat's time, `sender` the instance's identity key, `signature` the instance's under `[2, "metanet handles envelope"]`, key ID `send`, counterparty anyone, over sha2-256 of dag-cbor `{kind: "beacon", topic, body, at, sender}`. `liveness.judge(topic, frame, from, now, offline)` decodes the frame, checks the signature (the anyone-derived child of `sender`, over the topic it was heard on) and `at`, then the body: `identityKey` must be `sender` (`WrongIdentity`) and `peerId` the GossipSub publisher (`WrongPeer`). The `amm-live` entry is `{kind: "amm-live", topic, body, at, sender, signature}`, re-verified when applied. The cron fallback signs the same frame itself, through the signer. The 0.2.0 STOP on freshness is gone: each beat is fresh.
+- **The peer ID is the node's.** The host derives the node's key from the instance's root (`[2, "skein instance"]`, `libp2p:<handle>`, self; signer.ts `peerKey`), the key `selfPeerId` asks the signer for. The 0.2.0 STOP is gone.
+
 ## 0.2.0 (skein-overlay 0.7.4, skein-sdk 0.7.1)
 
 This section supersedes what the rest of this file says where they differ.
@@ -73,16 +80,18 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 ### Liveness — `tm_<txid>-live`
 
 ```
-{identityKey: bytes(33), peerId: bytes, sig: bytes, at: uint}
+frame: {body: bytes, at: uint, sender: bytes(33), signature: bytes}      (the host's beat, 0.2.1)
+body:  {identityKey: bytes(33), peerId: bytes}
 ```
 
-"I am validator `identityKey` and my peer ID is `peerId`." `at` is milliseconds since the Unix epoch. `sig` is a DER ECDSA signature over sha256(`peerId` ‖ `at` as 8 bytes big-endian) — BRC-100 `createSignature` over that data — by the BRC-42 child of `identityKey` under BRC-43 security level 1, protocol `amm live`, key ID `1`, counterparty `anyone` (invoice `1-amm live-1`), which anyone can derive from the identity key.
+"I am validator `identityKey` and my peer ID is `peerId`." `at` is milliseconds since the Unix epoch, the beat's time on the publishing host. `signature` is a DER ECDSA signature by the instance — BRC-100 `createSignature` under `[2, "metanet handles envelope"]`, key ID `send`, counterparty `anyone` (invoice `2-metanet handles envelope-send`), which anyone can derive from `sender` — over sha256 of dag-cbor `{kind: "beacon", topic, body, at, sender}` (the topic is signed, not carried).
 
 | case | verdict |
 |---|---|
-| the body does not decode | reject `Malformed` |
+| the frame or the body does not decode | reject `Malformed` |
+| `identityKey` is not the frame's `sender` | reject `WrongIdentity` |
+| the signature does not verify against `sender`'s derived key, over this topic | reject `BadSignature` |
 | `peerId` is not the GossipSub sender (`from`) | reject `WrongPeer` |
-| the signature does not verify against the derived key | reject `BadSignature` |
 | `at` more than 60 s ahead of this node's clock | ignore `FromTheFuture` |
 | `at` older than the offline threshold | ignore `Stale` |
 | our own failure to evaluate (bad config, not a `-live` topic) | ignore `<error>` |
@@ -91,7 +100,7 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 On accept the handler answers with one `admit` entry, which the front door admits after the message's own `p2p` entry (docs/MESSAGES.md "libp2p (#51)"):
 
 ```
-{event: {kind: "amm-live", identityKey, peerId, at, sig}, box: "amm-p2p"}
+{event: {kind: "amm-live", topic, body, at, sender, signature}, box: "amm-p2p"}
 ```
 
 Stepped on it, the program re-verifies the signature and records it in its last-seen map `live` (identity key → `at` ‖ peer ID) under its head `amm/p2p`; a later `at` replaces an earlier one, never the reverse. Staleness is the consumer's question, so a log replayed later records the same map.

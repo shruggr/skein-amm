@@ -24,7 +24,7 @@
 //!   judged or rejected before (from the state);
 //! - `{wait: true}` for a signed spend or a consented deploy, after sending
 //!   `{fn: "submit", args: {beef, topics: [tm_<txid>]}}` to this instance,
-//!   box `<app>`, and `await`ing that message — or, for a resubmission while
+//!   box `<app>/submit`, and `await`ing that message — or, for a resubmission while
 //!   the first one is with the chain app, after `await`ing that submission's
 //!   thread (the overlay's `pending` record names it: the engine answers a
 //!   resubmission with nothing);
@@ -43,7 +43,7 @@
 //! same as JSON text); the overlay's own configuration as the engine reads it
 //! from the app record (skein-overlay `engine_vm.configured`: the served
 //! topics, the ones registered with the engine (`<app>/topics`) among them, the app's roles,
-//! `app` the box the submission goes to).
+//! `app`; the submission goes to the box `<app>/submit`).
 const std = @import("std");
 const w = @import("chain");
 const ov = @import("skein_overlay");
@@ -162,12 +162,12 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
         .answer => return answerBody(a, served.reply),
         .from_state => return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body)),
         .submit => |sub| {
-            // A submission is a message (skein-overlay 0.7.2+): to this instance, in the app's box,
-            // which the row from `$self` takes to the engine. The engine hands the BEEF to the chain
+            // A submission is a message (skein-overlay 0.7.2+): to this instance, in the submissions
+            // box `<app>/submit`, which the row `submit` from `*` takes to the engine (0.7.5, #128). The engine hands the BEEF to the chain
             // app, which registers and broadcasts every unproven transaction in it, the taker's nosend
             // funding parent with the swap (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF";
             // `served.broadcast` names them), and answers this message when it is admitted or rejected.
-            const m = try vm.send(a, &identity, ov.calls.appOf(in), try submit.body(a, sub.beef, sub.topic));
+            const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, sub.beef, sub.topic));
             try vm.awaitRecord(m);
             return answerWait(a);
         },

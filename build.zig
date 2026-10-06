@@ -12,7 +12,7 @@
 // `mandala` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.7.4)
+//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.7.5)
 //                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.5.0) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //

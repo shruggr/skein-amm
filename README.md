@@ -3,7 +3,7 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.2.0**: on skein-overlay 0.7.4 (skein-sdk 0.7.1)
+and its pages. Version **0.2.1**: on skein-overlay 0.7.5 (skein-sdk 0.7.1)
 and skein-mandala 0.5.0. Ported from amm-poc (b-open-io/amm-poc, its
 `programs/`, `pool/` and `web/`) in 0.1.0 (shruggr/skein#120).
 
@@ -11,7 +11,7 @@ and skein-mandala 0.5.0. Ported from amm-poc (b-open-io/amm-poc, its
 
 | role | file | what |
 |---|---|---|
-| `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.7.4's build: serves the topics, keeps the registered set (`register` / `deregister`), takes submissions by message and answers them to the sender's box |
+| `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.7.5's build: serves the topics, keeps the registered set (`register` / `deregister`, only in `amm/overlay`), takes submissions by message (box `amm/submit`) and answers them to the sender's box |
 | `mandala-topic` | `bin/mandala-topic.wasm` | skein-mandala 0.5.0's topic manager: one topic per token, `tm_<txid>`, judged by the BRC-162 rules alone; the discovery topic `tm_mandala_deploys` |
 | `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.5.0's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools of every token topic the overlay serves, each query naming its token |
@@ -39,7 +39,7 @@ scripts/www.sh     # www/: the pages from web/ui, then the Mandala pages into ww
 ```
 
 **The overlay and Mandala artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.7.4 and skein-mandala v0.5.0 by tag
+`build.zig.zon` names skein-overlay v0.7.5 and skein-mandala v0.5.0 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/mandala-topic.wasm`, `bin/mandala-lookup.wasm`
 from the skein-mandala package, byte for byte. skein-mandala's pages are
@@ -120,11 +120,11 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.2.0 |
-| skein-overlay | v0.7.4 (3a74b22) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
+| this app | 0.2.1 |
+| skein-overlay | v0.7.5 (067b940) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-mandala | v0.5.0 (a536f83) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
-| skein | main de55ef0 (`checkManifest` accepts `etc/app.json`) |
+| skein | main 387e057 (the beacon's signed frame, docs/MESSAGES.md "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain v0.3.2) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions` 0.0.228, `@1sat/connect` 0.0.99, `@1sat/react` 0.0.97, `@1sat/templates` 0.0.39 (Mandala from 1sat-sdk 183c0ce3), `@bsv/sdk` 2.8.10 (`web/ui/package-lock.json`) |

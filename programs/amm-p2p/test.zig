@@ -167,7 +167,15 @@ const root_b: [32]u8 = .{0x22} ** 32;
 const peer_a = "\x00\x25\x08\x02\x12\x21peer-A-multihash-bytes..........";
 const peer_b = "\x00\x25\x08\x02\x12\x21peer-B-multihash-bytes..........";
 
-test "liveness: accept, wrong peer, wrong signer, stale, future, malformed" {
+const live_topic = "tm_" ++ "ab" ** 32 ++ "-live";
+
+/// The host's beat for `root` (the instance) naming `peer`: its body, its frame.
+fn beat(a: Allocator, root: bsvz.primitives.ec.PrivateKey, peer: []const u8, at: u64) !liveness.Beat {
+    const body = try liveness.encodeBody(a, .{ .identity_key = (try root.publicKey()).toCompressedSec1(), .peer_id = peer });
+    return liveness.sign(a, root, live_topic, body, at);
+}
+
+test "liveness: the host's frame — accept, wrong peer, wrong identity, wrong signer, wrong topic, stale, future, malformed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -176,49 +184,67 @@ test "liveness: accept, wrong peer, wrong signer, stale, future, malformed" {
     const at: u64 = 1_790_000_000_000;
     const off: u64 = liveness.default_offline_s * 1000;
 
-    const good = try liveness.sign(a, ka, peer_a, at);
-    const body = try liveness.encodeBody(a, good);
-    const o = liveness.judge(a, body, peer_a, at + 1000, off);
+    const good = try beat(a, ka, peer_a, at);
+    const frame = try liveness.encodeFrame(a, good);
+    // The body carries no time and no signature: the frame does.
+    const bv = try cbor.decode(a, good.body);
+    try testing.expectEqual(@as(usize, 2), bv.map.len);
+    try testing.expect(bv.get("at") == null and bv.get("sig") == null);
+    const o = liveness.judge(a, live_topic, frame, peer_a, at + 1000, off);
     try expectTag(o, "accept", null);
     const ev = try liveness.liveEvent(a, o.accept);
     try testing.expectEqualStrings("amm-live", ev.getText("kind").?);
-    try testing.expectEqualSlices(u8, &(try ka.publicKey()).toCompressedSec1(), ev.getBytes("identityKey").?);
+    try testing.expectEqualStrings(live_topic, ev.getText("topic").?);
+    try testing.expectEqualSlices(u8, &(try ka.publicKey()).toCompressedSec1(), ev.getBytes("sender").?);
 
-    // The message came from another peer than the one it names.
-    try expectTag(liveness.judge(a, body, peer_b, at + 1000, off), "reject", "WrongPeer");
-    // B signs, claiming to be A.
-    var forged = try liveness.sign(a, kb, peer_a, at);
-    forged.identity_key = good.identity_key;
-    try expectTag(liveness.judge(a, try liveness.encodeBody(a, forged), peer_a, at + 1000, off), "reject", "BadSignature");
-    // A's signature over another peer ID, relabelled.
+    // The message came from another peer than the one the body names.
+    try expectTag(liveness.judge(a, live_topic, frame, peer_b, at + 1000, off), "reject", "WrongPeer");
+    // The frame was signed for another topic.
+    try expectTag(liveness.judge(a, "tm_" ++ "cd" ** 32 ++ "-live", frame, peer_a, at + 1000, off), "reject", "BadSignature");
+    // B beats A's body: the body's identity is not the sender.
+    const b_frame = try liveness.sign(a, kb, live_topic, good.body, at);
+    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, b_frame), peer_a, at + 1000, off), "reject", "WrongIdentity");
+    // B signs, claiming to be A (A's key as the sender).
+    var forged = b_frame;
+    forged.sender = good.sender;
+    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, forged), peer_a, at + 1000, off), "reject", "BadSignature");
+    // A's frame with another body, or redated.
     var moved = good;
-    moved.peer_id = peer_b;
-    try expectTag(liveness.judge(a, try liveness.encodeBody(a, moved), peer_b, at + 1000, off), "reject", "BadSignature");
-    // A's signature at another time.
+    moved.body = try liveness.encodeBody(a, .{ .identity_key = good.sender, .peer_id = peer_b });
+    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, moved), peer_b, at + 1000, off), "reject", "BadSignature");
     var redated = good;
     redated.at = at + 5;
-    try expectTag(liveness.judge(a, try liveness.encodeBody(a, redated), peer_a, at + 1000, off), "reject", "BadSignature");
+    try expectTag(liveness.judge(a, live_topic, try liveness.encodeFrame(a, redated), peer_a, at + 1000, off), "reject", "BadSignature");
     // Too old, too far ahead.
-    try expectTag(liveness.judge(a, body, peer_a, at + off + 1, off), "ignore", "Stale");
-    try expectTag(liveness.judge(a, body, peer_a, at - liveness.max_skew_ms - 1, off), "ignore", "FromTheFuture");
-    try expectTag(liveness.judge(a, "junk", peer_a, at, off), "reject", "Malformed");
+    try expectTag(liveness.judge(a, live_topic, frame, peer_a, at + off + 1, off), "ignore", "Stale");
+    try expectTag(liveness.judge(a, live_topic, frame, peer_a, at - liveness.max_skew_ms - 1, off), "ignore", "FromTheFuture");
+    try expectTag(liveness.judge(a, live_topic, "junk", peer_a, at, off), "reject", "Malformed");
+    // A bare body (0.2.0's publish) is not a frame.
+    try expectTag(liveness.judge(a, live_topic, good.body, peer_a, at, off), "reject", "Malformed");
 }
 
-test "liveness: the signature is the wallet's createSignature(data) under 1-amm live-1, anyone" {
+test "liveness: the frame's signature is the instance's createSignature over beaconPreimage, 2-metanet handles envelope-send, anyone" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    // What a BRC-100 wallet does for createSignature({protocolID: [1, "amm live"], keyID: "1", counterparty: "anyone", data}):
-    // the child private key by invoice "1-amm live-1" against the anyone public key, over sha256(data).
+    const sender = (try ka.publicKey()).toCompressedSec1();
+    const body = try liveness.encodeBody(a, .{ .identity_key = sender, .peer_id = peer_a });
+    // The preimage is dag-cbor {kind: "beacon", topic, body, at, sender}, keys length-first (skein p2p.ts beaconPreimage).
+    const pre = try cbor.decode(a, try liveness.preimage(a, live_topic, body, 42, sender));
+    try testing.expectEqualStrings("beacon", pre.getText("kind").?);
+    try testing.expectEqualStrings(live_topic, pre.getText("topic").?);
+    try testing.expectEqualStrings("at", pre.map[0].key);
+    try testing.expectEqualStrings("sender", pre.map[4].key);
+    // What a BRC-100 wallet does for createSignature({protocolID: [2, "metanet handles envelope"], keyID: "send",
+    // counterparty: "anyone", data}): the child private key by invoice "2-metanet handles envelope-send" against
+    // the anyone public key, over sha256(data).
     const anyone_pub = try (try bsvz.primitives.ec.PrivateKey.fromBytes(.{0} ** 31 ++ .{1})).publicKey();
-    const child = try ka.deriveChild(anyone_pub, "1-amm live-1");
-    const data = try liveness.message(a, peer_a, 42);
-    const sig = try child.signDigest(bsvz.crypto.hash.sha256(data).bytes);
-    const b: liveness.Body = .{ .identity_key = (try ka.publicKey()).toCompressedSec1(), .peer_id = peer_a, .sig = sig.asSlice(), .at = 42 };
-    try testing.expect(liveness.verify(a, b));
-    // The frame the publisher sends through the `wallet` import.
-    const frame = try wire.createSignatureFrame(a, 1, "amm live", "1", .anyone, try liveness.digest(a, peer_a, 42));
+    const child = try ka.deriveChild(anyone_pub, "2-metanet handles envelope-send");
+    const sig = try child.signDigest(try liveness.digest(a, live_topic, body, 42, sender));
+    try testing.expect(liveness.verify(a, live_topic, .{ .body = body, .at = 42, .sender = sender, .signature = sig.asSlice() }));
+    // The frame the cron fallback signs through the `wallet` import.
+    const frame = try wire.createSignatureFrame(a, 2, "metanet handles envelope", "send", .anyone, try liveness.digest(a, live_topic, body, 42, sender));
     try testing.expectEqual(@as(u8, 15), frame[0]);
 }
 
@@ -234,7 +260,13 @@ test "liveness: the last-seen map and the consumer API" {
     const ida = (try ka.publicKey()).toCompressedSec1();
     const t0: u64 = 1_790_000_000_000;
 
-    try testing.expect(try liveness.apply(a, &m, try liveness.liveEvent(a, try liveness.sign(a, ka, peer_a, t0))));
+    const heard = struct {
+        fn of(al: Allocator, b: liveness.Beat) !Value {
+            const o = liveness.judge(al, live_topic, try liveness.encodeFrame(al, b), (try liveness.decodeBody(al, b.body)).peer_id, b.at, 90_000);
+            return liveness.liveEvent(al, o.accept);
+        }
+    }.of;
+    try testing.expect(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_a, t0))));
     const s = (try liveness.live(&m, ida, t0 + 30_000, 90_000)).?;
     try testing.expectEqualSlices(u8, peer_a, s.peer_id);
     try testing.expectEqual(t0, s.at);
@@ -242,13 +274,13 @@ test "liveness: the last-seen map and the consumer API" {
     try testing.expect((try liveness.live(&m, ida, t0 + 90_001, 90_000)) == null);
     try testing.expect((try liveness.live(&m, (try (try bsvz.primitives.ec.PrivateKey.fromBytes(root_b)).publicKey()).toCompressedSec1(), t0, 90_000)) == null);
     // A later heartbeat from a new peer ID moves it; an earlier one does not.
-    try testing.expect(try liveness.apply(a, &m, try liveness.liveEvent(a, try liveness.sign(a, ka, peer_b, t0 + 30_000))));
-    try testing.expect(!(try liveness.apply(a, &m, try liveness.liveEvent(a, try liveness.sign(a, ka, peer_a, t0 + 10_000)))));
+    try testing.expect(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_b, t0 + 30_000))));
+    try testing.expect(!(try liveness.apply(a, &m, try heard(a, try beat(a, ka, peer_a, t0 + 10_000)))));
     try testing.expectEqualSlices(u8, peer_b, (try liveness.live(&m, ida, t0 + 40_000, 90_000)).?.peer_id);
     // An entry whose signature does not hold is refused, map unchanged.
-    var bad = try liveness.sign(a, ka, peer_a, t0 + 60_000);
+    var bad = try beat(a, ka, peer_a, t0 + 60_000);
     bad.at += 1;
-    try testing.expectError(error.BadSignature, liveness.apply(a, &m, try liveness.liveEvent(a, bad)));
+    try testing.expectError(error.BadSignature, liveness.apply(a, &m, try liveness.liveEvent(a, .{ .topic = live_topic, .beat = bad, .body = try liveness.decodeBody(a, bad.body) })));
     // Persisted and read back.
     try m.flush();
     var m2 = maps.map(m.root);
@@ -265,8 +297,8 @@ test "liveness: the handler's admit entry, stepped by this program into the last
     var live = maps.map(null);
     const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
     const t0: u64 = 1_790_000_000_000;
-    const body = try liveness.encodeBody(a, try liveness.sign(a, ka, peer_a, t0));
-    const o = liveness.judge(a, body, peer_a, t0 + 1000, liveness.default_offline_s * 1000);
+    const frame = try liveness.encodeFrame(a, try beat(a, ka, peer_a, t0));
+    const o = liveness.judge(a, live_topic, frame, peer_a, t0 + 1000, liveness.default_offline_s * 1000);
     try expectTag(o, "accept", null);
 
     // The answer, as main.zig's validateLive builds it and the front door reads it.
@@ -282,9 +314,9 @@ test "liveness: the handler's admit entry, stepped by this program into the last
     try testing.expectEqualSlices(u8, peer_a, (try liveness.live(&live, (try ka.publicKey()).toCompressedSec1(), t0 + 2000, 90_000)).?.peer_id);
     // Again: nothing moves. A forged entry is refused.
     try testing.expect(!(try liveness.apply(a, &live, ev)));
-    var bad = try liveness.sign(a, ka, peer_a, t0 + 5000);
+    var bad = try beat(a, ka, peer_a, t0 + 5000);
     bad.at += 1;
-    try testing.expectError(error.BadSignature, liveness.apply(a, &live, readBack(a, try liveness.liveEvent(a, bad))));
+    try testing.expectError(error.BadSignature, liveness.apply(a, &live, readBack(a, try liveness.liveEvent(a, .{ .topic = live_topic, .beat = bad, .body = try liveness.decodeBody(a, bad.body) }))));
 }
 
 
@@ -363,6 +395,9 @@ test "the beacon (shruggr/skein#126): beacon {topic: tm_<txid>-live, every, body
     try testing.expect(u.get("body") == null);
 }
 
+// selfPeerId (main.zig) asks the signer for [2, "skein instance"] / `libp2p:<handle>` / self and
+// takes this multihash of it; the host derives its node's key the same way from the instance's root
+// (skein 387e057, src/host/signer.ts `peerKey`), so the beacon's peerId is the node's peer ID.
 test "the peer ID of a compressed secp256k1 key: the identity multihash of its protobuf PublicKey (js-libp2p's, 16Uiu2…)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
