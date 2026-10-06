@@ -50,7 +50,7 @@ import { DEPOSIT_BASKET } from "@1sat/types";
 import { LockingScript, PublicKey, Transaction, UnlockingScript, type InternalizeOutput, type WalletInterface, type WalletProtocol } from "@bsv/sdk";
 import { PoolTemplate, type CallPlan } from "../pool";
 import { SWAP_TTL_MS, createFunding, poolUtxoFrom, signP2pkhWithWallet, spendValid, swapFunding, type Funding, type SwapFunding } from "../market/swapAction";
-import type { LookupOutput } from "../lib/overlay";
+import { needSigned, type LookupOutput, type SignedFetch } from "../lib/overlay";
 import { LP_KEY_PROTOCOL, lpKeyId, poolCustomInstructions, POOL_TAG, type BasketFiling } from "./poolDeploy";
 import type { LpKeyRef } from "./myPools";
 import { WALLET_PAYMENT, identityKeyOf, isBrc29Protocol, splitBrc29KeyID, type Brc29Payout, type PaymentRemittance } from "../wallet/brc29";
@@ -279,11 +279,12 @@ export async function completeRemoveLiquidity(wallet: WalletInterface, s: Prepar
  * (`x-topics` the token topic, the body the BEEF) carries the submission message `{fn: "submit",
  * args: {beef, topics}}` and answers its delivery only, `200 {id}` — the request record's CID, which
  * every answer names. No STEAK comes back on the connection: the verdict (admitted, each proof, or
- * rejected) is a message to the submitter's box, and a client on the open route, as here, reads the
- * outcome with a lookup (`awaitAdmitted`).
+ * rejected) is a message to the submitter's box, and the page reads the outcome with a lookup
+ * (`awaitAdmitted`). Both are POSTs, so both go through the connected wallet's `AuthFetch`
+ * (a skein takes no unsigned POST).
  */
-export async function submitToOverlay(base: string, topic: string, beef: number[], fetchFn: typeof fetch = fetch): Promise<{ id: string }> {
-  const res = await fetchFn(`${base}/submit`, {
+export async function submitToOverlay(af: SignedFetch | null, base: string, topic: string, beef: number[]): Promise<{ id: string }> {
+  const res = await needSigned(af).fetch(`${base}/submit`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": topic },
     body: new Uint8Array(beef),
@@ -311,15 +312,16 @@ export function admittedOutput(s: Pick<PreparedRemoveLiquidity, "continuation" |
  * The engine admits once the chain app accepts the transaction (its broadcast succeeded).
  */
 export async function awaitAdmitted(
+  af: SignedFetch | null,
   base: string,
   txid: string,
   outputIndex: number,
-  o: { timeoutMs?: number; intervalMs?: number; fetchFn?: typeof fetch } = {},
+  o: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<boolean> {
-  const fetchFn = o.fetchFn ?? fetch;
+  const signed = needSigned(af);
   const deadline = Date.now() + (o.timeoutMs ?? 60_000);
   for (;;) {
-    const res = await fetchFn(`${base}/lookup`, {
+    const res = await signed.fetch(`${base}/lookup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ service: "ls_mandala", query: { txid, outputIndex } }),

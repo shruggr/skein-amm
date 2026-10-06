@@ -1,7 +1,8 @@
 /**
  * The skein instance this page talks to, and nothing else: every request the
- * page makes goes to `AMM_OVERLAY` (plain `fetch`, src/lib/overlay.ts), or to
- * the connected BRC-100 wallet. There are no DEV keys or DEV services.
+ * page makes goes to `AMM_OVERLAY` (a GET by plain `fetch`; every POST through
+ * the connected wallet's BRC-104 `AuthFetch`, since a skein takes no unsigned
+ * POST; src/lib/overlay.ts), or to the connected BRC-100 wallet. There are no DEV keys or DEV services.
  *
  *   AMM_OVERLAY        the AMM app's base URL: `https://<handle>.<host>/<app>`
  *                      or a host's dev form `<host>/@<handle>/<app>` (GET

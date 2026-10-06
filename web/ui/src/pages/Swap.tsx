@@ -89,7 +89,7 @@ export function SwapPage() {
       await Promise.all(
         ts.map(async (t) => {
           try {
-            answers.set(t.tokenId, await queryPools(AMM_OVERLAY, t.tokenId));
+            answers.set(t.tokenId, await queryPools(authFetch, AMM_OVERLAY, t.tokenId));
           } catch (e) {
             answers.set(t.tokenId, new Error(errText(e)));
           }
@@ -108,7 +108,7 @@ export function SwapPage() {
       setLiveError(errText(e));
     }
     setRefreshedAt(Date.now());
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => {
     void refresh();
@@ -285,7 +285,7 @@ export function SwapPage() {
         candidates = candidates.filter((c) => !pick.includes(c));
       }
       try {
-        const poolOutput = await lookupPoolOutput(AMM_OVERLAY, token.topic.tokenId, leg.outpoint);
+        const poolOutput = await lookupPoolOutput(authFetch, AMM_OVERLAY, token.topic.tokenId, leg.outpoint);
         const prepared = await prepareSwap({
           wallet,
           tokenId: token.topic.tokenId,

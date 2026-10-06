@@ -382,6 +382,7 @@ function PolicySection(props: { genesis: GenesisRead | null; onRead: (g: Genesis
 
 function PoolsServedSection(props: { identityKey: string | undefined; peerLive: boolean | undefined; refreshKey: number }) {
   const { identityKey, peerLive, refreshKey } = props;
+  const authFetch = useAuthFetch();
   const [served, setServed] = useState<ServedPool[] | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [count, setCount] = useState(0);
@@ -397,7 +398,7 @@ function PoolsServedSection(props: { identityKey: string | undefined; peerLive: 
         await Promise.all(
           topics.map(async (t) => {
             try {
-              pools.set(t.tokenId, await queryPools(AMM_OVERLAY, t.tokenId));
+              pools.set(t.tokenId, await queryPools(authFetch, AMM_OVERLAY, t.tokenId));
             } catch (e) {
               pools.set(t.tokenId, e instanceof Error ? e : new Error(String(e)));
               errs.push(`${t.tokenId}: ${errText(e)}`);
@@ -418,7 +419,7 @@ function PoolsServedSection(props: { identityKey: string | undefined; peerLive: 
     return () => {
       cancelled = true;
     };
-  }, [identityKey, refreshKey]);
+  }, [identityKey, refreshKey, authFetch]);
 
   return (
     <section>

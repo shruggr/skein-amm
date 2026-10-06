@@ -18,7 +18,7 @@ import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { Transaction, type WalletInterface, type WalletProtocol } from "@bsv/sdk";
 import type { PoolState } from "@amm-poc/matching-engine";
 import { PoolTemplate, type Pool } from "../pool";
-import { lookupPoolOutput, queryPools, type LookupOutput, type TokenTopic } from "../lib/overlay";
+import { lookupPoolOutput, queryPools, type LookupOutput, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { LP_KEY_PROTOCOL, isPoolRow, legacyLpKeyId, lpKeyId, type BasketRow } from "./poolDeploy";
 
 export interface LpKeyRef {
@@ -93,6 +93,7 @@ export function matchPool(
 
 /** Every pool on the instance for `topics` whose LP key is the wallet's. */
 export async function findMyPools(
+  af: SignedFetch | null,
   base: string,
   wallet: WalletInterface,
   topics: TokenTopic[],
@@ -115,14 +116,14 @@ export async function findMyPools(
   for (const topic of topics.filter((t) => t.kind === "native")) {
     let states: PoolState[];
     try {
-      states = await queryPools(base, topic.tokenId, {});
+      states = await queryPools(af, base, topic.tokenId, {});
     } catch (err) {
       warnings.push(`${topic.tokenId}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
     for (const state of states) {
       try {
-        const output = await lookupPoolOutput(base, topic.tokenId, state.outpoint);
+        const output = await lookupPoolOutput(af, base, topic.tokenId, state.outpoint);
         const tx = Transaction.fromAtomicBEEF(output.beef);
         const pool = PoolTemplate.decode(tx.outputs[output.outputIndex]!.lockingScript);
         if (!pool) continue;

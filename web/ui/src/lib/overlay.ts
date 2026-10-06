@@ -1,12 +1,17 @@
 /**
- * The instance client: plain `fetch` against the skein instance's AMM app
- * routes, all under one base URL (`AMM_OVERLAY`, src/lib/config.ts: the
+ * The instance client against the skein instance's AMM app routes, all
+ * under one base URL (`AMM_OVERLAY`, src/lib/config.ts: the
  * app's base URL, `https://<handle>.<host>/amm` or `<host>/@<handle>/amm`):
  *
  *   GET  <base>/listTopicManagers            {tm_<txid>: {name, shortDescription}, …}: the registered token topics
  *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_mandala: …, ls_mandala_deploys: …}
  *   POST <base>/lookup   {service: "ls_amm", query: {tokenId, …}}   BRC-24
  *   GET  <base>/live                          {now, thresholdMs, validators: [...]}
+ *
+ * A skein takes no unsigned HTTP but GET/HEAD: a POST without a BRC-104
+ * session is 401. The GETs are plain `fetch`; every POST (the lookups here,
+ * the submit in src/lp/removeLiquidity.ts) goes through the connected
+ * wallet's `AuthFetch` (src/wallet/authFetch.ts), a `SignedFetch`.
  *
  * Why not the stock `@bsv/sdk` `LookupResolver` / `TopicBroadcaster`:
  *  - `LookupResolver.query`/`queryDetailed` merge output-list answers only;
@@ -165,6 +170,17 @@ export function parseLiveAnswer(answer: unknown): LiveAnswer {
 // Requests
 // ---------------------------------------------------------------------------
 
+/** The connected wallet's BRC-104 client (`@bsv/sdk` `AuthFetch`, or a test's fake): every POST to the instance. */
+export interface SignedFetch {
+  fetch(url: string, config?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<Response>;
+}
+
+/** The signed client, or an error saying a wallet is needed (null: none connected). */
+export function needSigned(af: SignedFetch | null | undefined): SignedFetch {
+  if (!af) throw new Error("connect a wallet: a lookup or submit is a POST, which the instance takes only signed (BRC-104)");
+  return af;
+}
+
 async function getJson(url: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(url, init);
   if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${url}: ${res.status} ${(await res.text()).slice(0, 200)}`);
@@ -185,12 +201,16 @@ export async function listTokenTopics(base: string): Promise<TokenTopic[]> {
   return Object.keys(topics).map(parseTokenTopic).filter((t): t is TokenTopic => t !== null);
 }
 
-async function lookup(base: string, service: string, query: Record<string, unknown>): Promise<unknown> {
-  return getJson(`${base}/lookup`, {
+/** `POST <base>/lookup {service, query}`, signed. */
+export async function lookup(af: SignedFetch | null, base: string, service: string, query: Record<string, unknown>): Promise<unknown> {
+  const url = `${base}/lookup`;
+  const res = await needSigned(af).fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ service, query }),
   });
+  if (!res.ok) throw new Error(`POST ${url}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  return res.json();
 }
 
 /**
@@ -199,16 +219,17 @@ async function lookup(base: string, service: string, query: Record<string, unkno
  * id (`<txid>_<vout>`, `<txid>`).
  */
 export async function queryPools(
+  af: SignedFetch | null,
   base: string,
   tokenId: string,
   query: { outpoint: string } | Record<string, never> = {},
 ): Promise<PoolState[]> {
-  return parseLookupAnswer(await lookup(base, AMM_LOOKUP_SERVICE, { tokenId, ...query }));
+  return parseLookupAnswer(await lookup(af, base, AMM_LOOKUP_SERVICE, { tokenId, ...query }));
 }
 
 /** The pool output (or its newest continuation) with its BEEF: `{tokenId, outpoint, beef: true}`. */
-export async function lookupPoolOutput(base: string, tokenId: string, outpoint: string): Promise<LookupOutput> {
-  const outs = parseOutputList(await lookup(base, AMM_LOOKUP_SERVICE, { tokenId, outpoint, beef: true }));
+export async function lookupPoolOutput(af: SignedFetch | null, base: string, tokenId: string, outpoint: string): Promise<LookupOutput> {
+  const outs = parseOutputList(await lookup(af, base, AMM_LOOKUP_SERVICE, { tokenId, outpoint, beef: true }));
   if (outs.length === 0) throw new Error(`lookup ${AMM_LOOKUP_SERVICE} ${tokenId}: no output for ${outpoint}`);
   return outs[0]!;
 }

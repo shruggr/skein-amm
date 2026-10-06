@@ -25,7 +25,7 @@ import {
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PoolTemplate } from "../src/pool";
-import { parseLiveAnswer, parseTokenTopic } from "../src/lib/overlay";
+import { parseLiveAnswer, parseTokenTopic, type SignedFetch } from "../src/lib/overlay";
 import { choiceFor, livenessOf, originOf, parseIdentityKey, parsePickerInput, resolveHandle, type FetchLike } from "../src/lp/validators";
 import {
   POOL_TAG,
@@ -632,17 +632,17 @@ describe("my pools", () => {
         : { type: "freeform", result: [{ outpoint: swapOp, bsvReserve: v.pool1.bsv, tokenReserve: v.pool1.tokens, liquidityFeeBps: 30, validationFeeBps: 5, validatorIdentityKey: v.identity }] };
       return new Response(JSON.stringify(body), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    const af = { fetch: fetchMock } as unknown as SignedFetch;
     // The wallet's LP key is the deposit's pre-BRC-29 one (amm-lp-<deploy:0>); every other keyID is some other key.
     const { wallet } = fakeWallet(0, honest((a) => (a.keyID === legacyLpKeyId(`${DEPLOY_TXID}_0`) ? lpKey : key(99))));
-    const r = await findMyPools("http://x/amm", wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
+    const r = await findMyPools(af, "http://x/amm", wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
     expect(r.warnings).toEqual([]);
     expect(r.pools).toHaveLength(1);
     expect(r.pools[0]!.state.outpoint).toBe(swapOp);
     expect(r.pools[0]!.lpKey).toEqual({ protocolID: P1SAT, keyID: legacyLpKeyId(`${DEPLOY_TXID}_0`), counterparty: "self" });
     expect(r.pools[0]!.via).toBe("history");
 
-    const none = await findMyPools("http://x/amm", fakeWallet(0, honest()).wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
+    const none = await findMyPools(af, "http://x/amm", fakeWallet(0, honest()).wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
     expect(none.pools).toEqual([]);
   });
 });
@@ -719,17 +719,18 @@ describe("remove liquidity: funding and the remove transaction", () => {
       const q = JSON.parse(init.body as string) as { service: string; query: { txid: string; outputIndex: number } };
       const found = q.service === "ls_mandala" && q.query.txid === s.txid && seen.length > 2;
       return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: q.query.outputIndex }] : [] }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const r = await submitToOverlay("http://x/amm", s.topic, s.beef, fetchFn);
+    }) as unknown as SignedFetch["fetch"];
+    const af: SignedFetch = { fetch: fetchFn };
+    const r = await submitToOverlay(af, "http://x/amm", s.topic, s.beef);
     expect(seen[0]!.url).toBe("http://x/amm/submit");
     expect(seen[0]!.init.headers).toEqual({ "content-type": "application/octet-stream", "x-topics": s.topic });
     expect(Array.from(seen[0]!.init.body as Uint8Array)).toEqual(s.beef);
     expect(r).toEqual({ id: "bafyreirequest" });
     // Not admitted on the first lookup, admitted on the second: the continuation (output 0).
     expect(admittedOutput(s)).toBe(0);
-    expect(await awaitAdmitted("http://x/amm", s.txid, 0, { fetchFn, intervalMs: 1 })).toBe(true);
+    expect(await awaitAdmitted(af, "http://x/amm", s.txid, 0, { intervalMs: 1 })).toBe(true);
     expect(seen.slice(1).map((x) => x.url)).toEqual(["http://x/amm/lookup", "http://x/amm/lookup"]);
-    expect(await awaitAdmitted("http://x/amm", "00".repeat(32), 0, { fetchFn, intervalMs: 1, timeoutMs: 0 })).toBe(false);
+    expect(await awaitAdmitted(af, "http://x/amm", "00".repeat(32), 0, { intervalMs: 1, timeoutMs: 0 })).toBe(false);
 
     // Where each output lands.
     expect(s.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"] });
@@ -821,11 +822,11 @@ describe("remove liquidity from a BRC-29-keyed pool: submit, internalize the wit
     const store = new PendingPayoutStore(kv); // reload
     const [rec] = store.list();
     const asked: unknown[] = [];
-    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+    const af: SignedFetch = { fetch: async (_url, init) => {
       asked.push(JSON.parse(String(init!.body)));
       return new Response(JSON.stringify({ type: "output-list", outputs: [{ beef: s.beef, outputIndex: 0 }] }), { status: 200 });
-    });
-    expect(await internalizeNow(wallet, store, "http://x/amm", rec!)).toEqual({ accepted: true, txid: s.txid });
+    } };
+    expect(await internalizeNow(wallet, store, af, "http://x/amm", rec!)).toEqual({ accepted: true, txid: s.txid });
     expect(asked).toEqual([{ service, query: { tokenId: TOKEN_ID, outpoint: `${s.txid}_0`, beef: true } }]);
     expect(calls.filter((c) => c.method === "internalizeAction")).toHaveLength(1);
     expect(store.list()).toEqual([]);

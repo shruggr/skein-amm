@@ -20,7 +20,7 @@
  * blocked storage), and tests pass their own `KV`.
  */
 import { Beef, type WalletInterface } from "@bsv/sdk";
-import { lookupPoolOutput, queryPools } from "../lib/overlay";
+import { lookupPoolOutput, queryPools, type SignedFetch } from "../lib/overlay";
 import { internalizePayout, type PaymentRemittance } from "./brc29";
 
 export const PENDING_PAYOUTS_KEY = "amm-poc.pending-payouts.v1";
@@ -183,20 +183,20 @@ function findIn(beefBytes: number[], p: PendingPayout): { txid: string; beef: nu
  * Null when the instance has no such transaction (not final yet, or no
  * longer in any live pool's BEEF).
  */
-export async function findPayoutBeef(base: string, p: PendingPayout): Promise<{ txid: string; beef: number[] } | null> {
+export async function findPayoutBeef(af: SignedFetch | null, base: string, p: PendingPayout): Promise<{ txid: string; beef: number[] } | null> {
   if (p.final && p.poolOutpoint) {
     try {
-      const out = await lookupPoolOutput(base, p.tokenId, p.poolOutpoint);
+      const out = await lookupPoolOutput(af, base, p.tokenId, p.poolOutpoint);
       const hit = findIn(out.beef, p);
       if (hit) return hit;
     } catch {
       /* fall through to the scan */
     }
   }
-  const pools = await queryPools(base, p.tokenId, {});
+  const pools = await queryPools(af, base, p.tokenId, {});
   for (const pool of pools) {
     try {
-      const out = await lookupPoolOutput(base, p.tokenId, pool.outpoint);
+      const out = await lookupPoolOutput(af, base, p.tokenId, pool.outpoint);
       const hit = findIn(out.beef, p);
       if (hit) return hit;
     } catch {
@@ -225,8 +225,8 @@ export async function internalizePending(
 }
 
 /** "Internalize now": find the final transaction on the instance, then internalize. */
-export async function internalizeNow(wallet: WalletInterface, store: PendingPayoutStore, base: string, p: PendingPayout): Promise<{ accepted: boolean; txid: string }> {
-  const found = await findPayoutBeef(base, p);
+export async function internalizeNow(wallet: WalletInterface, store: PendingPayoutStore, af: SignedFetch | null, base: string, p: PendingPayout): Promise<{ accepted: boolean; txid: string }> {
+  const found = await findPayoutBeef(af, base, p);
   if (!found) {
     throw new Error(
       p.final

@@ -18,6 +18,7 @@ import {
   parseLookupAnswer,
   parseOutputList,
   parseTokenTopic,
+  type SignedFetch,
 } from "../src/lib/overlay";
 import { buildMarketView, marginalPrice, validatorStatus } from "../src/market/view";
 import { buildPlanRequest, goneFromLookup, quote, type SwapForm } from "../src/market/plan";
@@ -625,15 +626,15 @@ describe("pending payouts: a swap's BRC-29 payout survives a reload and is inter
     expect(store.list()).toEqual([rec]);
     const beef = final.toAtomicBEEF(true);
     const asked: unknown[] = [];
-    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+    const af: SignedFetch = { fetch: async (_url, init) => {
       const q = JSON.parse(String(init!.body));
       asked.push(q);
       const body = q.query.beef
         ? { type: "output-list", outputs: [{ beef, outputIndex: 0 }] }
         : { type: "freeform", result: [{ outpoint: `${finalTxid}_0`, bsvReserve: "1", tokenReserve: "1", liquidityFeeBps: 30, validationFeeBps: 5, validatorIdentityKey: v.identity }] };
       return new Response(JSON.stringify(body), { status: 200 });
-    });
-    const r = await internalizeNow(wallet, store, "http://x/amm", store.list()[0]!);
+    } };
+    const r = await internalizeNow(wallet, store, af, "http://x/amm", store.list()[0]!);
     expect(r).toEqual({ accepted: true, txid: finalTxid });
     expect(asked).toEqual([{ service, query: { tokenId: TOKEN_ID } }, { service, query: { tokenId: TOKEN_ID, outpoint: `${finalTxid}_0`, beef: true } }]);
     const ia = calls.filter((c) => c.method === "internalizeAction");
@@ -647,8 +648,8 @@ describe("pending payouts: a swap's BRC-29 payout survives a reload and is inter
     const store = new PendingPayoutStore({ getItem: (k) => mem.get(k) ?? null, setItem: (k, val) => void mem.set(k, val) });
     const rec = { id: `${"ab".repeat(32)}:1`, kind: "swap" as const, txid: "ab".repeat(32), vout: 1, satoshis: 5, lockingScript: "76a914" + "00".repeat(20) + "88ac", remittance: { derivationPrefix: "AA==", derivationSuffix: "AA==", senderIdentityKey: "02" + "11".repeat(32) }, final: false, tokenId: "x_0", description: "AMM swap payout", createdAt: 1 };
     store.save(rec);
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ type: "freeform", result: [] }), { status: 200 }));
-    await expect(internalizeNow(fakeWallet().wallet, store, "http://x/amm", rec)).rejects.toThrow(/not on the instance yet/);
+    const af: SignedFetch = { fetch: async () => new Response(JSON.stringify({ type: "freeform", result: [] }), { status: 200 }) };
+    await expect(internalizeNow(fakeWallet().wallet, store, af, "http://x/amm", rec)).rejects.toThrow(/not on the instance yet/);
     expect(store.list()).toEqual([rec]);
   });
 });

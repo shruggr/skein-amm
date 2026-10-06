@@ -402,6 +402,7 @@ function DeployStatus({ d, onCheckAgain, onAbandon }: { d: { prepared: PreparedP
 
 function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec?: number }; onDone: () => void }) {
   const { wallet } = useWallet();
+  const authFetch = useAuthFetch();
   const [bsv, setBsv] = useState("");
   const [tok, setTok] = useState("");
   const [busy, setBusy] = useState(false);
@@ -414,10 +415,10 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
   /** Submit, then the wallet takes the withdrawals in; the pending payout record stays until it has. */
   async function submitAndComplete(s: PreparedRemoveLiquidity) {
     if (!wallet) return;
-    const r = await submitToOverlay(AMM_OVERLAY, s.topic, s.beef);
+    const r = await submitToOverlay(authFetch, AMM_OVERLAY, s.topic, s.beef);
     setSubmitted(`delivered, request ${r.id}; waiting for the overlay to admit it`);
     const at = admittedOutput(s);
-    if (at !== null) setSubmitted((await awaitAdmitted(AMM_OVERLAY, s.txid, at)) ? `admitted (request ${r.id})` : `delivered (request ${r.id}), not admitted yet: the lookup does not show it`);
+    if (at !== null) setSubmitted((await awaitAdmitted(authFetch, AMM_OVERLAY, s.txid, at)) ? `admitted (request ${r.id})` : `delivered (request ${r.id}), not admitted yet: the lookup does not show it`);
     const c = await completeRemoveLiquidity(wallet, s);
     setCompleted(c);
     const pending = pendingRemovePayout(s, p.topic.tokenId);
@@ -690,6 +691,7 @@ function AddForm({ p, meta, tokenRows, onDone }: { p: MyPool; meta?: { sym?: str
 
 function MyPools(props: { assets: WalletAssets; live: LiveAnswer | null; refreshKey: number }) {
   const { wallet } = useWallet();
+  const authFetch = useAuthFetch();
   const [pools, setPools] = useState<MyPool[] | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -703,7 +705,7 @@ function MyPools(props: { assets: WalletAssets; live: LiveAnswer | null; refresh
     setError(null);
     try {
       const topics = await listTokenTopics(AMM_OVERLAY);
-      const r = await findMyPools(AMM_OVERLAY, wallet, topics, props.assets.tokenRows);
+      const r = await findMyPools(authFetch, AMM_OVERLAY, wallet, topics, props.assets.tokenRows);
       setPools(r.pools);
       setWarnings(r.warnings);
     } catch (e) {
@@ -711,7 +713,7 @@ function MyPools(props: { assets: WalletAssets; live: LiveAnswer | null; refresh
     } finally {
       setBusy(false);
     }
-  }, [wallet, props.assets]);
+  }, [wallet, authFetch, props.assets]);
 
   useEffect(() => {
     void load();

@@ -8,6 +8,7 @@
  */
 import { useEffect, useState } from "react";
 import { useWallet } from "../wallet/AppWalletProvider";
+import { useAuthFetch } from "../wallet/authFetch";
 import { AMM_OVERLAY } from "../lib/config";
 import { internalizeNow, onPendingPayoutsChange, PendingPayoutStore, type PendingPayout } from "../wallet/pendingPayouts";
 
@@ -16,6 +17,7 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function PendingPayouts() {
   const { wallet, status } = useWallet();
+  const authFetch = useAuthFetch();
   const [items, setItems] = useState<PendingPayout[]>(() => store.list());
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
@@ -29,7 +31,7 @@ export function PendingPayouts() {
     if (!wallet) return;
     setBusy(p.id);
     try {
-      const r = await internalizeNow(wallet, store, AMM_OVERLAY, p);
+      const r = await internalizeNow(wallet, store, authFetch, AMM_OVERLAY, p);
       setNotes((n) => ({ ...n, [p.id]: { ok: r.accepted, text: r.accepted ? `internalized (txid ${r.txid.slice(0, 16)}…)` : "the wallet did not accept it" } }));
     } catch (e) {
       setNotes((n) => ({ ...n, [p.id]: { ok: false, text: errText(e) } }));
