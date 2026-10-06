@@ -10,9 +10,9 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.7.6 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.5.1 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala_deploys` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.5.1 (copied) | `ls_mandala`, `ls_mandala_deploys` |
+| `overlay` | skein-overlay 0.7.7 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.5.2 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala_deploys` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.5.2 (copied) | `ls_mandala`, `ls_mandala_deploys` |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls; submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the liveness beacon, the relay, the pages (`www/` from the app's tree) |
@@ -74,9 +74,10 @@ state.
 | `POST /call` | amm-p2p: `{fn, args}` for the three interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`) |
 
-**Box `amm/overlay`** (the manifest's `"overlay"`, relative to the app,
+**Box `amm/register`** (the manifest's `"register"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
-{topic}`, from the owner. skein-overlay 0.7.5+ takes them in this box only.
+{topic}`, from the owner. skein-overlay 0.7.7+ takes them in this box only
+(0.7.5–0.7.6: `amm/overlay`).
 
 **Box `amm/submit`** (the manifest's `"submit"`, `filter: "beef"`): the
 engine's `submit {beef, topics, offChainValues?}` from anyone (the
@@ -145,7 +146,7 @@ In table order; mailbox addresses are relative to the app (shruggr/skein#128:
 `""` is the box `amm`, `"x"` is `amm/x`); the kernel takes the first row of
 the package's transport and address whose sender rule admits the sender:
 
-1. `overlay` from `$owner` → `overlay` (register / deregister)
+1. `register` from `$owner` → `overlay` (register / deregister)
 2. `""` from `event` → `overlay`
 3. `""` from `$self` → `overlay` (the engine's own watch, resume)
 4. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
@@ -169,7 +170,7 @@ the engine would get neither.
 ## Not wired
 
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
-  0.7.1+'s manifest row): not carried, as skein-mandala 0.5.1 does not; a
+  0.7.1+'s manifest row): not carried, as skein-mandala 0.5.2 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
 - **`tm_<txid>-live` subscription.** The skein node never subscribes `-live`

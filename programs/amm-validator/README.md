@@ -8,7 +8,7 @@ zig build test-amm-validator   # from the repo root: the package, the protocol, 
 
 ## 0.2.1: the submissions box (skein-overlay 0.7.5)
 
-The submission message goes to box `<app>/submit` (`submit.box`; the manifest's row `submit` from `*` → `overlay`, `filter: "beef"`): skein-overlay 0.7.5 takes `submit` in any box routed to the engine and `register` / `deregister` only in `<app>/overlay` (shruggr/skein#128). The engine answers in the same box; the handler is called again with that `reply` as before.
+The submission message goes to box `<app>/submit` (`submit.box`; the manifest's row `submit` from `*` → `overlay`, `filter: "beef"`): skein-overlay 0.7.5 takes `submit` in any box routed to the engine and `register` / `deregister` only in `<app>/register` (0.7.7; `<app>/overlay` before, shruggr/skein#128). The engine answers in the same box; the handler is called again with that `reply` as before.
 
 ## 0.2.0: submission by message (skein-overlay 0.7.4)
 
