@@ -10,9 +10,9 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.7.8 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.6.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.6.0 (copied) | `ls_mandala`, `ls_mandala_deploys` |
+| `overlay` | skein-overlay 0.8.0 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.7.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.7.0 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens` (the token list, a read in skein-mandala's manifest) is in the program, but this manifest declares no `/mandala/tokens` read |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls; submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the liveness beacon, a market's liveness request, the relay, the pages (`www/` from the app's tree) |
@@ -69,11 +69,13 @@ state.
 |---|---|
 | `POST /submit` | the submission message's transport (`X-Topics` a registered topic): `200 {id}`, delivery only; no STEAK (skein-overlay 0.7.2+); the submission event is admitted into box `amm/submit` (0.7.6) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}`; `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
-| `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`) |
+| `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
 | `GET /.live/tm_<txid>-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window; 404 when the app keeps no liveness for the topic |
-| `GET /live` | amm-p2p: 410 since 0.4.0 (the row stays until the manifest's `reads[]` arrive, #135) |
 | `POST /call` | amm-p2p: `{fn, args}` for the three interfaces below |
-| `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`) |
+| `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
+
+Which of these is a read and which a message route is "Rows and reads",
+below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).
 
 **Box `amm/register`** (the manifest's `"register"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
@@ -220,16 +222,39 @@ the package's transport and address whose sender rule admits the sender:
 5. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
 6. `amm-p2p` from `*` → `amm-p2p`
 7. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
-8. http `/listTopicManagers`, `/listLookupServiceProviders`,
-   `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider`
-   → `overlay`
-9. http `/live` → `amm-p2p` `live` (410 since 0.4.0; kept until `reads[]`, #135); `/call` → `amm-p2p` `call`
-10. http `/` (prefix) → `amm-p2p` `serve`, `root: "www"`, `index: "index.html"`
-11. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
+8. http `/call` → `amm-p2p` `call` (a message route: a signed request)
+9. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
    `amm-validator` (each refused `not_validating` for a topic outside the validated set)
 
 then, derived by the install from `config.overlay`: http `/submit` (`filter:
-beef`) and `/lookup` → `overlay` (exact paths match before the `/` prefix).
+beef`) → `overlay`, and the read `/lookup` (below).
+
+### Rows and reads
+
+shruggr/skein#135 (two doors): a **row** (`dispatch[]`) carries a message —
+an http row is a message route, which takes a signed request (BRC-104),
+appends it as an entry and steps it, and answers an unsigned request 401;
+a **read** (`reads[]`) is served by the host as a call of the function over
+the current state, any method, signed or not, no entry, nothing logged (a
+function that writes fails inside the call). A read and an http row never
+share a path; exact paths match before a prefix, so `/call`, `/submit` and
+`/lookup` are taken before the read `/`.
+
+| path under `/amm/` | door | program, fn | since |
+|---|---|---|---|
+| `/submit` | row (http, derived from `config.overlay`) | `overlay` `submit`, `filter: beef` | |
+| `/call` | row (http) | `amm-p2p` `call` | |
+| `/lookup` | read (derived from `config.overlay`) | `overlay` `lookup` | skein #135 |
+| `/listTopicManagers`, `/listLookupServiceProviders` | read | `overlay` `listTopicManagers`, `listLookupServiceProviders` | 0.5.0 (http rows before) |
+| `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `overlay` `topicDocumentation`, `lookupDocumentation` | 0.5.0 (http rows before) |
+| `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `amm-p2p` `serve` | 0.5.0 (an http row before) |
+| `/.live/tm_<txid>-live` | the runtime's liveness read (no program, skein #138) | | |
+| `/live` | gone | | 0.5.0 (410 in 0.4.0) |
+
+The boxes (`register`, `validate`, `""`, `amm-p2p`, `submit`) and the libp2p
+rows above are rows; they are messages, never reads. amm-p2p's `serve`
+reads only (the head `amm/app` and the tree's blobs) and runs as a call
+unchanged.
 
 Rows 3 and 4 are the derived engine rows, listed so they come before row 5:
 a `*` row admits events and the instance's own messages too, so after it

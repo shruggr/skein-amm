@@ -3,8 +3,10 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.4.0**: on skein-overlay 0.7.8 (skein-sdk 0.7.1)
-and skein-mandala 0.6.2; a node beacons only the topics its owner has set up
+and its pages. Version **0.5.0**: on skein-overlay 0.8.0 (skein-sdk 0.7.1)
+and skein-mandala 0.7.0; the listings, the documentation and the pages are
+reads, `/live` is gone (0.5.0, shruggr/skein#135: docs/AMM.md "Rows and
+reads"); a node beacons only the topics its owner has set up
 validation for, per topic (0.3.1, David 2026-10-06), and its validator signs
 only for those topics, one setting (0.3.2); validator liveness is the
 runtime's (0.4.0, shruggr/skein#120 and #138, David 2026-10-06): a host
@@ -152,8 +154,9 @@ wildcard DNS, `<host>/@<handle>/amm`).
    liquidity), Swap, Validator (this instance as a validator); the Mandala
    pages at `<base>/mandala/`. They call `<base>/lookup` (`ls_amm`,
    `ls_mandala`), `<base>/.live/tm_<txid>-live` (the runtime's liveness read),
-   `<base>/call` (the relay) and `<base>/submit`. `<base>/live` (the row is
-   kept until the manifest's `reads[]` arrive, #135) answers 410 since 0.4.0.
+   `<base>/call` (the relay) and `<base>/submit`. The pages are a read (a
+   call, anyone, signed or not; 0.5.0); `/call` and `/submit` are message
+   routes (a signed request). `<base>/live` is gone (0.5.0).
 
 **Submit and look up** (skein-overlay 0.7.2+: a submission is a message, answered later to the submitter's box; BRC-24):
 
@@ -175,9 +178,9 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.4.0 |
-| skein-overlay | v0.7.8 (a570188) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-mandala | v0.6.2 (253f1cd) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
+| this app | 0.5.0 |
+| skein-overlay | v0.8.0 (28765fc) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
+| skein-mandala | v0.7.0 (cb525e7) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain v0.3.2) |

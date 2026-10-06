@@ -20,10 +20,9 @@
 //!
 //!   proofsByBlock   a /amm/proofs/1.0.0 frame → {verdict: accept, body: {bump} | {missing: true}}
 //!                   (a utility: no row routes it since 0.2.0; sync is shruggr/skein#112's `want`)
-//!   serve           route http `/` (prefix): the app's pages, `www/` of the app's own tree
-//!                   (skein-sdk `files.serve`, shruggr/skein#125)
-//!   live            route http `/live` (the row kept until the reads[] entries arrive, #135): 410, gone in
-//!                   0.4.0 — the validators live are the runtime's `GET /<app>/.live/tm_<txid>-live`
+//!   serve           the read `/` (prefix; the manifest's `reads[]`, shruggr/skein#135: a call, anyone,
+//!                   signed or not, nothing logged): the app's pages, `www/` of the app's own tree
+//!                   (skein-sdk `files.serve`, shruggr/skein#125); it reads only
 //!   call            route /amm/call (APPS.md §4): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`,
 //!                   `amm.pool.submit` and `amm.liquidity.submit` answer {wait: true} and, called again with
 //!                   `resolved`, the record
@@ -314,19 +313,8 @@ fn call(a: Allocator, in: Value) !void {
     if (eql(u8, func, "call") and arg.get("match") != null) return vm.answer(a, try appRoute(a, in, arg));
     if (eql(u8, func, "serve")) return vm.answer(a, try servePages(a, arg));
     if (isAppFn(func)) return vm.answer(a, try appCall(a, in, func, arg));
-    const out: Value = if (eql(u8, func, "proofsByBlock"))
-        try proofsByBlock(a, in, arg)
-    else if (eql(u8, func, "live"))
-        try liveGone(a)
-    else
-        return error.UnknownFunction;
-    try vm.answer(a, out);
-}
-
-/// `GET /amm/live` (the row kept until the reads[] entries arrive, #135): gone in 0.4.0. The
-/// validators live on a token are the runtime's read, `GET /<app>/.live/tm_<txid>-live` (#138).
-fn liveGone(a: Allocator) !Value {
-    return httpJson(a, 410, .{ .status = "error", .message = "gone in skein-amm 0.4.0: GET /amm/.live/tm_<txid>-live (the runtime's liveness read)" });
+    if (eql(u8, func, "proofsByBlock")) return vm.answer(a, try proofsByBlock(a, in, arg));
+    return error.UnknownFunction;
 }
 
 /// The serving side of the direct call: one request frame, one reply frame. A utility since 0.2.0:
@@ -334,16 +322,6 @@ fn liveGone(a: Allocator) !Value {
 fn proofsByBlock(a: Allocator, in: Value, arg: Value) !Value {
     const msg = try libp2p.inbound(arg);
     return libp2p.directAnswer(a, try proofs.serve(a, views.held(try loadState(a, in)), msg.body));
-}
-
-fn httpJson(a: Allocator, status: u64, v: anytype) !Value {
-    var out: std.Io.Writer.Allocating = .init(a);
-    try std.json.Stringify.value(v, .{}, &out.writer);
-    return .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "status", .value = .{ .uint = status } },
-        .{ .key = "type", .value = .{ .text = "application/json" } },
-        .{ .key = "body", .value = .{ .bytes = out.written() } },
-    }) };
 }
 
 // ---------------------------------------------------------------- outbound: emit to a provider
@@ -629,9 +607,10 @@ fn market(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields:
     });
 }
 
-/// The `/` route (`{transport: "http", address: "/", prefix: true, program: "amm-p2p", fn: "serve",
-/// root: "www", index: "index.html"}`): the app's pages from its own tree, the installed app
-/// record's `tree` (skein-sdk `files.serve`, shruggr/skein#125).
+/// The read `/` (`{address: "/", prefix: true, program: "amm-p2p", fn: "serve", root: "www", index:
+/// "index.html"}` in the manifest's `reads[]`, shruggr/skein#135; the read is the request's `match`):
+/// the app's pages from its own tree, the installed app record's `tree` (skein-sdk `files.serve`,
+/// shruggr/skein#125). It reads only: the head `amm/app` and the tree's blobs.
 fn servePages(a: Allocator, arg: Value) !Value {
     const req = try toSdk(a, arg);
     const m = try app.manifestOf(a, relay.app_name);

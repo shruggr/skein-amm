@@ -22,6 +22,11 @@ Ported from amm-poc `programs/amm-p2p` (skein-overlay 0.2.0, skein-sdk 0.3.0) on
 - **STOP: the heartbeat topic is not routed.** The heartbeat is still published on `tm_<txid>-live` for each served token topic, and `validateLive` still judges it, but no row in the app routes `tm_<txid>-live` to it: amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`), templated per instance, and a dynamic overlay's manifest names no token. How validator liveness per token is addressed is not decided (`liveVerdict`, src/main.zig).
 - **The peer ID.** amm-poc filled `ammP2p.peerId` per instance (`{{PEER_ID}}`). skein gives a program no way to learn its own peer ID (a step's input has `self.identity`, no peer ID; the host derives the libp2p key from the master secret, `[2, "skein instance"]`, key ID `libp2p:<handle>`), so the manifest carries none; without it `amm-p2p-start` schedules no heartbeat (catch-up only).
 
+## 0.5.0 (reads, shruggr/skein#135)
+
+- **The pages are a read.** fn `serve` is the manifest's read `/` (prefix, `root: "www"`, `index: "index.html"`; was the http row `/`): the host serves it by a call over the current state, any method, signed or not, no entry. It reads only (the head `amm/app`, the tree's blobs), so nothing changed in it.
+- **fn `live` is gone**, and its http row `/live` with it (0.4.0 answered 410 there). The validators live on a token are the runtime's read, `GET /<app>/.live/tm_<txid>-live`.
+
 ## 0.4.0 (liveness is the runtime's; the caller names the validator)
 
 This section supersedes what the rest of this file says where they differ (0.3.0's market role, 0.2.1's `liveness.judge` and `amm-live` entry, "Liveness — `tm_<txid>-live`" below, the relay's `validator_offline`, and the catch-up's peers from the live map). Decided with David 2026-10-06 (shruggr/skein#120, last comment; the host side is shruggr/skein#138, skein main f45c887).
@@ -112,7 +117,8 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 |---|---|---|
 | `libp2p:tm_<txid>-live` (GossipSub topic) | none (0.4.0) | the runtime's liveness tool on a market host (`liveness`), read at `GET /amm/.live/tm_<txid>-live`; this program judges no beat |
 | `libp2p:/amm/proofs/1.0.0` (direct call) | `proofsByBlock` | answer one request frame with one reply frame |
-| `/amm/call` (HTTP, APPS.md §4) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit`, `amm.pool.submit` and `amm.liquidity.submit` wait on their relay |
+| `/amm/` (a read, prefix: `reads[]`, shruggr/skein#135) | `serve` | the pages, `www/` of the app's tree; a call, anyone, signed or not, nothing logged |
+| `/amm/call` (HTTP row, APPS.md §4: a signed request) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit`, `amm.pool.submit` and `amm.liquidity.submit` wait on their relay |
 
 `<txid>` is the token's deploy txid, 64 lowercase hex characters in display order; the topic name has no suffix (`tm_<txid>`), and the liveness topic adds `-live`, in skein's `-admit`/`-proof` style. Bodies are dag-cbor; hashes and txids are 32 bytes in internal byte order.
 
