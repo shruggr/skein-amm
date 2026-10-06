@@ -31,7 +31,7 @@
 //!   box send     {stream, body}     → {}
 //!   box close    {stream}           → {}
 //!
-//! There is no way to learn the instance's own peer ID: see main.zig `selfPeerId`.
+//! The instance's own peer ID: main.zig `selfPeerId` (the signer's key, `peerIdOf`).
 const std = @import("std");
 const w = @import("chain");
 
@@ -48,6 +48,15 @@ pub const Inbound = struct {
     from: []const u8,
     body: []const u8,
 };
+
+/// The protocol the instance's keys are derived under (skein src/host/signer.ts `INSTANCE_PROTOCOL`).
+pub const instance_protocol = .{ .level = 2, .name = "skein instance" };
+
+/// The peer ID of a compressed secp256k1 key, as js-libp2p makes it: the identity multihash
+/// (0x00, length 0x25) of the protobuf PublicKey {1: KeyType = 2 (secp256k1), 2: the 33 bytes}.
+pub fn peerIdOf(a: Allocator, key: [33]u8) ![]const u8 {
+    return std.mem.concat(a, u8, &.{ &.{ 0x00, 0x25, 0x08, 0x02, 0x12, 0x21 }, &key });
+}
 
 /// A peer ID as bytes: bytes as they are, text as base58btc.
 pub fn peerIdBytes(a: Allocator, v: Value) ![]const u8 {

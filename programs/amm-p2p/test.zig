@@ -11,6 +11,8 @@ const libp2p = @import("src/libp2p.zig");
 const schedule = @import("src/schedule.zig");
 const proofs = @import("src/proofs.zig");
 const liveness = @import("src/liveness.zig");
+/// js-libp2p's peer ID of the generator point's key (skein src/host/p2p.ts `peerIdOf` of the private key 1).
+const PEER_ID_OF_G = "16Uiu2HAm3cuhhRL2msUuLF62KRSfneFDx94RsuouyW25Ho42cFMq";
 const views = @import("src/views.zig");
 
 const bsvz = w.bsvz;
@@ -272,7 +274,7 @@ test "liveness: the handler's admit entry, stepped by this program into the last
     try testing.expectEqualStrings("accept", ans.getText("verdict").?);
     const ad = ans.getArray("admit").?;
     try testing.expectEqual(@as(usize, 1), ad.len);
-    try testing.expectEqualStrings("amm-p2p", ad[0].getText("box").?);
+    try testing.expectEqualStrings("amm/amm-p2p", ad[0].getText("box").?);
     const ev = ad[0].get("event").?;
     try testing.expectEqualStrings("amm-live", ev.getText("kind").?);
 
@@ -317,7 +319,7 @@ test "schedules (skein#69): the cron provider's tick and stop bodies, the tick r
     const t = readBack(a, try schedule.tick(a, .heartbeat, 30_000, names.own_box));
     try testing.expectEqualStrings("tick", t.getText("fn").?);
     try testing.expectEqual(@as(u64, 30_000), t.getUint("every").?);
-    try testing.expectEqualStrings("amm-p2p", t.getText("box").?);
+    try testing.expectEqualStrings("amm/amm-p2p", t.getText("box").?);
     try testing.expectEqualStrings("amm-p2p-heartbeat", t.getText("name").?);
     try testing.expectEqualStrings("amm-p2p-tick", t.get("body").?.getText("kind").?);
     const s = readBack(a, try schedule.stop(a, .catchup));
@@ -339,11 +341,39 @@ test "schedules (skein#69): the cron provider's tick and stop bodies, the tick r
     }) };
     try testing.expectError(error.BadTick, schedule.jobOf(bad));
 
-    // The jobs a start names: its own, else catch-up, and the heartbeat on a validator.
-    try testing.expectEqual(@as(usize, 2), (try schedule.jobsOf(a, .{ .map = &.{} }, true)).len);
-    try testing.expectEqualSlices(schedule.Job, &.{.catchup}, try schedule.jobsOf(a, .{ .map = &.{} }, false));
+    // The jobs a start names (the cron fallback); a start without `jobs` is the beacon's, no schedule.
+    try testing.expectError(error.NoJobs, schedule.jobsOf(a, .{ .map = &.{} }));
     const only: Value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "jobs", .value = .{ .array = try a.dupe(Value, &.{.{ .text = "heartbeat" }}) } }}) };
-    try testing.expectEqualSlices(schedule.Job, &.{.heartbeat}, try schedule.jobsOf(a, only, false));
+    try testing.expectEqualSlices(schedule.Job, &.{.heartbeat}, try schedule.jobsOf(a, only));
+}
+
+test "the beacon (shruggr/skein#126): beacon {topic: tm_<txid>-live, every, body} and unbeacon {topic}" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const topic = try names.live(a, "tm_" ++ "ab" ** 32);
+    const b = readBack(a, try liveness.beaconEvent(a, topic, 30_000, "body"));
+    try testing.expectEqualStrings("beacon", b.getText("event").?);
+    try testing.expectEqualStrings("tm_" ++ "ab" ** 32 ++ "-live", b.getText("topic").?);
+    try testing.expectEqual(@as(u64, 30_000), b.getUint("every").?);
+    try testing.expectEqualStrings("body", b.getBytes("body").?);
+    const u = readBack(a, try liveness.unbeaconEvent(a, topic));
+    try testing.expectEqualStrings("unbeacon", u.getText("event").?);
+    try testing.expectEqualStrings(topic, u.getText("topic").?);
+    try testing.expect(u.get("body") == null);
+}
+
+test "the peer ID of a compressed secp256k1 key: the identity multihash of its protobuf PublicKey (js-libp2p's, 16Uiu2…)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var k: [33]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&k, "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    const id = try libp2p.peerIdOf(a, k);
+    try testing.expectEqual(@as(usize, 39), id.len);
+    try testing.expectEqualSlices(u8, &.{ 0x00, 0x25, 0x08, 0x02, 0x12, 0x21 }, id[0..6]);
+    try testing.expectEqualSlices(u8, &k, id[6..]);
+    try testing.expectEqualStrings(PEER_ID_OF_G, try libp2p.peerIdText(a, id));
 }
 
 test "libp2p adapter: the handler's argument, answers with admit entries, the direct call's answer, the provider's bodies and answers" {

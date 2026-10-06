@@ -40,10 +40,10 @@ function fakeAuthFetch(answer: (url: string, config?: { method?: string; body?: 
 describe("heartbeat start / stop (BRC-33 sendMessage)", () => {
   it("builds the message into the instance's own box amm-p2p", () => {
     expect(heartbeatRequest("start", AMM2.toUpperCase())).toEqual({
-      message: { recipient: AMM2, messageBox: "amm-p2p", body: { kind: "amm-p2p-start" } },
+      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-start" } },
     });
     expect(heartbeatRequest("stop", AMM2)).toEqual({
-      message: { recipient: AMM2, messageBox: "amm-p2p", body: { kind: "amm-p2p-stop", jobs: ["heartbeat"] } },
+      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-stop" } },
     });
   });
 
@@ -58,7 +58,7 @@ describe("heartbeat start / stop (BRC-33 sendMessage)", () => {
     expect(calls[0]!.config?.method).toBe("POST");
     expect(calls[0]!.config?.headers).toEqual({ "content-type": "application/json" });
     expect(JSON.parse(calls[0]!.config!.body!)).toEqual({
-      message: { recipient: AMM2, messageBox: "amm-p2p", body: { kind: "amm-p2p-start" } },
+      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-start" } },
     });
     expect(r.admitted).toBe(true);
     expect(r.id).toBe("bafy1");

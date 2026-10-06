@@ -5,18 +5,18 @@
 //
 //   amm-lookup      ls_amm: the pool liquidity lookup over every token topic served   programs/amm-lookup
 //   amm-validator   the validator: swap, addLiquidity, deploy (libp2p direct calls)       programs/amm-validator
-//   amm-p2p         liveness, proofs by block, the relay (amm.swap/1, amm.pool/1,          programs/amm-p2p
-//                   amm.liquidity/1) and the app's box
+//   amm-p2p         the liveness beacon, the relay (amm.swap/1, amm.pool/1,               programs/amm-p2p
+//                   amm.liquidity/1), the app's box and its pages (www/, files.serve)
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the
 // `mandala` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.6.0)
-//                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.4.0) copied beside
+//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.7.4)
+//                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.5.0) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
-// The Mandala pages (skein-mandala v0.4.0's www/) are copied into www/mandala/ by
+// The Mandala pages (skein-mandala v0.5.0's www/) are copied into www/mandala/ by
 // scripts/mandala-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
 // The AMM pages are built from web/ui into www/ (scripts/www.sh runs both).
 const std = @import("std");
@@ -29,6 +29,7 @@ const Mods = struct {
     cbor: *std.Build.Module,
     sk: *std.Build.Module,
     app: *std.Build.Module,
+    files: *std.Build.Module,
     dagjson: *std.Build.Module,
     topic: *std.Build.Module,
     lookup: *std.Build.Module,
@@ -73,6 +74,7 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .cbor = sdk.module("cbor"),
         .sk = sdk.module("sk"),
         .app = sdk.module("app"),
+        .files = sdk.module("files"),
         .dagjson = sdk.module("dagjson"),
         .topic = ov.module("topic"),
         .lookup = ov.module("lookup"),
@@ -110,6 +112,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "sdk_cbor", .module = m.cbor },
         .{ .name = "sk", .module = m.sk },
         .{ .name = "app", .module = m.app },
+        .{ .name = "files", .module = m.files },
         .{ .name = "dagjson", .module = m.dagjson },
         .{ .name = "overlay_sk", .module = m.overlay_sk },
         .{ .name = "skein_overlay", .module = m.engine },

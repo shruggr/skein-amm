@@ -22,10 +22,11 @@
  *      under the pool's LP key) and the funding output (`createSignature`,
  *      SIGHASH_ALL|FORKID); outputs exactly the contract's, no change. Both
  *      inputs are checked with `Spend`.
- *   5. `POST <base>/submit` (BRC-22, `x-topics: tm_<txid>`) with the
- *      remove's AtomicBEEF; the funding transaction is in it as the unproven
- *      parent (the engine verifies against it, as it does the fixture's
- *      unproven pool deploy).
+ *   5. `POST <base>/submit` (`x-topics: tm_<txid>`) with the remove's
+ *      AtomicBEEF; the funding transaction is in it as the unproven parent
+ *      (the engine verifies against it, as it does the fixture's unproven
+ *      pool deploy). The answer is delivery only, `{id}` (skein-overlay
+ *      0.7.2+); the outcome is read with a lookup (`awaitAdmitted`).
  *   6. `completeRemoveLiquidity`: one `internalizeAction` — the sats
  *      withdrawal as a BRC-29 wallet payment (the contract pays the current
  *      LP key, a BRC-29 key `"<prefix> <suffix>"`, so the remittance is its
@@ -273,20 +274,61 @@ export async function completeRemoveLiquidity(wallet: WalletInterface, s: Prepar
   return out;
 }
 
-/** BRC-22 submit to the instance: `POST <base>/submit`, body the BEEF, `x-topics` the token topic (as the instance's own seed does). */
-export async function submitToOverlay(base: string, topic: string, beef: number[], fetchFn: typeof fetch = fetch): Promise<{ status: number; body: unknown }> {
+/**
+ * Submit to the instance (skein-overlay 0.7.2+, docs/OVERLAY.md "Submitting"): `POST <base>/submit`
+ * (`x-topics` the token topic, the body the BEEF) carries the submission message `{fn: "submit",
+ * args: {beef, topics}}` and answers its delivery only, `200 {id}` — the request record's CID, which
+ * every answer names. No STEAK comes back on the connection: the verdict (admitted, each proof, or
+ * rejected) is a message to the submitter's box, and a client on the open route, as here, reads the
+ * outcome with a lookup (`awaitAdmitted`).
+ */
+export async function submitToOverlay(base: string, topic: string, beef: number[], fetchFn: typeof fetch = fetch): Promise<{ id: string }> {
   const res = await fetchFn(`${base}/submit`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": topic },
     body: new Uint8Array(beef),
   });
   const text = await res.text();
-  let body: unknown = text;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    /* text */
-  }
   if (!res.ok) throw new Error(`POST ${base}/submit: ${res.status} ${text.slice(0, 300)}`);
-  return { status: res.status, body };
+  let id: unknown;
+  try {
+    id = (JSON.parse(text) as { id?: unknown }).id;
+  } catch {
+    /* not JSON */
+  }
+  if (typeof id !== "string") throw new Error(`POST ${base}/submit: want {id}, got ${text.slice(0, 300)}`);
+  return { id };
+}
+
+/** The output of the remove the lookup is asked about: the continuation, else the token withdrawal (null: neither). */
+export function admittedOutput(s: Pick<PreparedRemoveLiquidity, "continuation" | "tokens">): number | null {
+  return s.continuation?.outputIndex ?? s.tokens?.outputIndex ?? null;
+}
+
+/**
+ * Whether the overlay admitted `txid`: `ls_mandala {txid, outputIndex}` (one Mandala output, if
+ * unspent; skein-mandala docs/MANDALA.md) asked until it answers the output or `timeoutMs` passes.
+ * The engine admits once the chain app accepts the transaction (its broadcast succeeded).
+ */
+export async function awaitAdmitted(
+  base: string,
+  txid: string,
+  outputIndex: number,
+  o: { timeoutMs?: number; intervalMs?: number; fetchFn?: typeof fetch } = {},
+): Promise<boolean> {
+  const fetchFn = o.fetchFn ?? fetch;
+  const deadline = Date.now() + (o.timeoutMs ?? 60_000);
+  for (;;) {
+    const res = await fetchFn(`${base}/lookup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ service: "ls_mandala", query: { txid, outputIndex } }),
+    });
+    if (res.ok) {
+      const a = (await res.json()) as { outputs?: unknown[] };
+      if (Array.isArray(a.outputs) && a.outputs.length > 0) return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, o.intervalMs ?? 2_000));
+  }
 }

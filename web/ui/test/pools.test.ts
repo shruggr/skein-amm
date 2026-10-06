@@ -44,7 +44,7 @@ import {
   type BasketRow,
 } from "../src/lp/poolDeploy";
 import { findMyPools, historyKeys, historyOutpoints, matchPool, poolRowsOf } from "../src/lp/myPools";
-import { LEGACY_LP_KEY, completeRemoveLiquidity, pendingRemovePayout, prepareRemoveLiquidity, submitToOverlay } from "../src/lp/removeLiquidity";
+import { LEGACY_LP_KEY, admittedOutput, awaitAdmitted, completeRemoveLiquidity, pendingRemovePayout, prepareRemoveLiquidity, submitToOverlay } from "../src/lp/removeLiquidity";
 import { checkPoolDeployAgain, relayPoolDeploy } from "../src/lp/deployFlow";
 import { parsePoolRecord } from "../src/lp/poolRelay";
 import { dagBytes, readBytes, type AuthFetchLike } from "../src/market/relay";
@@ -689,13 +689,22 @@ describe("remove liquidity: funding and the remove transaction", () => {
     const seen: { url: string; init: RequestInit }[] = [];
     const fetchFn = (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
-      return new Response(JSON.stringify({ [s.topic]: { outputsToAdmit: [0, 1, 2], coinsToRetain: [] } }), { status: 200 });
+      // skein-overlay 0.7.2+: delivery only, the request record's CID; the outcome is a lookup.
+      if (url.endsWith("/submit")) return new Response(JSON.stringify({ id: "bafyreirequest" }), { status: 200 });
+      const q = JSON.parse(init.body as string) as { service: string; query: { txid: string; outputIndex: number } };
+      const found = q.service === "ls_mandala" && q.query.txid === s.txid && seen.length > 2;
+      return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: q.query.outputIndex }] : [] }), { status: 200 });
     }) as unknown as typeof fetch;
     const r = await submitToOverlay("http://x/amm", s.topic, s.beef, fetchFn);
     expect(seen[0]!.url).toBe("http://x/amm/submit");
     expect(seen[0]!.init.headers).toEqual({ "content-type": "application/octet-stream", "x-topics": s.topic });
     expect(Array.from(seen[0]!.init.body as Uint8Array)).toEqual(s.beef);
-    expect(r.body).toEqual({ [s.topic]: { outputsToAdmit: [0, 1, 2], coinsToRetain: [] } });
+    expect(r).toEqual({ id: "bafyreirequest" });
+    // Not admitted on the first lookup, admitted on the second: the continuation (output 0).
+    expect(admittedOutput(s)).toBe(0);
+    expect(await awaitAdmitted("http://x/amm", s.txid, 0, { fetchFn, intervalMs: 1 })).toBe(true);
+    expect(seen.slice(1).map((x) => x.url)).toEqual(["http://x/amm/lookup", "http://x/amm/lookup"]);
+    expect(await awaitAdmitted("http://x/amm", "00".repeat(32), 0, { fetchFn, intervalMs: 1, timeoutMs: 0 })).toBe(false);
 
     // Where each output lands.
     expect(s.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"] });

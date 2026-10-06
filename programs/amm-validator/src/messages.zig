@@ -1,7 +1,8 @@
 //! The validator's protocol: the direct call's package and the dag-cbor
 //! request and reply bodies (README.md, "Protocol"), and what the handler
-//! does next — answer now, launch the overlay engine's submission thread and
-//! wait, or wait on the submission already under way — and the answer read
+//! does next — answer now, submit to the overlay by message and wait on its
+//! answer, or wait on the submission already under way — and the answer:
+//! from the engine's answer to the submission (`answerFromSubmit`), or read
 //! from the state once the thread the call waited on has come to rest.
 const std = @import("std");
 const w = @import("chain");
@@ -132,58 +133,51 @@ pub const Deps = struct {
     config: validator.Config,
     view: View,
     oracle: @import("oracle.zig").Oracle,
-    /// The engine's `submit.route` in the front door's step (submit.zig `Route`).
-    route: submit.Route,
+    /// The app's overlay state as the step sees it (a submission under way, judged before, rejected).
+    st: *ov.state.State,
 };
 
 /// What the handler does after the checks (main.zig):
 pub const Next = union(enum) {
-    /// `reply` is the answer, now (a refusal, a deploy's consent).
+    /// `reply` is the answer, now (a refusal).
     answer,
-    /// Launch the overlay engine's submission thread on this submit record
-    /// (args `{event, box: "submit"}`, as `POST /submit` does) and answer
-    /// `{wait: true}`.
-    launch: Value,
+    /// Submit by message (submit.zig): `{fn: "submit", args: {beef, topics: [topic]}}` from this
+    /// instance to itself, box `<app>`; await it and answer `{wait: true}`. The engine's answer
+    /// to it calls the handler again (`answerFromSubmit`).
+    submit: struct { beef: []const u8, topic: []const u8 },
     /// A resubmission while the first submission awaits the network: await
     /// that thread (the overlay's `pending` record names it) and answer `{wait: true}`.
     wait_on: [32]u8,
-    /// Judged before: the answer is the state's, now (`answerFromState`).
+    /// Judged before, or rejected before: the answer is the state's, now (`answerFromState`).
     from_state,
 };
 
 pub const Served = struct {
     reply: Reply,
     next: Next = .answer,
-    /// With `launch` only (the signed spend admitted for submission): the
-    /// unproven parents its BEEF carries, parents first, which the chain app
-    /// registers and broadcasts when the engine ingests the submission
+    /// With `submit` only: the unproven parents its BEEF carries, parents first, which the chain
+    /// app registers and broadcasts when the engine ingests the submission
     /// (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF"). Nothing on a refusal.
     broadcast: []const validator.Parent = &.{},
 };
 
 /// After `validator.spend` signs (or `validator.deploy` consents: the LP's
-/// deploy as it came, nobody else signs it): the BEEF through skein's
-/// `submit.route` for the topic the checks judged it for. A refusal by the
-/// route is answered as it is — after signing, but it should not happen: the
-/// checks asked the topic's own judgement first (validator.zig check 6), so
-/// what is left is the BEEF itself (an input neither held nor in it:
-/// `submit_refused`) or a transaction already rejected (`rejected`).
+/// deploy as it came, nobody else signs it): what the state says of the
+/// transaction already — admitted under the topic, or rejected (answered from
+/// the state), or with the chain app in a submission of its own (wait on that
+/// thread: the engine answers a resubmission while the first is pending with
+/// nothing) — else the signed BEEF submitted by message for the topic the
+/// checks judged it for. A refusal by the engine comes back as its answer
+/// (`answerFromSubmit`).
 fn finishSpend(a: std.mem.Allocator, reply: Reply, d: Deps) !Served {
     if (reply != .ok) return .{ .reply = reply };
     const sub = reply.ok.submission orelse return .{ .reply = reply };
     const raw = reply.ok.tx orelse return .{ .reply = reply };
     const txid = reply.ok.txid orelse return .{ .reply = reply };
-    return switch (try d.route.route(a, try submit.submissionBeef(a, raw, sub.ancestry), sub.topic)) {
-        .admit => |x| if (!std.mem.eql(u8, &x.txid, &txid)) error.RoutedAnotherTransaction else .{ .reply = reply, .next = .{ .launch = x.event }, .broadcast = sub.parents },
-        .pending => |t| .{ .reply = reply, .next = .{ .wait_on = t } },
-        .unchanged => .{ .reply = reply, .next = .from_state },
-        .nothing => |why| .{ .reply = .{ .refused = .{
-            .reason = if (std.mem.eql(u8, why, "TransactionRejected")) .rejected else .topic_refused,
-            .detail = why,
-            .txid = txid,
-        } } },
-        .refused => |why| .{ .reply = .{ .refused = .{ .reason = .submit_refused, .detail = why, .txid = txid } } },
-    };
+    if (try d.st.isApplied(sub.topic, txid)) return .{ .reply = reply, .next = .from_state };
+    if ((try settlementOf(d.st, txid)) != null) return .{ .reply = reply, .next = .from_state };
+    if (try d.st.isPending(txid)) if (!(try d.st.isPaused(txid))) return .{ .reply = reply, .next = .{ .wait_on = txid } };
+    return .{ .reply = reply, .next = .{ .submit = .{ .beef = try submit.submissionBeef(a, raw, sub.ancestry), .topic = sub.topic } }, .broadcast = sub.parents };
 }
 
 /// A direct call's request body → the reply, and what the handler does next.
@@ -279,4 +273,33 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
     }
     if (try st.isApplied(topic, txid)) return .{ .ok = .{ .tx = signed.raw, .txid = txid } };
     return .{ .refused = .{ .reason = .submit_failed, .detail = "not admitted, pending or rejected: the submission came to nothing", .txid = txid } };
+}
+
+/// The direct call's answer on the engine's answer to its submission (the handler called again
+/// with `reply`; skein-overlay docs/OVERLAY.md "Submitting", "The answers"): `{fn: "submit",
+/// request, replyTo, result | error}`.
+///   `admitted` or `proven` → the answer from the state (`{ok: true, tx, txid}`; a deploy's `{ok: true, txid}`);
+///   `rejected` → from the state when the chain app holds it (its settlement: `rejected`, with the
+///     pool's newest state if another transaction spent it); else by the engine's reason —
+///     `NotAdmitted…` → `topic_refused`, `TransactionRejected` → `rejected`, any other (the BEEF
+///     did not decode or verify) → `submit_refused`;
+///   `error` → `submit_refused`, its message.
+pub fn answerFromSubmit(a: std.mem.Allocator, st: *ov.state.State, v: View, op: validator.Op, body: Value, ans: Value) !Reply {
+    if (ans.get("error")) |e| return refuse(.submit_refused, e.getText("message") orelse e.getText("code") orelse "error");
+    const r = ans.get("result") orelse return refuse(.submit_failed, "the overlay's answer has no result");
+    const state = r.getText("state") orelse "";
+    const txid: ?[32]u8 = if (r.getText("txid")) |h| (w.header.fromHex(h) catch null) else null;
+    if (std.mem.eql(u8, state, "rejected")) {
+        const why = r.getText("reason") orelse "rejected";
+        const held = try answerFromState(a, st, v, op, body);
+        if (held == .refused and held.refused.reason == .rejected) return held;
+        const reason: validator.Reason = if (std.mem.startsWith(u8, why, "NotAdmitted"))
+            .topic_refused
+        else if (std.mem.eql(u8, why, "TransactionRejected"))
+            .rejected
+        else
+            .submit_refused;
+        return .{ .refused = .{ .reason = reason, .detail = why, .txid = txid } };
+    }
+    return answerFromState(a, st, v, op, body);
 }

@@ -46,6 +46,8 @@ import {
   pendingRemovePayout,
   prepareRemoveLiquidity,
   submitToOverlay,
+  admittedOutput,
+  awaitAdmitted,
   type CompletedRemove,
   type PreparedRemoveLiquidity,
 } from "../lp/removeLiquidity";
@@ -413,7 +415,9 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
   async function submitAndComplete(s: PreparedRemoveLiquidity) {
     if (!wallet) return;
     const r = await submitToOverlay(AMM_OVERLAY, s.topic, s.beef);
-    setSubmitted(JSON.stringify(r.body));
+    setSubmitted(`delivered, request ${r.id}; waiting for the overlay to admit it`);
+    const at = admittedOutput(s);
+    if (at !== null) setSubmitted((await awaitAdmitted(AMM_OVERLAY, s.txid, at)) ? `admitted (request ${r.id})` : `delivered (request ${r.id}), not admitted yet: the lookup does not show it`);
     const c = await completeRemoveLiquidity(wallet, s);
     setCompleted(c);
     const pending = pendingRemovePayout(s, p.topic.tokenId);

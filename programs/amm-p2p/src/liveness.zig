@@ -49,6 +49,25 @@ pub const max_skew_ms: u64 = 60_000;
 
 pub const Body = struct { identity_key: [33]u8, peer_id: []const u8, sig: []const u8, at: u64 };
 
+/// The beacon (shruggr/skein#126, docs/MESSAGES.md "emit"): the host's libp2p node publishes
+/// `body` on `topic` every `every_ms`, without subscribing it.
+pub fn beaconEvent(a: Allocator, topic: []const u8, every_ms: u64, body: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = "beacon" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+        .{ .key = "every", .value = .{ .uint = every_ms } },
+        .{ .key = "body", .value = .{ .bytes = body } },
+    }) };
+}
+
+/// The beacon on `topic` stopped.
+pub fn unbeaconEvent(a: Allocator, topic: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = "unbeacon" } },
+        .{ .key = "topic", .value = .{ .text = topic } },
+    }) };
+}
+
 pub fn encodeBody(a: Allocator, b: Body) ![]u8 {
     return cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "identityKey", .value = .{ .bytes = try a.dupe(u8, &b.identity_key) } },

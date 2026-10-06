@@ -4,8 +4,9 @@
 //! and `<topic>-proof` (skein#74). This program adds, in the same suffix
 //! style:
 //!
-//!   tm_<txid>-live         GossipSub: validator heartbeats {identityKey, peerId, sig, at}
-//!   /amm/proofs/1.0.0      a direct call (a libp2p stream): proofs by block hash (catch-up)
+//!   tm_<txid>-live         GossipSub: validator heartbeats {identityKey, peerId, sig, at} (the beacon)
+//!   /amm/proofs/1.0.0      a direct call (a libp2p stream): proofs by block hash (a utility since
+//!                          0.2.0: no row routes it)
 //!
 //! The names are parsed here, not by amm-topic.
 const std = @import("std");
@@ -13,9 +14,10 @@ const std = @import("std");
 pub const live_suffix = "-live";
 pub const proofs_protocol = "/amm/proofs/1.0.0";
 
-/// This program's own box: the accepted heartbeats (events), the cron
-/// provider's ticks and the start/stop messages.
-pub const own_box = "amm-p2p";
+/// This program's own box, as the kernel's table holds it (the manifest's `"amm-p2p"`, relative to
+/// the app: shruggr/skein#128): the accepted heartbeats (events), the cron provider's ticks and
+/// the start/stop messages.
+pub const own_box = "amm/amm-p2p";
 
 pub const Kind = enum { overlay, live };
 

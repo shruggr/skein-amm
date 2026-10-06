@@ -16,23 +16,26 @@
 //! "Signed messages (#70)"): the taker (or LP) authenticates by its wallet
 //! identity, the package checked with the SDK's verifier (messages.zig
 //! `open`). Then the checks and the oracle's signature (validator.zig), and
-//! the signed BEEF through the overlay engine's own `submit.route`
-//! (submit.zig). The handler answers:
+//! the signed BEEF submitted to this instance's own overlay by message
+//! (submit.zig; skein-overlay 0.7.2+: a submission is a message, answered to
+//! the sender's box). The handler answers:
 //!
-//! - `{verdict: "accept", body: <reply>}` at once: a refusal, a deploy's
-//!   consent;
-//! - `{wait: true}` for a signed spend, after launching the overlay engine's
-//!   submission thread on the submit record the route made (args `{event,
-//!   box: "submit"}`), exactly as the overlay's `POST /submit` handler does
-//!   (skein-overlay src/routes.zig `submitRouted`) — or, for a resubmission
-//!   while the first one awaits the chain app, after `await`ing that
-//!   submission's thread (the overlay's `pending` record names it);
-//! - called again with `resolved` once that thread has come to rest (it
-//!   finishes when the transaction is admitted or rejected): `{verdict:
-//!   "accept", body: <reply>}` read from the state (messages.zig
-//!   `answerFromState`). The front door writes that body back on the stream
-//!   as the frame's answer ("Streams": "the frame's answer is written back
-//!   when the request's thread comes to rest").
+//! - `{verdict: "accept", body: <reply>}` at once: a refusal; a transaction
+//!   judged or rejected before (from the state);
+//! - `{wait: true}` for a signed spend or a consented deploy, after sending
+//!   `{fn: "submit", args: {beef, topics: [tm_<txid>]}}` to this instance,
+//!   box `<app>`, and `await`ing that message — or, for a resubmission while
+//!   the first one is with the chain app, after `await`ing that submission's
+//!   thread (the overlay's `pending` record names it: the engine answers a
+//!   resubmission with nothing);
+//! - called again with `reply`, the engine's first answer to the message
+//!   (`admitted`, `proven` or `rejected`, or an error): `{verdict: "accept",
+//!   body: <reply>}` (messages.zig `answerFromSubmit`); or with `resolved`,
+//!   the awaited thread at rest: read from the state (`answerFromState`). The
+//!   front door writes that body back on the stream as the frame's answer
+//!   ("Streams": "the frame's answer is written back when the request's
+//!   thread comes to rest"). Later answers (each proof) find nothing
+//!   awaiting them.
 //!
 //! Config: the app record's `config.amm.ammValidator` (`{"minValidatorFeeBps": n,
 //! "maxLpFeeBps": n, "maxCommissionBps": n?}`; maxCommissionBps optional:
@@ -40,7 +43,7 @@
 //! same as JSON text); the overlay's own configuration as the engine reads it
 //! from the app record (skein-overlay `engine_vm.configured`: the served
 //! topics, the ones registered with the engine (`<app>/topics`) among them, the app's roles,
-//! `programs.overlay` the engine the submission thread runs).
+//! `app` the box the submission goes to).
 const std = @import("std");
 const w = @import("chain");
 const ov = @import("skein_overlay");
@@ -48,6 +51,7 @@ const vm = @import("overlay_sk");
 const wire = @import("wallet").wire;
 const validator = @import("validator.zig");
 const messages = @import("messages.zig");
+const submit = @import("submit.zig");
 const view_mod = @import("view.zig");
 const Oracle = @import("oracle.zig").Oracle;
 
@@ -138,7 +142,12 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
     const ovv = try a.create(view_mod.OverlayView);
     ovv.* = .{ .st = st };
 
-    // Called again (#66): the submission's thread this frame waited on has come to rest.
+    // Called again (#66): the engine's answer to the submission this frame awaited.
+    if (arg.get("reply")) |r| if (r == .map) {
+        const ans = try vm.store().getValue(a, r.getCid("body") orelse return error.BadInput);
+        return answerBody(a, try messages.answerFromSubmit(a, st, ovv.view(), op, body, ans));
+    };
+    // Called again (#66): the submission's thread this frame waited on (a resubmission's) has come to rest.
     if (arg.get("resolved") != null) return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
 
     const s = try settings(a, in);
@@ -147,24 +156,19 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
         .config = .{ .identity = identity, .min_validator_fee_bps = s.minValidatorFeeBps, .max_lp_fee_bps = s.maxLpFeeBps, .max_commission_bps = s.maxCommissionBps, .now_ms = now },
         .view = ovv.view(),
         .oracle = oracle,
-        .route = .{ .caller = ov.engine_vm.caller(), .st = st, .in = in },
+        .st = st,
     });
     switch (served.next) {
         .answer => return answerBody(a, served.reply),
         .from_state => return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body)),
-        .launch => |event| {
-            // The submission's thread, as the overlay's POST /submit launches it (skein-overlay
-            // routes.zig `submitRouted`): the engine stepped on the submit event; this frame's thread
-            // waits on it. The engine hands the BEEF to the chain app, which registers and broadcasts
-            // every unproven transaction in it, the taker's nosend funding parent with the swap
-            // (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF"); `served.broadcast` names them.
-            const engine = (in.get("programs") orelse return error.BadInput).getCid("overlay") orelse return error.NoOverlayProgram;
-            const ev = try vm.store().putValue(a, event);
-            const args = try vm.store().putValue(a, .{ .map = try a.dupe(cbor.Entry, &.{
-                .{ .key = "event", .value = .{ .cid = ev } },
-                .{ .key = "box", .value = .{ .text = "submit" } },
-            }) });
-            _ = try vm.launch(a, engine, args);
+        .submit => |sub| {
+            // A submission is a message (skein-overlay 0.7.2+): to this instance, in the app's box,
+            // which the row from `$self` takes to the engine. The engine hands the BEEF to the chain
+            // app, which registers and broadcasts every unproven transaction in it, the taker's nosend
+            // funding parent with the swap (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF";
+            // `served.broadcast` names them), and answers this message when it is admitted or rejected.
+            const m = try vm.send(a, &identity, ov.calls.appOf(in), try submit.body(a, sub.beef, sub.topic));
+            try vm.awaitRecord(m);
             return answerWait(a);
         },
         .wait_on => |txid| {

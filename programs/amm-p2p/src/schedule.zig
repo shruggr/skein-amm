@@ -11,11 +11,12 @@
 //! launches a thread of this program. A tick request replaces the schedule
 //! of the same name, so asking again is harmless.
 //!
-//! What makes the program emit the requests is a message to box `amm-p2p`,
-//! `{kind: "amm-p2p-start", jobs?: ["heartbeat" | "catchup"]}` (or
-//! `amm-p2p-stop`), from the owner or from the cron provider (`skein-host
-//! event <agent> amm-p2p '{"kind":"amm-p2p-start"}'`): nothing in skein
-//! steps a program at install or start (README.md, "Scheduling").
+//! The fallback since 0.2.0: the heartbeat is a `beacon` the host publishes
+//! (main.zig `beacons`), and the catch-up pass is a utility no start
+//! schedules. A start that names its jobs asks the cron provider (the
+//! address book's entry at `local` `cron`) as before: `{kind:
+//! "amm-p2p-start", jobs: ["heartbeat" | "catchup"]}` (or `amm-p2p-stop`),
+//! from the owner or from the cron provider.
 //! No VM imports.
 const std = @import("std");
 const w = @import("chain");
@@ -65,13 +66,11 @@ pub fn jobOf(body: Value) !Job {
     return std.meta.stringToEnum(Job, body.getText("job") orelse return error.BadTick) orelse error.BadTick;
 }
 
-/// The jobs a start/stop message names: its `jobs`, else every job a node
-/// runs (the heartbeat only when it is a validator: `validator`).
-pub fn jobsOf(a: Allocator, body: Value, validator: bool) ![]const Job {
-    if (body.getArray("jobs")) |js| {
-        const out = try a.alloc(Job, js.len);
-        for (js, out) |j, *o| o.* = std.meta.stringToEnum(Job, if (j == .text) j.text else return error.BadJobs) orelse return error.BadJobs;
-        return out;
-    }
-    return if (validator) &.{ .heartbeat, .catchup } else &.{.catchup};
+/// The jobs a start/stop message names (its `jobs`): the cron fallback. A start without `jobs`
+/// is the beacon's (main.zig), never a schedule.
+pub fn jobsOf(a: Allocator, body: Value) ![]const Job {
+    const js = body.getArray("jobs") orelse return error.NoJobs;
+    const out = try a.alloc(Job, js.len);
+    for (js, out) |j, *o| o.* = std.meta.stringToEnum(Job, if (j == .text) j.text else return error.BadJobs) orelse return error.BadJobs;
+    return out;
 }

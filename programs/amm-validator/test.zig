@@ -18,6 +18,7 @@ const messages = @import("src/messages.zig");
 const unlock = @import("src/unlock.zig");
 const view_mod = @import("src/view.zig");
 const submit = @import("src/submit.zig");
+const submit_mod = submit;
 const scbor = @import("sdk_cbor");
 const ov = @import("skein_overlay");
 const sktopic = @import("topic");
@@ -348,12 +349,25 @@ const submission_thread = "cid:submission-thread";
 /// recorded, each a fresh CID.
 const Sent = struct {
     n: usize = 0,
+    /// The engine's answers to submitters (shruggr/skein#112), in order: `{to, box, body}`.
+    answers: std.ArrayListUnmanaged(struct { to: []const u8, box: []const u8, body: Value }) = .empty,
     fn send(ctx: *anyopaque, a: std.mem.Allocator, _: []const u8, _: Value) anyerror![]const u8 {
         const self: *Sent = @ptrCast(@alignCast(ctx));
         self.n += 1;
         return a.dupe(u8, &cbor.cidOf(try std.fmt.allocPrint(a, "message {d}", .{self.n})));
     }
+    fn answer(ctx: *anyopaque, a: std.mem.Allocator, to: []const u8, box: []const u8, body: Value) anyerror!void {
+        const self: *Sent = @ptrCast(@alignCast(ctx));
+        try self.answers.append(a, .{ .to = to, .box = box, .body = readBack(a, body) });
+    }
+    /// The last answer's body.
+    fn last(self: *Sent) Value {
+        return self.answers.items[self.answers.items.len - 1].body;
+    }
 };
+
+/// This instance's identity, the validator's submission's sender (the fixtures' validator identity is not needed: any key).
+const self_key: [33]u8 = .{0x02} ++ .{0x5a} ** 32;
 
 /// Where a submission's thread came to (the chain app's answers to its ingest, as the engine acted on them).
 const Gated = enum { pending, mined, accepted, rejected };
@@ -414,7 +428,7 @@ const Node = struct {
         return error.UnexpectedCall;
     }
     fn cx(n: *Node, st: *ov.state.State) ov.submit.Ctx {
-        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = &n.sent, .sendFn = Sent.send }, .st = st, .in = n.in, .thread = submission_thread };
+        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = &n.sent, .sendFn = Sent.send, .answerFn = Sent.answer }, .st = st, .in = n.in, .thread = submission_thread };
     }
     fn headers(n: *Node, raws: []const []const u8) !void {
         const ch = try n.chain();
@@ -430,7 +444,7 @@ const Node = struct {
         const st = try n.state();
         const m = try ov.submit.begin(n.cx(st), ev);
         n.ov_root = try st.save();
-        try n.threads.put(n.a, txid, .{ .ev = ev, .ingest = m });
+        try n.threads.put(n.a, txid, .{ .ev = ev, .ingest = m.ingests[m.ingests.len - 1] });
         const ch = try n.chain();
         const got = try ch.ingest(ev.getBytes("beef").?);
         n.posts += got.registered.len;
@@ -457,6 +471,28 @@ const Node = struct {
             .proven => n.answer(txid, .{ .proven = .{} }, .mined),
             .rejected => n.answer(txid, .{ .rejected = tx_status }, .rejected),
             .pending => .{ .gate = .pending, .admitted = false, .applied = &.{} },
+        };
+    }
+    /// The validator's submission message (messages.zig `Next.submit`), as the engine's step on it
+    /// takes it (skein-overlay `submit.received`): from this instance, in box `amm`.
+    fn received(n: *Node, sub: anytype) !ov.submit.Resumed {
+        const msg = try submit_mod.body(n.a, sub.beef, sub.topic);
+        const source: Value = .{ .map = try n.a.dupe(cbor.Entry, &.{
+            .{ .key = "transport", .value = .{ .text = "mailbox" } },
+            .{ .key = "box", .value = .{ .text = "amm" } },
+            .{ .key = "sender", .value = .{ .bytes = &self_key } },
+            .{ .key = "request", .value = .{ .cid = try n.a.dupe(u8, &cbor.cidOf(try std.fmt.allocPrint(n.a, "submission {d}", .{n.sent.answers.items.len + n.sent.n}))) } },
+        }) };
+        const st = try n.state();
+        const r = try ov.submit.received(n.cx(st), msg.get("args").?, source);
+        n.ov_root = try st.save();
+        return r;
+    }
+    /// The submission message routed whole: the submit event the engine launches its thread on.
+    fn launched(n: *Node, served: messages.Served) !Value {
+        return switch (try n.received(served.next.submit)) {
+            .launch => |ev| ev,
+            else => error.NotLaunched,
         };
     }
     /// A BEEF through the overlay's submit: the route, then the thread's first step on its event.
@@ -565,7 +601,7 @@ const Mined = struct {
     }
 
     /// What main.zig gives a direct call: the view over the instance's
-    /// state, and the engine's `submit.route` over the same state (the step's).
+    /// state, and the same state (the step's).
     fn deps(m: *Mined) !messages.Deps {
         const st = try m.node.state();
         const ovv = try m.node.a.create(view_mod.OverlayView);
@@ -574,7 +610,7 @@ const Mined = struct {
             .config = m.f.cfg,
             .view = ovv.view(),
             .oracle = m.f.oracle.oracle(),
-            .route = .{ .caller = m.node.caller(), .st = st, .in = m.node.in },
+            .st = st,
         };
     }
 
@@ -611,6 +647,14 @@ const Mined = struct {
         return m.fromState(a, .deploy, body);
     }
 
+    /// The direct call's answer on the engine's answer to its submission (called again with `reply`).
+    fn fromSubmit(m: *Mined, a: std.mem.Allocator, op: validator.Op, body: Value, ans: Value) !validator.Reply {
+        const st = try m.node.state();
+        const ovv = try a.create(view_mod.OverlayView);
+        ovv.* = .{ .st = st };
+        return messages.answerFromSubmit(a, st, ovv.view(), op, body, ans);
+    }
+
     /// The direct call's answer once the thread it waited on has come to rest (called again with `resolved`).
     fn answer(m: *Mined, a: std.mem.Allocator, req: []const u8) !validator.Reply {
         return m.fromState(a, .swap, try spendBody(a, req, m.pool_op));
@@ -619,7 +663,7 @@ const Mined = struct {
 
 // --- signing ---
 
-test "sign: a sats-in swap comes back as the Go fixture, byte for byte; through skein's own submit.route it is launched as the engine's submission, admitted on the network's word, and the direct call's answer from the state is the signed transaction" {
+test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitted by message to the engine, launched as its submission, admitted on the network's word, and the direct call's answer from the engine's answer is the signed transaction" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -649,9 +693,10 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; through 
     try testing.expect(r.ok.submission.?.pool.eql(op));
 
     // The same request as the direct call's step makes it, on a real node
-    // (the mined chain): checked, signed, and the signed BEEF routed through
-    // skein's own submit.route, which asks the topic's judgement and makes
-    // the submit record — to launch the engine's submission thread on.
+    // (the mined chain): checked, signed, and the signed BEEF submitted by
+    // message ({fn: "submit", args: {beef, topics}} to the instance itself);
+    // the engine's step on it asks the topic's judgement and makes the submit
+    // record — to launch its submission thread on.
     var ms = w.store.MemStore.init(testing.allocator);
     defer ms.deinit();
     const m = try Mined.init(a, &ms);
@@ -659,7 +704,8 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; through 
     const served = try m.respond(a, sreq);
     try testing.expect(served.reply == .ok);
     try testing.expectEqualSlices(u8, want, served.reply.ok.tx.?);
-    const ev = readBack(a, served.next.launch);
+    try testing.expectEqualStrings(m.topic, served.next.submit.topic);
+    const ev = readBack(a, try m.node.launched(served));
     try testing.expectEqualStrings("submit", ev.getText("kind").?);
     try testing.expectEqualStrings(&w.header.toHex(txidOf(want)), ev.getText("txid").?);
     // The BEEF the event carries: fund (with its BUMP), then the signed transaction.
@@ -690,7 +736,18 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; through 
     try testing.expectEqualSlices(u32, &.{ 0, 1 }, done.applied[0].outputs_to_admit);
     try testing.expectEqualSlices(u32, &.{0}, done.applied[0].coins_to_retain); // the pool coin, carried on
 
-    // The thread has come to rest: the direct call's answer, from the state.
+    // The engine answered the sender (this instance, box amm): admitted, pending, with the STEAK.
+    try testing.expectEqual(@as(usize, 1), m.node.sent.answers.items.len);
+    try testing.expectEqualSlices(u8, &self_key, m.node.sent.answers.items[0].to);
+    try testing.expectEqualStrings("amm", m.node.sent.answers.items[0].box);
+    const res = m.node.sent.last().get("result").?;
+    try testing.expectEqualStrings("admitted", res.getText("state").?);
+    try testing.expectEqualStrings("pending", res.getText("status").?);
+    try testing.expect(res.get("steak").?.get(m.topic) != null);
+    // The direct call's answer on it.
+    const via = try m.fromSubmit(a, .swap, try spendBody(a, sreq, m.pool_op), m.node.sent.last());
+    try testing.expectEqualSlices(u8, want, via.ok.tx.?);
+    // The same, from the state (a resubmission's wait on the thread).
     const ans = try m.answer(a, sreq);
     try testing.expect(ans == .ok);
     try testing.expectEqualSlices(u8, want, ans.ok.tx.?);
@@ -700,7 +757,7 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; through 
     try testing.expectEqualSlices(u8, want, body.getBytes("tx").?);
 }
 
-test "submission: a request BEEF whose funding the node never held, proven in the BEEF, is accepted; as raw bytes, the route refuses it after the checks (submit_refused)" {
+test "submission: a request BEEF whose funding the node never held, proven in the BEEF, is accepted; as raw bytes, the engine pauses it on the missing parent (skein-overlay 0.7.2: every missing parent pauses)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -711,22 +768,27 @@ test "submission: a request BEEF whose funding the node never held, proven in th
     try testing.expect((try (try m.node.chain()).txRaw(fund)) == null); // unknown to the node
 
     // The raw request: every check passes (the funding input's signature is
-    // only "present" without its source), it is signed, and skein's route
-    // cannot verify it: an input neither held nor in the BEEF.
+    // only "present" without its source), it is signed and submitted, and the
+    // engine pauses it: an input neither held nor in the BEEF. Nothing is
+    // answered yet (the pause is internal); the call waits.
     const raw_req = try request(a, m.f.raw("swap_bsv_in"), 0);
     try m.f.oracle.record(a, m.f.raw("swap_bsv_in"), 0);
     const r = try m.respond(a, raw_req);
-    try testing.expect(r.next == .answer);
-    try expectRefused(r.reply, .submit_refused);
-    try testing.expectEqualStrings("MissingInput", r.reply.refused.detail.?);
-    try testing.expectEqualSlices(u8, &txidOf(m.f.raw("swap_bsv_in")), &r.reply.refused.txid.?);
+    try testing.expect(r.next == .submit);
+    const paused = try m.node.received(r.next.submit);
+    try testing.expect(paused == .paused);
+    try testing.expectEqual(@as(usize, 0), m.node.sent.answers.items.len);
 
-    // The same request as a BEEF carrying fund with its BUMP: launched, and admitted.
-    const ok = try m.respond(a, try m.swapRequest(a));
-    _ = try m.node.step(ok.next.launch);
-    const done = try m.node.status(ok.next.launch, "RECEIVED");
+    // The same request as a BEEF carrying fund with its BUMP (on a node that saw no pause): launched, and admitted.
+    var ms2 = w.store.MemStore.init(testing.allocator);
+    defer ms2.deinit();
+    const m2 = try Mined.init(a, &ms2);
+    const ok = try m2.respond(a, try m2.swapRequest(a));
+    const okev = try m2.node.launched(ok);
+    _ = try m2.node.step(okev);
+    const done = try m2.node.status(okev, "RECEIVED");
     try testing.expect(done.admitted);
-    try testing.expect((try (try m.node.chain()).status(fund)) == .proven); // held now, with its proof
+    try testing.expect((try (try m2.node.chain()).status(fund)) == .proven); // held now, with its proof
 }
 
 test "submission: the gate, answered from the state — a rejection admits nothing (rejected, and the same request again is refused at once); a resubmission while pending waits on the first submission's thread, then the answer is the signed transaction" {
@@ -741,22 +803,24 @@ test "submission: the gate, answered from the state — a rejection admits nothi
         const m = try Mined.init(a, &ms);
         const req = try m.swapRequest(a);
         const r = try m.respond(a, req);
-        const ev = r.next.launch;
+        const ev = try m.node.launched(r);
         _ = try m.node.step(ev);
         const done = try m.node.status(ev, "REJECTED");
         try testing.expectEqual(Gated.rejected, done.gate);
         try testing.expect(!done.admitted);
-        const ans = try m.answer(a, req);
+        // The engine's answer: rejected; the direct call's answer on it.
+        try testing.expectEqualStrings("rejected", m.node.sent.last().get("result").?.getText("state").?);
+        const ans = try m.fromSubmit(a, .swap, try spendBody(a, req, m.pool_op), m.node.sent.last());
         try expectRefused(ans, .rejected);
         try testing.expectEqualStrings("REJECTED", ans.refused.detail.?);
         try testing.expect(ans.refused.newest == null);
         const body = readBack(a, try messages.replyValue(a, ans));
         try testing.expectEqualStrings("rejected", body.getText("reason").?);
         try testing.expectEqualStrings(&w.header.toHex(r.reply.ok.txid.?), body.getText("txid").?);
-        // The same request again: the route knows it rejected (nothing new), answered at once.
+        // The same request again: rejected before, answered from the state at once (nothing submitted).
         const again = try m.respond(a, req);
-        try testing.expect(again.next == .answer);
-        try expectRefused(again.reply, .rejected);
+        try testing.expect(again.next == .from_state);
+        try expectRefused(try m.answer(a, req), .rejected);
     }
     // Pending: the same request again is recognised (not re-signed) and waits on the first thread.
     {
@@ -765,7 +829,7 @@ test "submission: the gate, answered from the state — a rejection admits nothi
         const m = try Mined.init(a, &ms);
         const req = try m.swapRequest(a);
         const r = try m.respond(a, req);
-        const ev = r.next.launch;
+        const ev = try m.node.launched(r);
         const first = try m.node.step(ev);
         try testing.expectEqual(Gated.pending, first.gate);
 
@@ -1199,7 +1263,7 @@ test "protocol: request bodies parse; bad ones are refused; replies encode" {
     const frame = try package(a, sender_priv, m.f.cfg.identity, "swap", try spendBody(a, req, op));
     const body = (try messages.open(a, frame, m.f.cfg.identity, .swap)).ok.body;
     const r = try messages.respond(a, .swap, body, try m.deps());
-    try testing.expect(r.reply == .ok and r.next == .launch);
+    try testing.expect(r.reply == .ok and r.next == .submit);
     const reply = try cbor.decode(a, try cbor.encode(a, try messages.replyValue(a, r.reply)));
     try testing.expectEqual(true, reply.getBool("ok").?);
     try testing.expectEqualSlices(u8, m.f.raw("swap_bsv_in"), reply.getBytes("tx").?);
@@ -1398,7 +1462,7 @@ test "relay request: a swap with its funding transaction as an unproven parent, 
     // The swap's submission: the engine's route verified the BEEF (the pool contract and both P2PKH spends
     // run), which carries fund, the funding transaction, the signed swap; the chain app ingests it,
     // registering and broadcasting the funding transaction and the swap, parents first; RECEIVED admits it.
-    const ev = readBack(a, served.next.launch);
+    const ev = readBack(a, try m.node.launched(served));
     const txs = try txsOf(a, ev);
     try testing.expectEqual(@as(usize, 3), txs.len);
     try testing.expectEqualSlices(u8, p.funding, txs[1]);
@@ -1450,8 +1514,9 @@ test "relay request refused: an unsigned funding input, a bad funding signature,
     // The pool already spent (another swap admitted first): refused with its newest state, nothing broadcast.
     {
         const first = try m.respond(a, try m.swapRequest(a));
-        _ = try m.node.step(first.next.launch);
-        _ = try m.node.status(first.next.launch, "RECEIVED");
+        const fev = try m.node.launched(first);
+        _ = try m.node.step(fev);
+        _ = try m.node.status(fev, "RECEIVED");
         m.f.oracle.calls = 0;
         const p = try relayPair(a, m.f, .signed);
         const r = try m.respond(a, try relayBeef(a, m, p));
@@ -1567,7 +1632,7 @@ test "relay deploy: the LP's deploy with its funding as an unproven parent, one 
 
     // The deploy's submission: the engine's route verified the BEEF (both LP spends), the topic admits it;
     // the chain app ingests it, registering and broadcasting the funding transaction and the deploy.
-    const ev = readBack(a, served.next.launch);
+    const ev = readBack(a, try m.node.launched(served));
     try testing.expectEqualStrings(&w.header.toHex(txidOf(p.deploy)), ev.getText("txid").?);
     const txs = try txsOf(a, ev);
     try testing.expectEqualSlices(u8, p.deploy, txs[txs.len - 1]);
@@ -1635,8 +1700,9 @@ test "relay deploy refused: a wrong ValidatorPubKey, an unsigned funding input, 
 
     // Consent, then the network rejects the deploy: answered rejected.
     const ok = try m.respondDeploy(a, req);
-    _ = try m.node.step(ok.next.launch);
-    _ = try m.node.status(ok.next.launch, "REJECTED");
+    const okev = try m.node.launched(ok);
+    _ = try m.node.step(okev);
+    _ = try m.node.status(okev, "REJECTED");
     const ans = try m.answerDeploy(a, try deployBody(a, req));
     try expectRefused(ans, .rejected);
     try testing.expectEqualSlices(u8, &txidOf(p.deploy), &ans.refused.txid.?);
@@ -1768,7 +1834,7 @@ test "relay addLiquidity: the LP's add with its funding as an unproven parent, o
     // The add's submission: the engine's route verified the BEEF (the pool contract, the LP's P2PKH
     // spends); the chain app ingests it, registering and broadcasting the funding transaction and the add;
     // the RECEIVED status admits the continuation.
-    const ev = readBack(a, served.next.launch);
+    const ev = readBack(a, try m.node.launched(served));
     try testing.expectEqualStrings(&w.header.toHex(txidOf(want)), ev.getText("txid").?);
     const txs = try txsOf(a, ev);
     try testing.expectEqualSlices(u8, want, txs[txs.len - 1]);
@@ -1828,8 +1894,9 @@ test "relay addLiquidity refused: the funding unsigned, the LP's slot empty or b
     const ok = try m.respondAdd(a, try addBeef(a, m, p.funding, p.add));
     try testing.expect(ok.reply == .ok);
     try testing.expectEqual(@as(usize, 1), ok.broadcast.len);
-    _ = try m.node.step(ok.next.launch);
-    _ = try m.node.status(ok.next.launch, "RECEIVED");
+    const okev = try m.node.launched(ok);
+    _ = try m.node.step(okev);
+    _ = try m.node.status(okev, "RECEIVED");
 
     // The pool already spent (that add admitted): the fixture's add is refused with the newest state, nothing broadcast.
     m.f.oracle.calls = 0;

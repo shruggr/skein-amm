@@ -1,50 +1,38 @@
 //! Getting a signed transaction into this instance's own overlay: the
-//! validator only adds its signature; the submission itself is the overlay
-//! engine's own (skein-overlay 0.6.0 src/submit.zig), the same `submit.route`
-//! that `POST /submit` runs (src/routes.zig `submitRouted`). `Route.route`
-//! hands it the signed BEEF — the request's BEEF (the taker's ancestry and
-//! BUMPs) with its subject replaced by the signed transaction
-//! (`submissionBeef`), as bytes — for the token's topic `tm_<txid>`, in the
-//! front door's step on the direct call: decoded once into records in the
-//! step's write cache, checked against the chain app's headers and SPV
-//! (state.zig `verifyDecoded`, the chain state read only) and judged by the
-//! topic's own program (fn `identify`). What it makes is `submit.Routed`: the
-//! submit event, or nothing new (`pending`, `unchanged`: a resubmission), or
-//! a refusal.
+//! validator only adds its signature; the submission is the overlay engine's
+//! (skein-overlay 0.7.4 docs/OVERLAY.md "Submitting", shruggr/skein#112). A
+//! submission is a message: the validator sends `{fn: "submit", args: {beef,
+//! topics: [tm_<txid>]}}` from this instance to itself, in the app's box
+//! `<app>` (the manifest's row from `$self` takes it to the engine), with the
+//! signed BEEF — the request's BEEF (the taker's ancestry and BUMPs) with its
+//! subject replaced by the signed transaction (`submissionBeef`). The engine
+//! routes it in its step on the message (decoded, checked against the chain
+//! app's headers and SPV, judged by the topic's program; lacking a parent,
+//! paused until one comes) and answers the sender, in the box it wrote to,
+//! by message: `{fn: "submit", request, replyTo, result}` — `admitted`
+//! (status `pending`, the STEAK) once the chain app accepts it, then each
+//! `proven`, or `rejected` — or `error` for a body not that shape.
 //!
-//! As `POST /submit` does with the event, main.zig launches the engine's
-//! submission thread on it (args `{event, box: "submit"}`) and answers
-//! `{wait: true}`: the thread hands the BEEF to the chain app (`ingest`,
-//! which registers and broadcasts every unproven transaction it carries) and
-//! admits on the chain app's first `accepted` or `proven`; the direct call's
-//! answer is read from the state when that thread comes to rest.
+//! main.zig awaits the message and answers the direct call `{wait: true}`;
+//! called again with the engine's first answer (`reply`), it answers from
+//! that (messages.zig `answerFromSubmit`).
 const std = @import("std");
 const w = @import("chain");
-const ov = @import("skein_overlay");
-const sksubmit = ov.submit;
 
 const cbor = w.cbor;
 const Value = cbor.Value;
 const beef = w.beef;
 
-pub const Routed = sksubmit.Routed;
-
-/// The engine's `submit.route`, over this step's overlay state: `caller`
-/// reaches the topic's program (fn `identify`; skein-overlay's
-/// `engine_vm.caller()` in a program), `st` is the app's overlay state over
-/// the chain state, loaded for the handler (the route decodes the BEEF into
-/// the step's write cache), `in` the handler's input as the engine reads its
-/// configuration (`engine_vm.configured`: `defaults.overlayTopics` with the
-/// topics registered with the engine in, `programs` the app's roles).
-pub const Route = struct {
-    caller: ov.calls.Caller,
-    st: *ov.state.State,
-    in: Value,
-
-    pub fn route(self: Route, a: std.mem.Allocator, signed_beef: []const u8, topic: []const u8) !Routed {
-        return sksubmit.route(a, self.caller, self.st, self.in, .{ .bytes = signed_beef }, try a.dupe([]const u8, &.{topic}), null, null);
-    }
-};
+/// The submission message's body: `{fn: "submit", args: {beef: <bytes>, topics: [topic]}}`.
+pub fn body(a: std.mem.Allocator, signed_beef: []const u8, topic: []const u8) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "fn", .value = .{ .text = "submit" } },
+        .{ .key = "args", .value = .{ .map = try a.dupe(cbor.Entry, &.{
+            .{ .key = "beef", .value = .{ .bytes = signed_beef } },
+            .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = topic }}) } },
+        }) } },
+    }) };
+}
 
 /// The signed BEEF, what a submission carries: the request's with its
 /// subject replaced by the signed transaction (same place, parents first,

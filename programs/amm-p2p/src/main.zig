@@ -1,5 +1,5 @@
-//! amm-p2p: the AMM overlay's validator liveness heartbeat and the
-//! proofs-by-block direct call, as one skein program (Zig, wasm32-wasi).
+//! amm-p2p: the AMM overlay's validator liveness beacon, the marketplace
+//! relay and the app's pages, as one skein program (Zig, wasm32-wasi).
 //! The standard overlay gossip — submissions on `<topic>`, STEAKs on
 //! `<topic>-admit`, proofs on `<topic>-proof` — is skein's overlay engine's
 //! (skein#74), not this program's.
@@ -10,8 +10,12 @@
 //!
 //! **Called** (input kind "call"; `fn`):
 //!
-//!   validateLive    route libp2p:tm_<txid>-live      → {verdict, reason?, admit?: [the amm-live entry (box amm-p2p)]}
-//!   proofsByBlock   route libp2p:/amm/proofs/1.0.0   → {verdict: accept, body: {bump} | {missing: true}}   (a direct call)
+//!   validateLive    a libp2p:tm_<txid>-live message → {verdict, reason?, admit?: [the amm-live entry (box amm/amm-p2p)]}
+//!                   (no row routes it: the node does not subscribe `-live`, docs/AMM.md "Not wired")
+//!   proofsByBlock   a /amm/proofs/1.0.0 frame → {verdict: accept, body: {bump} | {missing: true}}
+//!                   (a utility: no row routes it since 0.2.0; sync is shruggr/skein#112's `want`)
+//!   serve           route http `/` (prefix): the app's pages, `www/` of the app's own tree
+//!                   (skein-sdk `files.serve`, shruggr/skein#125)
 //!   live            {identityKey: bytes(33) | hex, threshold?: ms} → {peerId, peerIdText, at} | null   (the consumer API)
 //!   call            route /amm/call (APPS.md §4): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`,
 //!                   `amm.pool.submit` and `amm.liquidity.submit` answer {wait: true} and, called again with
@@ -20,11 +24,15 @@
 //!   amm.pool.submit, amm.pool.status   an in-VM call of the interface amm.pool/1 (relay.zig: the pool deploy)
 //!   amm.liquidity.submit, amm.liquidity.status   an in-VM call of the interface amm.liquidity/1 (relay.zig: AddLiquidity)
 //!
-//! **Stepped** (a `mailbox` row from anyone on box `amm-p2p`):
+//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`):
 //!
 //!   event   {kind: "amm-live", …}                      an accepted heartbeat: the last-seen map
-//!   message {kind: "amm-p2p-start" | "amm-p2p-stop", jobs?}   from the owner or the cron provider: the
-//!                                                     schedules asked of (or stopped at) the cron provider
+//!   message {kind: "amm-p2p-start" | "amm-p2p-stop"}   from the owner (the manifest's `start`, in box `amm`):
+//!                                                     a `beacon` event per served token topic on
+//!                                                     `tm_<txid>-live` (the host publishes it every
+//!                                                     heartbeatSeconds), or `unbeacon` for each
+//!   message {kind: "amm-p2p-start" | "amm-p2p-stop", jobs: [...]}   the cron fallback: the schedules asked of
+//!                                                     (or stopped at) the cron provider (`local` `cron`)
 //!   message {kind: "amm-p2p-tick", job, name, due}      from the cron provider (skein#69): the heartbeat
 //!                                                     (publish), or a catch-up pass (a thread resting on
 //!                                                     the libp2p provider's answers to its direct calls)
@@ -34,7 +42,7 @@
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay" | "amm-liquidity-relay", id}   the relay (launched by a submit): a thread resting on
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!
-//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor}}.
+//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor, beacons}}.
 //! The app's state under the head `amm/app` (relay.zig `Book`; skein #77:
 //! `app.headOf`): the installed app record's `state`, or (an instance wired
 //! by its genesis, no app record) the head's root itself: {kind:
@@ -61,6 +69,7 @@ const views = @import("views.zig");
 const relay = @import("relay.zig");
 const app = @import("app");
 const sk = @import("sk");
+const files = @import("files");
 const scbor = @import("sdk_cbor");
 const dagjson = @import("dagjson");
 
@@ -103,9 +112,6 @@ const Config = struct {
     batch: u32 = 6,
     /// Catch-up peers: base58 peer IDs or multiaddrs with /p2p/<id>, as `dial` takes them.
     peers: []const []const u8 = &.{},
-    /// This instance's own peer ID (base58), for the heartbeat: skein gives
-    /// a program no way to learn it (`skein-host identity <handle> --peer`).
-    peer_id: ?[]const u8 = null,
     /// How long catch-up waits on a direct call's answer (ms).
     reply_timeout_ms: u64 = 30_000,
 };
@@ -180,7 +186,6 @@ fn config(a: Allocator, in: Value) !Config {
         }
         if (o.get("topics")) |v| cfg.topics = try strings(a, v);
         if (o.get("peers")) |v| cfg.peers = try strings(a, v);
-        if (o.get("peerId")) |v| cfg.peer_id = if (v == .string) try libp2p.peerIdBytes(a, .{ .text = v.string }) else return error.BadConfig;
     }
     if (cfg.topics.len == 0) {
         // Every token topic `tm_<txid>` the overlay serves now: the ones registered with the
@@ -208,24 +213,27 @@ const State = struct {
     s: w.store.Store,
     live: Map,
     cursor: Map,
+    /// The beacons standing: served topic `tm_<txid>` → when its beacon was asked (ms).
+    beacons: Map,
 
     fn load(a: Allocator, s: w.store.Store) !State {
         const maps = try w.store.Maps.create(a, s);
-        var st: State = .{ .s = s, .live = maps.map(null), .cursor = maps.map(null) };
+        var st: State = .{ .s = s, .live = maps.map(null), .cursor = maps.map(null), .beacons = maps.map(null) };
         const c = (try vm.head(a, state_head)) orelse return st;
         const rec = try s.getValue(a, c);
         if (!eql(u8, rec.getText("kind") orelse "", "amm-p2p-state")) return error.BadState;
         const m = rec.get("maps") orelse return error.BadState;
         st.live = maps.map(m.getCid("live"));
         st.cursor = maps.map(m.getCid("cursor"));
+        st.beacons = maps.map(m.getCid("beacons"));
         return st;
     }
 
     /// Save and advance the head when anything changed: → the state record's CID, or null.
     fn commit(self: *State, a: Allocator) !?[]const u8 {
-        if (!self.live.dirty and !self.cursor.dirty) return null;
-        var es: [2]cbor.Entry = undefined;
-        inline for (.{ "live", "cursor" }, 0..) |n, i| {
+        if (!self.live.dirty and !self.cursor.dirty and !self.beacons.dirty) return null;
+        var es: [3]cbor.Entry = undefined;
+        inline for (.{ "live", "cursor", "beacons" }, 0..) |n, i| {
             const m = &@field(self, n);
             try m.flush();
             es[i] = .{ .key = n, .value = if (m.root) |r| .{ .cid = r } else .null };
@@ -259,6 +267,7 @@ fn call(a: Allocator, in: Value) !void {
     const func = in.getText("fn") orelse return error.BadInput;
     const arg = try vm.callArg(a, in);
     if (eql(u8, func, "call") and arg.get("match") != null) return vm.answer(a, try appRoute(a, in, arg));
+    if (eql(u8, func, "serve")) return vm.answer(a, try servePages(a, arg));
     if (isAppFn(func)) return vm.answer(a, try appCall(a, in, func, arg));
     const out: Value = if (eql(u8, func, "validateLive"))
         try validateLive(a, in, arg)
@@ -279,11 +288,9 @@ fn validateLive(a: Allocator, in: Value, arg: Value) !Value {
     return libp2p.answer(a, v);
 }
 
-/// STOP (skein-amm docs/AMM.md "Not built"): nothing routes `tm_<txid>-live` to this function in
-/// the app. amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`, templated per
-/// instance); a dynamic overlay's manifest names no token, and the engine's `register` subscribes
-/// only `<topic>`, `-admit` and `-proof` (skein-overlay 0.6.0). How a registered token's `-live`
-/// topic reaches here is not decided; the heartbeat is still published on it (`heartbeat`).
+/// Not wired (skein-amm docs/AMM.md "Not wired"): nothing routes `tm_<txid>-live` to this function.
+/// The skein node never subscribes `-live` (David, 2026-10-05): the matchmaking is the client's,
+/// which reads the beacons itself. The verdict is kept for a node that does.
 fn liveVerdict(a: Allocator, in: Value, msg: libp2p.Inbound) !libp2p.Verdict {
     const t = names.parse(msg.topic orelse return error.NoTopic) orelse return error.UnknownTopic;
     if (t.kind != .live) return error.WrongTopic;
@@ -295,7 +302,8 @@ fn liveVerdict(a: Allocator, in: Value, msg: libp2p.Inbound) !libp2p.Verdict {
     };
 }
 
-/// The serving side of the direct call: one request frame, one reply frame.
+/// The serving side of the direct call: one request frame, one reply frame. A utility since 0.2.0:
+/// no row routes `/amm/proofs/1.0.0` (sync is shruggr/skein#112's `want`).
 fn proofsByBlock(a: Allocator, in: Value, arg: Value) !Value {
     const msg = try libp2p.inbound(arg);
     return libp2p.directAnswer(a, try proofs.serve(a, views.held(try loadState(a, in)), msg.body));
@@ -388,16 +396,11 @@ fn queryParam(a: Allocator, req: Value, name: []const u8) !?[]const u8 {
 
 // ---------------------------------------------------------------- outbound: emit to a provider
 
-/// The key of the provider playing `role` (the address book, head `peers`; skein-sdk `sk.provider`).
-fn providerKey(a: Allocator, role: []const u8) ![]const u8 {
-    const s = vm.store();
-    const root = (try vm.head(a, "peers")) orelse return error.NoProvider;
-    const book = try s.getValue(a, root);
-    for (book.getArray("peers") orelse return error.NoProvider) |e| {
-        const p = try s.getValue(a, e.getCid("peer") orelse continue);
-        if (eql(u8, p.getText("role") orelse "", role)) if (p.getBytes("key")) |k| if (k.len == 33) return k;
-    }
-    return error.NoProvider;
+/// The key of this host's provider `name` (`libp2p`, `cron`): the address book's entry at (`local`,
+/// `name`) (skein-sdk 0.7 `sk.peerAt`; the book has no roles, shruggr/skein#126).
+fn providerKey(a: Allocator, name: []const u8) ![]const u8 {
+    const k = (try sk.peerAt(a, "local", name)) orelse return error.NoProvider;
+    return if (k.len == 33) k else error.NoProvider;
 }
 
 /// Emit `body` to `to` in `box` (docs/MESSAGES.md "emit"): → the message's CID. It goes out when the step ends without error.
@@ -418,13 +421,18 @@ fn walletCall(a: Allocator, frame: []const u8) ![]const u8 {
     return vm.result(a, ext.wallet, .{ frame.ptr, @as(u32, @intCast(frame.len)) });
 }
 
-/// This instance's peer ID. skein has no way for a program to learn it (not
-/// in the step input's `self`, no provider answers it), so it is
-/// configuration: `ammP2p.peerId`, what `skein-host identity <handle>
-/// --peer` prints. `self.peerId` is read first, should a later kernel put it there.
-fn selfPeerId(a: Allocator, in: Value, cfg: Config) ![]const u8 {
-    if (in.get("self")) |s| if (s.get("peerId")) |p| return libp2p.peerIdBytes(a, p);
-    return cfg.peer_id orelse error.NoPeerId;
+/// This instance's libp2p peer ID (David, 2026-10-05): the signer's public key for protocol
+/// `[2, "skein instance"]` (skein src/host/signer.ts `INSTANCE_PROTOCOL`), key ID
+/// `libp2p:<handle>`, counterparty self, as an identity multihash (libp2p.zig `peerIdOf`).
+/// STOP (docs/AMM.md "Not wired"): skein's host derives the node's key from the router's master
+/// secret (signer.ts `peerKey`), not from the instance's root, which is the key this signer holds;
+/// until one of them changes, this is not the peer ID the node runs.
+fn selfPeerId(a: Allocator, in: Value) ![]const u8 {
+    const me = in.get("self") orelse return error.NoSelf;
+    const handle = me.getText("handle") orelse return error.NoHandle;
+    const key_id = try std.fmt.allocPrint(a, "libp2p:{s}", .{handle});
+    const pk = try wire.publicKeyResult(try walletCall(a, try wire.getPublicKeyFrameFor(a, libp2p.instance_protocol.level, libp2p.instance_protocol.name, key_id, .self, null)));
+    return libp2p.peerIdOf(a, pk);
 }
 
 // ---------------------------------------------------------------- steps
@@ -463,7 +471,7 @@ fn step(a: Allocator, in: Value) !void {
         if (!eql(u8, op, "amm-live")) return error.BadEvent;
         // An accepted heartbeat (the handler's `admit` entry): re-verified, into the last-seen map.
         try fields.append(a, .{ .key = "changed", .value = .{ .boolean = try liveness.apply(a, &st.live, ev) } });
-    } else if (args.getCid("body")) |bc| {
+    } else if (args.getCid("body")) |bc| blk: {
         const body = try s.getValue(a, bc);
         const sender = args.getBytes("sender") orelse return error.BadInput;
         op = body.getText("kind") orelse return error.BadMessage;
@@ -479,8 +487,14 @@ fn step(a: Allocator, in: Value) !void {
             const owner = in.getBytes("owner") orelse "";
             if (!eql(u8, sender, owner) and !eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheOwner;
             const cfg = try config(a, in);
+            // The beacon (#126): the host publishes the heartbeat; nothing ticks. A start naming
+            // `jobs` asks the cron provider instead (the fallback, below).
+            if (body.getArray("jobs") == null) {
+                try beacons(a, in, &st, cfg, eql(u8, op, schedule.start_kind), &fields);
+                break :blk;
+            }
             const cron = try providerKey(a, "cron");
-            const jobs = try schedule.jobsOf(a, body, cfg.peer_id != null);
+            const jobs = try schedule.jobsOf(a, body);
             const out = try a.alloc(Value, jobs.len);
             for (jobs, out) |j, *o| {
                 const req = if (eql(u8, op, schedule.start_kind))
@@ -508,18 +522,66 @@ fn step(a: Allocator, in: Value) !void {
     _ = try vm.finish(a, s, .{ .map = es.items });
 }
 
-/// A validator's heartbeat on each topic's `-live` topic, signed through the
-/// signer (the `wallet` import), published through the libp2p provider (its answer is not awaited).
-fn heartbeat(a: Allocator, in: Value, fields: *std.ArrayList(cbor.Entry)) !void {
-    const cfg = try config(a, in);
-    const at: u64 = in.getUint("at") orelse return error.BadInput;
+/// The heartbeat body (opldotdev/amm-poc#3): this instance's identity and peer ID, signed at `at`
+/// through the signer (the `wallet` import).
+fn heartbeatBody(a: Allocator, in: Value, at: u64) ![]const u8 {
     const identity = try wire.publicKeyResult(try walletCall(a, try wire.identityKeyFrame(a)));
-    const peer = try selfPeerId(a, in, cfg);
+    const peer = try selfPeerId(a, in);
     const d = try liveness.digest(a, peer, at);
     const sig = try wire.signatureResult(try walletCall(a, try wire.createSignatureFrame(a, liveness.protocol.security_level, liveness.protocol.name, liveness.key_id, .anyone, d)));
-    const body = try liveness.encodeBody(a, .{ .identity_key = identity, .peer_id = peer, .sig = sig, .at = at });
+    return liveness.encodeBody(a, .{ .identity_key = identity, .peer_id = peer, .sig = sig, .at = at });
+}
+
+/// The cron fallback's heartbeat (a tick): the body on each topic's `-live` topic, published
+/// through the libp2p provider (its answer is not awaited).
+fn heartbeat(a: Allocator, in: Value, fields: *std.ArrayList(cbor.Entry)) !void {
+    const cfg = try config(a, in);
+    const body = try heartbeatBody(a, in, in.getUint("at") orelse return error.BadInput);
     for (cfg.topics) |t| _ = try toLibp2p(a, try libp2p.publish(a, try names.live(a, t), body));
     try fields.append(a, .{ .key = "published", .value = .{ .uint = cfg.topics.len } });
+}
+
+/// The beacon (shruggr/skein#126, docs/MESSAGES.md "emit"): on start, one `beacon` event per served
+/// token topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds × 1000, body}`
+/// — the host's libp2p node publishes `body` on it every `every` ms, logging nothing per beat — and
+/// an `unbeacon` for a topic beaconed before and no longer served (deregistered meanwhile); on
+/// stop, an `unbeacon` for each standing one. The standing set is the map `beacons`.
+///
+/// STOP (docs/AMM.md "Not wired"): the host sends the same body on every beat, so its `at` and
+/// signature are the start's; a receiver's `liveness.judge` ignores a body older than the offline
+/// threshold. How the beat carries freshness is David's to decide.
+fn beacons(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields: *std.ArrayList(cbor.Entry)) !void {
+    const at: u64 = in.getUint("at") orelse return error.BadInput;
+    var asked: std.ArrayList(Value) = .empty;
+    var ended: std.ArrayList(Value) = .empty;
+    const body: ?[]const u8 = if (start and cfg.topics.len > 0) try heartbeatBody(a, in, at) else null;
+    for (try st.beacons.prefixed("")) |kv| {
+        const served = start and for (cfg.topics) |t| {
+            if (eql(u8, t, kv.key)) break true;
+        } else false;
+        if (served) continue;
+        _ = try vm.emitEvent(a, try liveness.unbeaconEvent(a, try names.live(a, kv.key)));
+        _ = try st.beacons.remove(kv.key);
+        try ended.append(a, .{ .text = try a.dupe(u8, kv.key) });
+    }
+    if (body) |b| for (cfg.topics) |t| {
+        _ = try vm.emitEvent(a, try liveness.beaconEvent(a, try names.live(a, t), cfg.heartbeat_s * 1000, b));
+        try st.beacons.put(t, .{ .int = @intCast(at) });
+        try asked.append(a, .{ .text = t });
+    };
+    try fields.appendSlice(a, &.{
+        .{ .key = "beacons", .value = .{ .array = asked.items } },
+        .{ .key = "unbeacons", .value = .{ .array = ended.items } },
+    });
+}
+
+/// The `/` route (`{transport: "http", address: "/", prefix: true, program: "amm-p2p", fn: "serve",
+/// root: "www", index: "index.html"}`): the app's pages from its own tree, the installed app
+/// record's `tree` (skein-sdk `files.serve`, shruggr/skein#125).
+fn servePages(a: Allocator, arg: Value) !Value {
+    const req = try toSdk(a, arg);
+    const m = try app.manifestOf(a, relay.app_name);
+    return fromSdk(a, try files.serve(a, req, scbor.Value.cidOf(m.get("tree")), files.rowOptions(req)));
 }
 
 // ---------------------------------------------------------------- catch-up (the pull half, placeholder)

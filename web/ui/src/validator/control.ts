@@ -3,14 +3,18 @@
  * by the connected BRC-100 wallet through `@bsv/sdk`'s `AuthFetch` (BRC-103
  * handshake at `<origin>/.well-known/auth`, every request BRC-104-signed):
  *
- * - heartbeat start / stop: a message into the instance's own box `amm-p2p`
+ * - heartbeat start / stop: a message into the app's box `amm/amm-p2p`
+ *   (the manifest's `"amm-p2p"`, relative to the app: shruggr/skein#128)
  *   through the stock BRC-33 messagebox route, `POST <origin>/sendMessage`
  *   (skein docs/MESSAGES.md "The messagebox"; programs/messagebox
  *   `sendMessage`):
  *
  *     {message: {recipient: <the instance's identity key, hex>,
- *                messageBox: "amm-p2p",
- *                body: {kind: "amm-p2p-start"} | {kind: "amm-p2p-stop", jobs: ["heartbeat"]}}}
+ *                messageBox: "amm/amm-p2p",
+ *                body: {kind: "amm-p2p-start"} | {kind: "amm-p2p-stop"}}}
+ *
+ *   Start asks the host for a beacon per served token topic (`tm_<txid>-live`,
+ *   skein-amm 0.2.0); stop ends them.
  *
  *   The sender is the key the session proved. For the instance's own key as
  *   recipient the messagebox admits the message when the subscription table
@@ -37,7 +41,7 @@ export interface AuthFetchLike {
   ): Promise<Pick<Response, "status" | "text">>;
 }
 
-export const AMM_P2P_BOX = "amm-p2p";
+export const AMM_P2P_BOX = "amm/amm-p2p";
 
 export type HeartbeatAction = "start" | "stop";
 
@@ -45,22 +49,20 @@ export interface SendMessageRequest {
   message: {
     recipient: string;
     messageBox: string;
-    body: { kind: "amm-p2p-start" } | { kind: "amm-p2p-stop"; jobs: ["heartbeat"] };
+    body: { kind: "amm-p2p-start" } | { kind: "amm-p2p-stop" };
   };
 }
 
 /**
- * The BRC-33 sendMessage body. Start is the by-hand body
- * (`skein-host event amm2 amm-p2p '{"kind":"amm-p2p-start"}'`): the
- * heartbeat and the catch-up (amm-p2p's default for a validator). Stop names
- * the heartbeat only, so the catch-up keeps running.
+ * The BRC-33 sendMessage body: start (the beacons) or stop (every beacon
+ * ended). Neither names `jobs`, which is amm-p2p's cron fallback.
  */
 export function heartbeatRequest(action: HeartbeatAction, instanceIdentityKey: string): SendMessageRequest {
   return {
     message: {
       recipient: instanceIdentityKey.toLowerCase(),
       messageBox: AMM_P2P_BOX,
-      body: action === "start" ? { kind: "amm-p2p-start" } : { kind: "amm-p2p-stop", jobs: ["heartbeat"] },
+      body: action === "start" ? { kind: "amm-p2p-start" } : { kind: "amm-p2p-stop" },
     },
   };
 }

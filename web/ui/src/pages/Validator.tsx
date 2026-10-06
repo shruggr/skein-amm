@@ -153,7 +153,7 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
         <small>
           A validator registers by heartbeating on <code>tm_&lt;txid&gt;-live</code>; peers list it on their{" "}
           <code>/amm/live</code>. The schedule starts when amm-p2p receives <code>{"{kind: \"amm-p2p-start\"}"}</code> in
-          box <code>amm-p2p</code> from the owner (or the cron provider), after every boot. These buttons send that
+          box <code>amm/amm-p2p</code> from the owner (or the cron provider), after every boot. These buttons send that
           message as the connected wallet: <code>POST {t?.address.origin ?? "<instance>"}/sendMessage</code> (BRC-33),
           BRC-104-signed by the wallet.
         </small>
@@ -182,7 +182,7 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
           {result.admitted && (
             <p>
               <small>
-                Admitted means the messagebox took the message (box <code>amm-p2p</code> is subscribed for any sender).
+                Admitted means the messagebox took the message (box <code>amm/amm-p2p</code> takes any sender).
                 amm-p2p then acts only if the sender is the owner; a refusal there is on the instance's thread and not in
                 this answer. Whether the heartbeat runs shows on the peer's <code>/amm/live</code> within one interval
                 (Refresh).
