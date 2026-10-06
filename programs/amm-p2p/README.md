@@ -1,14 +1,23 @@
 # amm-p2p
 
-The AMM overlay's validator liveness heartbeat (opldotdev/amm-poc#3), the proofs-by-block direct call (#2, the pull half of proof sync), and the **marketplace relay** (the app's box handler: interfaces `amm.swap/1`, `amm.pool/1` and `amm.liquidity/1`, docs/notes.md 2026-10-02 "Marketplace relay"), as one [skein](https://github.com/shruggr/skein) program (Zig 0.16.0, wasm32-wasi), the `amm-p2p` program of the `amm` app (`etc/app.json`). The design notes cited below are amm-poc's docs/notes.md.
+The AMM overlay's **marketplace relay** (the app's box handler: interfaces `amm.swap/1`, `amm.pool/1` and `amm.liquidity/1`, docs/notes.md 2026-10-02 "Marketplace relay") and the app's pages, with the proofs-by-block direct call and the catch-up pass as utilities nothing routes or schedules (#2, the pull half of proof sync), as one [skein](https://github.com/shruggr/skein) program (Zig 0.16.0, wasm32-wasi), the `amm-p2p` program of the `amm` app (`etc/app.json`). The design notes cited below are amm-poc's docs/notes.md.
 
 ```
-zig build test-amm-p2p   # from the repo root: the beat's body and signature, the market's liveness events and plan,
-                         # the direct call's request and reply, the catch-up plan, the names, the cron and libp2p
+zig build test-amm-p2p   # from the repo root: the direct call's request and reply, the catch-up plan, the names,
+                         # the catch-up tick, the libp2p
                          # providers' bodies and answers; the relay: a pair's checks, the BEEF and the signed
                          # package, the record's lifecycle (dialled, or local), the validator named, the dispatch;
-                         # the same for a pool deploy and an AddLiquidity, natively
+                         # the same for a pool deploy and an AddLiquidity; the manifest's role settings, natively
 ```
+
+## 0.6.0 (market and validator are the engine's, shruggr/skein#120)
+
+This section supersedes what the rest of this file says where they differ: every section below on liveness, the beacon, validation, the market role, start / stop and the heartbeat describes what is gone. Decided by David, 2026-10-06 evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both." The engine (skein-overlay 0.9.0) emits `liveness` / `beacon` on `tm_<txid>-live` at `register` and `unliveness` / `unbeacon` at `deregister`; the beat has no body (the frame carries the instance's identity key, the gossip message its peer ID).
+
+- **Gone from this program:** `validate` / `unvalidate` (and `names.mayValidate`, the box `amm/validate`), the validated set, the `beacon` / `unbeacon` and `liveness` / `unliveness` / 0.3.x `unsubscribe` emits and their bookkeeping (the maps `beacons`, `subscriptions`, the record's `validated` and `liveness`), the start / stop messages `{kind: "amm-p2p-start" | "amm-p2p-stop"}` (the manifest has no `start` / `stop`; such a message now errors `BadMessage`), the cron fallback's scheduling and its heartbeat job, and `src/liveness.zig`. Config: `ammP2p.market`, `heartbeatSeconds`, `offlineSeconds` and `catchupSeconds` are not read (the manifest has no `ammP2p`; `validator.every` is the beat, `market.window` the offline threshold, both `config.overlay`).
+- **What remains:** the relay (box `amm`, `/call`, the relay thread, this node's own validator in-VM), the pages (`serve`), and two utilities nothing routes or schedules: `proofsByBlock` and the catch-up pass, still run by a cron provider's tick `{kind: "amm-p2p-tick", job: "catchup"}` in box `amm/amm-p2p` (its sender must be the cron provider) and its thread; `ammP2p.topics`, `peers`, `window`, `batch` and `replyTimeoutMs` configure it.
+- **State.** `amm/p2p` is `{kind: "amm-p2p-state", maps: {cursor}}` (the catch-up cursor). A record 0.5.0 or earlier wrote loads (its other fields are not read) and is rewritten without them at the next commit.
+- **The validator's signing** follows the engine's settings and registered set (programs/amm-validator/README.md "0.6.0").
 
 ## Port
 
@@ -101,12 +110,11 @@ What is left:
 |---|---|
 | `src/names.zig` | Topic, protocol, box and schedule names; parses `tm_<txid>` and `tm_<txid>-live` itself. |
 | `src/libp2p.zig` | The libp2p shapes: the handler's argument, the topic answer (verdict and `admit` entries), the direct-call answer, the libp2p provider's bodies and its answers to a dial. |
-| `src/schedule.zig` | The cron provider's `tick`/`stop` bodies, a tick's job, a start message's jobs. Pure. |
-| `src/liveness.zig` | The heartbeat's body and frame and their signature (the validator side); the beacon, validation, and the market's `liveness` / `unliveness` events and plan. Pure. |
+| `src/schedule.zig` | The catch-up tick's kind and job (0.6.0: nothing schedules it). Pure. |
 | `src/proofs.zig` | Proofs by block: one BUMP per block (merge), the request and reply, the catch-up plan. Pure. |
 | `src/views.zig` | The views over the chain state (`chain/state`) and the app's overlay state (`<app>/state`). No VM imports. |
 | `src/relay.zig` | The marketplace relay: a pair's checks (the Pool contract's call and outputs, `pool` and Mandala's `brc162`), a deploy's checks (`checkDeploy`: the pool, its key, Mandala's `bsv21.tokenOf` for the first token input), the record of either kind and the app's state (`Book`: `swaps`, `pools`), the request BEEFs and the signed package, the relay thread's steps (`advance`), `submit`/`submitDeploy`/`status`/`statusOf`/`terms`. Pure. |
-| `src/main.zig` | The program: the route handlers, the steps (its own box, the app's box, the relay thread), the app dispatch (skein-sdk `app`), the signer (`wallet`), `emit`, `launch`, `await` and `deadline` imports. |
+| `src/main.zig` | The program: the route handlers, the steps (the catch-up tick, the app's box, the relay thread), the app dispatch (skein-sdk `app`), the signer (`wallet`), `emit`, `launch`, `await` and `deadline` imports. |
 | `test.zig` | Tests. |
 
 Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpers, and its engine sources as the module `skein_overlay`, as amm-validator takes them), skein-sdk 0.5.1 through it (`chain`, `wallet`, `app`, `sk`, `cbor`, `dagjson`, `message`), skein-mandala 0.4.0 (`mandala`) and `pool`. The tests read `etc/app.json` (the functions' declarations).

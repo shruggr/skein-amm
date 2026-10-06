@@ -1,31 +1,22 @@
 /**
  * The Validator page: the owner's view of their own skein instance as an AMM
  * validator — who it is (handle, identity, peer ID), whether a peer hears its
- * heartbeat, its policy when the owner can read it, the heartbeat start/stop
- * messages, the topics it validates (validate / stop validating, per topic) (as the owner, through the wallet-backed AuthFetch), the pools it
- * serves and the validators it sees.
+ * heartbeat, the token topics registered with its engine, its policy and the
+ * two role settings (`config.overlay.market` / `config.overlay.validator`)
+ * when the owner can read them (through the wallet-backed AuthFetch), the
+ * pools it serves and the validators it sees. Nothing is sent from here
+ * (skein-amm 0.6.0): registering a token's topic (the Tokens page) is the one
+ * act that drives both roles.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { PoolState } from "@amm-poc/matching-engine";
-import { useWallet } from "../wallet/AppWalletProvider";
 import { useAuthFetch } from "../wallet/authFetch";
-import { AMM_OVERLAY, AMM_OWNER_IDENTITY, AMM_PEER_OVERLAY, appName } from "../lib/config";
+import { AMM_OVERLAY, AMM_PEER_OVERLAY, appName } from "../lib/config";
 import { fetchLiveByToken, listTokenTopics, mergeLive, queryPools, type LiveAnswer } from "../lib/overlay";
 import { ago } from "../lp/validators";
 import { marginalPrice, shortKey, shortOutpoint } from "../market/view";
 import { livenessLine, loadThisInstance, poolsServedBy, type ServedPool, type ThisInstance } from "../validator/instance";
-import {
-  byHandCommand,
-  readAppPolicy,
-  readGenesis,
-  readValidated,
-  sendHeartbeatControl,
-  sendValidation,
-  type GenesisRead,
-  type HeartbeatAction,
-  type HeartbeatResult,
-  type ValidationAction,
-} from "../validator/control";
+import { readAppPolicy, readGenesis, type GenesisRead } from "../validator/control";
 import { LiveTable } from "./LiveTable";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -101,213 +92,61 @@ function ThisInstanceSection({ t, error }: { t: ThisInstance | null; error: stri
 
 // ---------------------------------------------------------------------------
 
-function OwnerLine({ walletKey, genesis }: { walletKey: string | null; genesis: GenesisRead | null }) {
-  const owner = genesis?.owner ?? (AMM_OWNER_IDENTITY || undefined);
-  const source = genesis?.owner ? "read from the genesis through the explorer" : AMM_OWNER_IDENTITY ? "from VITE_AMM_OWNER_IDENTITY (the deploy's owner.identity), not from the instance" : "";
-  if (!walletKey) return <p>Connect the instance owner's wallet to send these messages.</p>;
-  if (!owner) {
-    return (
-      <p className="warn">
-        The owner's key cannot be learned from any open route (the manifest and resolve give the instance's identity, not its
-        owner; the explorer answers the owner only). Try it: the messagebox admits anyone's message into box amm-p2p, and
-        amm-p2p ignores (errors on) one that is not from the owner.
-      </p>
-    );
-  }
-  const match = owner === walletKey.toLowerCase();
-  return (
-    <p className={match ? "ok" : "warn"}>
-      Owner <code title={owner}>{shortKey(owner)}</code> ({source}).{" "}
-      {match
-        ? "The connected wallet is the owner."
-        : `The connected wallet (${shortKey(walletKey)}) is not the owner: the messagebox will admit the message and amm-p2p will refuse it on its thread (you can still try).`}
-    </p>
-  );
-}
-
-function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead | null; onSent: () => void }) {
-  const { t, genesis, onSent } = props;
-  const { identityKey: walletKey } = useWallet();
-  const authFetch = useAuthFetch();
-  const [busy, setBusy] = useState<HeartbeatAction | null>(null);
-  const [result, setResult] = useState<HeartbeatResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function send(action: HeartbeatAction) {
-    if (!authFetch || !t?.identityKey) return;
-    setBusy(action);
-    setError(null);
-    setResult(null);
-    try {
-      setResult(await sendHeartbeatControl(authFetch, t.address.origin, t.identityKey, action));
-      onSent();
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const ready = !!authFetch && !!t?.identityKey;
-  return (
-    <section>
-      <h2>Register / heartbeat</h2>
-      <p>
-        <small>
-          A validator heartbeats on <code>tm_&lt;txid&gt;-live</code> for each topic it validates (below); markets keep it
-          in their liveness read, <code>/amm/.live/tm_&lt;txid&gt;-live</code>. The heartbeat starts when amm-p2p receives{" "}
-          <code>{"{kind: \"amm-p2p-start\"}"}</code> in box <code>amm/amm-p2p</code> from the owner (or the cron provider),
-          after every boot; stop ends it and keeps the validated topics. These buttons send that
-          message as the connected wallet: <code>POST {t?.address.origin ?? "<instance>"}/sendMessage</code> (BRC-33),
-          BRC-104-signed by the wallet.
-        </small>
-      </p>
-      <OwnerLine walletKey={walletKey} genesis={genesis} />
-      <div>
-        <button type="button" disabled={!ready || busy !== null} onClick={() => void send("start")}>
-          {busy === "start" ? "Sending…" : "Start heartbeat"}
-        </button>
-        <button type="button" disabled={!ready || busy !== null} onClick={() => void send("stop")}>
-          {busy === "stop" ? "Sending…" : "Stop heartbeat"}
-        </button>
-        {!t?.identityKey && <small className="bad"> the instance's identity key is unknown (the message's recipient)</small>}
-      </div>
-      {error && <p className="bad" role="alert">{error}</p>}
-      {result && (
-        <div className="leg">
-          <p>
-            <strong>{result.action === "start" ? "Start" : "Stop"}:</strong> HTTP {result.status}{" "}
-            {result.admitted ? (
-              <span className="ok">admitted{result.id && <> as <code>{shortKey(result.id)}</code></>}</span>
-            ) : (
-              <span className="bad">refused: {result.refusal}</span>
-            )}
-          </p>
-          {result.admitted && (
-            <p>
-              <small>
-                Admitted means the messagebox took the message (box <code>amm/amm-p2p</code> takes any sender).
-                amm-p2p then acts only if the sender is the owner; a refusal there is on the instance's thread and not in
-                this answer. Whether the heartbeat runs shows in the peer's <code>/amm/.live/tm_&lt;txid&gt;-live</code> within one interval
-                (Refresh).
-              </small>
-            </p>
-          )}
-          <details>
-            <summary>Request and answer</summary>
-            <pre>{`POST ${result.url}\n${JSON.stringify(result.request, null, 2)}\n\n${typeof result.answer === "string" ? result.answer : JSON.stringify(result.answer, null, 2)}`}</pre>
-          </details>
-        </div>
-      )}
-      <p>
-        <small>By hand on the host (sent as the cron provider, which amm-p2p also accepts):</small>
-      </p>
-      <pre>{byHandCommand(t?.address.name)}</pre>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-function ValidationSection(props: { t: ThisInstance | null; refreshKey: number }) {
-  const { t, refreshKey } = props;
-  const authFetch = useAuthFetch();
-  const origin = t?.address.origin;
+function RegisteredSection({ refreshKey }: { refreshKey: number }) {
   const [topics, setTopics] = useState<string[] | null>(null);
-  const [validated, setValidated] = useState<string[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [result, setResult] = useState<HeartbeatResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const read = useCallback(async () => {
-    setError(null);
-    try {
-      setTopics((await listTokenTopics(AMM_OVERLAY)).filter((x) => x.kind === "native").map((x) => x.topic));
-      const app = appName(AMM_OVERLAY);
-      if (authFetch && origin && app) {
-        const v = await readValidated(authFetch, origin, app);
-        setValidated(v ?? null);
-        if (!v) setError("the validated set is not readable: the explorer answers the instance's owner only");
-      }
-    } catch (e) {
-      setError(errText(e));
-    }
-  }, [authFetch, origin]);
 
   useEffect(() => {
-    void read();
-  }, [read, refreshKey]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const t = (await listTokenTopics(AMM_OVERLAY)).filter((x) => x.kind === "native").map((x) => x.topic);
+        if (!cancelled) {
+          setTopics(t);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setError(errText(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
-  async function send(action: ValidationAction, topic: string) {
-    if (!authFetch || !origin || !t?.identityKey) return;
-    setBusy(topic);
-    setError(null);
-    setResult(null);
-    try {
-      setResult(await sendValidation(authFetch, origin, t.identityKey, action, topic));
-      await read();
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const ready = !!authFetch && !!t?.identityKey;
-  const all = [...new Set([...(topics ?? []), ...(validated ?? [])])];
   return (
     <section>
-      <h2>Validation</h2>
+      <h2>Registered tokens</h2>
       <p>
         <small>
-          Per topic, the owner sets up validation: <code>{"{fn: \"validate\" | \"unvalidate\", args: {topic}}"}</code>{" "}
-          in box <code>amm/validate</code> (the owner's row: nobody else's message is admitted there). One setting: a
-          validated topic is beaconed on <code>tm_&lt;txid&gt;-live</code> while the heartbeat runs, and this instance
-          signs its swaps and takes on its new liquidity (addLiquidity, pool deploys); a topic not validated is refused
-          (<code>not_validating</code>). The set is read through the explorer (owner only).
+          The token topics registered with this instance&apos;s engine (the Tokens page registers them). Registering a
+          token&apos;s topic is the one act that drives both roles: with <code>config.overlay.market</code> set the engine
+          asks for the topic&apos;s liveness (<code>tm_&lt;txid&gt;-live</code>, read at <code>/amm/.live/…</code>); with{" "}
+          <code>config.overlay.validator</code> set it beacons <code>tm_&lt;txid&gt;-live</code> and this instance signs the
+          token&apos;s swaps and takes on its new liquidity (addLiquidity, pool deploys). Deregistering reverses both. The
+          two settings are under Policy.
         </small>
       </p>
+      {error && <p className="bad" role="alert">{error}</p>}
       {topics === null ? (
-        <p>Reading…</p>
-      ) : all.length === 0 ? (
-        <p><small>The instance serves no token topics.</small></p>
+        !error && <p>Reading…</p>
+      ) : topics.length === 0 ? (
+        <p><small>No token topics are registered.</small></p>
       ) : (
         <table className="tokens">
           <thead>
             <tr>
               <th>Topic</th>
-              <th>Validating</th>
-              <th />
             </tr>
           </thead>
           <tbody>
-            {all.map((topic) => {
-              const on = validated?.includes(topic);
-              return (
-                <tr key={topic}>
-                  <td><code title={topic}>{shortKey(topic)}</code></td>
-                  <td>{validated === null ? "?" : on ? <span className="ok">yes</span> : "no"}</td>
-                  <td>
-                    <button type="button" disabled={!ready || busy !== null || on === true} onClick={() => void send("validate", topic)}>
-                      {busy === topic && !on ? "Sending…" : "Validate"}
-                    </button>
-                    <button type="button" disabled={!ready || busy !== null || on === false} onClick={() => void send("unvalidate", topic)}>
-                      {busy === topic && on ? "Sending…" : "Stop validating"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
+            {topics.map((topic) => (
+              <tr key={topic}>
+                <td><code title={topic}>{shortKey(topic)}</code></td>
+              </tr>
+            ))}
           </tbody>
         </table>
-      )}
-      {!authFetch && <small>connect the owner's wallet to read and change the set</small>}
-      {error && <p className="bad" role="alert">{error}</p>}
-      {result && (
-        <p>
-          <strong>{result.action === "validate" ? "Validate" : "Stop validating"}:</strong> HTTP {result.status}{" "}
-          {result.admitted ? <span className="ok">admitted</span> : <span className="bad">refused: {result.refusal}</span>}
-        </p>
       )}
     </section>
   );
@@ -340,6 +179,7 @@ function PolicySection(props: { genesis: GenesisRead | null; onRead: (g: Genesis
 
   const p = genesis?.ok ? genesis.policy : undefined;
   const show = (v: number | undefined, unit: string) => (v === undefined ? <span className="warn">not configured</span> : `${v} ${unit}`);
+  const role = (v: number | undefined, what: string) => (v === undefined ? <span className="warn">off (not set)</span> : `on: ${what} ${v / 1000} s`);
   return (
     <section>
       <h2>Policy</h2>
@@ -348,15 +188,14 @@ function PolicySection(props: { genesis: GenesisRead | null; onRead: (g: Genesis
           <tbody>
             <Row k="Min validator fee">{show(p.minValidatorFeeBps, "bps")}</Row>
             <Row k="Max LP fee">{show(p.maxLpFeeBps, "bps")}</Row>
-            <Row k="Heartbeat interval">{show(p.heartbeatSeconds, "s")}</Row>
-            <Row k="Offline after">{show(p.offlineSeconds, "s")}</Row>
-            {p.peerId && <Row k="Peer ID (config)"><code>{p.peerId}</code></Row>}
+            <Row k="Market (config.overlay.market)">{role(p.marketWindowMs, "liveness window")}</Row>
+            <Row k="Validator (config.overlay.validator)">{role(p.validatorEveryMs, "a beat every")}</Row>
           </tbody>
         </table>
       ) : (
         <p className="warn">
           Not readable from the instance: min validator fee, max LP fee (the app record's <code>config.amm.ammValidator</code>) and
-          the heartbeat interval (<code>config.amm.ammP2p.heartbeatSeconds</code>) are not exposed by any open route.
+          the two role settings (<code>config.overlay.market</code>, <code>config.overlay.validator</code>) are not exposed by any open route.
         </p>
       )}
       <p>
@@ -371,8 +210,8 @@ function PolicySection(props: { genesis: GenesisRead | null; onRead: (g: Genesis
       {genesis && !genesis.ok && <p className="bad">{genesis.error}</p>}
       {error && <p className="bad" role="alert">{error}</p>}
       <NotBuilt>
-        Editing the policy: it is the manifest's <code>config.amm</code>, changed by installing the app again with a new
-        manifest; the app offers no <code>writes: true</code> function for it.
+        Editing the policy: it is the manifest's <code>config.amm</code> and <code>config.overlay</code>, changed by installing
+        the app again with a new manifest; the app offers no <code>writes: true</code> function for it.
       </NotBuilt>
     </section>
   );
@@ -479,7 +318,7 @@ function PeersSection({ live, error }: { live: LiveAnswer | null; error: string 
       <p>
         <small>
           The validators live in this node&apos;s liveness read (<code>{AMM_OVERLAY}/.live/tm_&lt;txid&gt;-live</code>, each token it
-          serves, merged; kept when this node is a market, <code>config.amm.ammP2p.market</code>).
+          serves, merged; kept when this node is a market, <code>config.overlay.market</code>).
         </small>
       </p>
       {error && <p className="bad">{error}</p>}
@@ -546,8 +385,7 @@ export function ValidatorPage() {
         </p>
       </section>
       <ThisInstanceSection t={t} error={tError} />
-      <HeartbeatSection t={t} genesis={genesis} onSent={() => void refresh()} />
-      <ValidationSection t={t} refreshKey={refreshKey} />
+      <RegisteredSection refreshKey={refreshKey} />
       <PolicySection genesis={genesis} onRead={setGenesis} origin={t?.address.origin} />
       <PoolsServedSection identityKey={t?.identityKey} peerLive={t?.peer?.entry?.live} refreshKey={refreshKey} />
       <PeersSection live={live} error={liveError} />

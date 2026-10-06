@@ -31,6 +31,20 @@ picker lists the validators live on any served token, merged). The Validator
 page reads the peer's `.live` read of this instance's token topics. Where the
 text below says `/live`, `thresholdMs` or "heartbeat seen", read this.
 
+**skein-amm 0.6.0: market and validator are the engine's** (shruggr/skein#120,
+David 2026-10-06 evening). Registering a token's topic (the Tokens page) is
+the one act: with `config.overlay.market {window}` the engine asks for the
+topic's liveness, with `config.overlay.validator {every}` it beacons
+`tm_<txid>-live`, and amm-validator signs for every registered token. The
+beat has no body: `parseLiveBeats` takes the validator's identity from each
+entry's `sender` and its peer ID from `from`. The Validator page has no
+buttons any more — no "Start / Stop heartbeat" (amm-p2p takes no start or
+stop), no per-topic "Validate / Stop validating" (no validated set) — and
+shows the registered tokens and, through the explorer (owner only), the two
+settings beside the validator's fees (`src/validator/control.ts`
+`policyOf`). Where the text below describes the Register / heartbeat
+section, `validate` or `config.amm.ammP2p`, read this.
+
 ## Not built (all pages)
 
 Each is shown in the UI where it applies, with its reason. Details in the

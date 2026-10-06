@@ -6,7 +6,7 @@
  *
  *   market    topics → pools (lookup) → prices; per token, the validators live
  *             (`GET <base>/.live/tm_<txid>-live`, the runtime's liveness read:
- *             the beats within the window, each body {identityKey, peerId})
+ *             the beats within the window: `sender` the validator, `from` its peer ID)
  *   form      token, direction, amount, slippage → the engine's plan over the
  *             pools whose validator is live there (src/market/plan.ts `livePools`)
  *   swap      the relay's terms (amm.swap.terms: where the commission goes),

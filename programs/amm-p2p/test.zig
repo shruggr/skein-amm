@@ -1,9 +1,7 @@
-//! amm-p2p natively: the beat's body and signature, the market's liveness
-//! events and plan, the relay naming its validator (dialled, or this node's
+//! amm-p2p natively: the relay naming its validator (dialled, or this node's
 //! own, called in-VM), the handler's answer; the proofs-by-block direct
-//! call and the catch-up plan; the names, the cron provider's schedule
-//! bodies and the libp2p provider's bodies and answers — over an in-memory
-//! store. The VM wiring (main.zig) is wasm32-wasi only.
+//! call and the catch-up plan; the names, the cron provider's tick and the
+//! libp2p provider's bodies and answers — over an in-memory store. The VM wiring (main.zig) is wasm32-wasi only.
 const std = @import("std");
 const w = @import("chain");
 const wire = @import("wallet").wire;
@@ -11,7 +9,6 @@ const names = @import("src/names.zig");
 const libp2p = @import("src/libp2p.zig");
 const schedule = @import("src/schedule.zig");
 const proofs = @import("src/proofs.zig");
-const liveness = @import("src/liveness.zig");
 /// js-libp2p's peer ID of the generator point's key (skein src/host/p2p.ts `peerIdOf` of the private key 1).
 const PEER_ID_OF_G = "16Uiu2HAm3cuhhRL2msUuLF62KRSfneFDx94RsuouyW25Ho42cFMq";
 const views = @import("src/views.zig");
@@ -161,67 +158,6 @@ test "catch-up plan" {
 
 }
 
-// ================================================================ liveness
-
-const root_a: [32]u8 = .{0x11} ** 32;
-const root_b: [32]u8 = .{0x22} ** 32;
-const peer_a = "\x00\x25\x08\x02\x12\x21peer-A-multihash-bytes..........";
-const peer_b = "\x00\x25\x08\x02\x12\x21peer-B-multihash-bytes..........";
-
-const live_topic = "tm_" ++ "ab" ** 32 ++ "-live";
-
-/// The host's beat for `root` (the instance) naming `peer`: its body, its frame.
-fn beat(a: Allocator, root: bsvz.primitives.ec.PrivateKey, peer: []const u8, at: u64) !liveness.Beat {
-    const body = try liveness.encodeBody(a, .{ .identity_key = (try root.publicKey()).toCompressedSec1(), .peer_id = peer });
-    return liveness.sign(a, root, live_topic, body, at);
-}
-
-test "liveness: the frame's signature is the instance's createSignature over beaconPreimage, 2-metanet handles envelope-send, anyone" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const sender = (try ka.publicKey()).toCompressedSec1();
-    const body = try liveness.encodeBody(a, .{ .identity_key = sender, .peer_id = peer_a });
-    // The preimage is dag-cbor {kind: "beacon", topic, body, at, sender}, keys length-first (skein p2p.ts beaconPreimage).
-    const pre = try cbor.decode(a, try liveness.preimage(a, live_topic, body, 42, sender));
-    try testing.expectEqualStrings("beacon", pre.getText("kind").?);
-    try testing.expectEqualStrings(live_topic, pre.getText("topic").?);
-    try testing.expectEqualStrings("at", pre.map[0].key);
-    try testing.expectEqualStrings("sender", pre.map[4].key);
-    // What a BRC-100 wallet does for createSignature({protocolID: [2, "metanet handles envelope"], keyID: "send",
-    // counterparty: "anyone", data}): the child private key by invoice "2-metanet handles envelope-send" against
-    // the anyone public key, over sha256(data).
-    const anyone_pub = try (try bsvz.primitives.ec.PrivateKey.fromBytes(.{0} ** 31 ++ .{1})).publicKey();
-    const child = try ka.deriveChild(anyone_pub, "2-metanet handles envelope-send");
-    const sig = try child.signDigest(try liveness.digest(a, live_topic, body, 42, sender));
-    try testing.expect(liveness.verify(a, live_topic, .{ .body = body, .at = 42, .sender = sender, .signature = sig.asSlice() }));
-    // The frame the cron fallback signs through the `wallet` import.
-    const frame = try wire.createSignatureFrame(a, 2, "metanet handles envelope", "send", .anyone, try liveness.digest(a, live_topic, body, 42, sender));
-    try testing.expectEqual(@as(u8, 15), frame[0]);
-}
-
-test "the beacon's body (the validator side, kept in 0.4.0): {identityKey, peerId} in the host's signed frame, what the page decodes from the liveness read" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const ka = try bsvz.primitives.ec.PrivateKey.fromBytes(root_a);
-    const b = try beat(a, ka, peer_a, 1_790_000_000_000);
-    const frame = try liveness.decodeFrame(a, try liveness.encodeFrame(a, b));
-    try testing.expect(liveness.verify(a, live_topic, frame));
-    const body = try liveness.decodeBody(a, frame.body);
-    try testing.expectEqualSlices(u8, &(try ka.publicKey()).toCompressedSec1(), &body.identity_key);
-    try testing.expectEqualSlices(u8, &frame.sender, &body.identity_key);
-    try testing.expectEqualSlices(u8, peer_a, body.peer_id);
-    // The body's keys, as the page reads them (web/ui src/lib/overlay.ts `parseLiveBeats`).
-    const v = try cbor.decode(a, frame.body);
-    try testing.expectEqual(@as(usize, 2), v.map.len);
-    try testing.expect(v.getBytes("identityKey") != null and v.getBytes("peerId") != null);
-    try testing.expectError(error.Malformed, liveness.decodeBody(a, "junk"));
-    // Another topic's signature does not hold here (the topic is signed, not carried).
-    try testing.expect(!liveness.verify(a, "tm_" ++ "cd" ** 32 ++ "-live", frame));
-}
-
 test "names: tm_<txid> and tm_<txid>-live, parsed here" {
     const o = "tm_" ++ "ab" ** 32;
     const t = names.parse(o).?;
@@ -244,20 +180,10 @@ test "names: tm_<txid> and tm_<txid>-live, parsed here" {
     try testing.expectEqualStrings("/amm/proofs/1.0.0", names.proofs_protocol);
 }
 
-test "schedules (skein#69): the cron provider's tick and stop bodies, the tick read back" {
+test "the catch-up tick (skein#69, a utility since 0.6.0): the cron provider's tick read back; no heartbeat job" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const t = readBack(a, try schedule.tick(a, .heartbeat, 30_000, names.own_box));
-    try testing.expectEqualStrings("tick", t.getText("fn").?);
-    try testing.expectEqual(@as(u64, 30_000), t.getUint("every").?);
-    try testing.expectEqualStrings("amm/amm-p2p", t.getText("box").?);
-    try testing.expectEqualStrings("amm-p2p-heartbeat", t.getText("name").?);
-    try testing.expectEqualStrings("amm-p2p-tick", t.get("body").?.getText("kind").?);
-    const s = readBack(a, try schedule.stop(a, .catchup));
-    try testing.expectEqualStrings("stop", s.getText("fn").?);
-    try testing.expectEqualStrings("amm-p2p-catchup", s.getText("name").?);
-
     // A tick as the provider sends it: {...body, kind, name, due}.
     const tick: Value = .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "kind", .value = .{ .text = "amm-p2p-tick" } },
@@ -267,148 +193,19 @@ test "schedules (skein#69): the cron provider's tick and stop bodies, the tick r
     }) };
     try testing.expectEqual(schedule.Job.catchup, try schedule.jobOf(tick));
     try testing.expectError(error.NotATick, schedule.jobOf(.{ .map = &.{} }));
-    const bad: Value = .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "kind", .value = .{ .text = "amm-p2p-tick" } },
-        .{ .key = "job", .value = .{ .text = "proofs" } },
-    }) };
-    try testing.expectError(error.BadTick, schedule.jobOf(bad));
-
-    // The jobs a start names (the cron fallback); a start without `jobs` is the beacon's, no schedule.
-    try testing.expectError(error.NoJobs, schedule.jobsOf(a, .{ .map = &.{} }));
-    const only: Value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "jobs", .value = .{ .array = try a.dupe(Value, &.{.{ .text = "heartbeat" }}) } }}) };
-    try testing.expectEqualSlices(schedule.Job, &.{.heartbeat}, try schedule.jobsOf(a, only));
-}
-
-test "the beacon (shruggr/skein#126): beacon {topic: tm_<txid>-live, every, body} and unbeacon {topic}" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const topic = try names.live(a, "tm_" ++ "ab" ** 32);
-    const b = readBack(a, try liveness.beaconEvent(a, topic, 30_000, "body"));
-    try testing.expectEqualStrings("beacon", b.getText("event").?);
-    try testing.expectEqualStrings("tm_" ++ "ab" ** 32 ++ "-live", b.getText("topic").?);
-    try testing.expectEqual(@as(u64, 30_000), b.getUint("every").?);
-    try testing.expectEqualStrings("body", b.getBytes("body").?);
-    const u = readBack(a, try liveness.unbeaconEvent(a, topic));
-    try testing.expectEqualStrings("unbeacon", u.getText("event").?);
-    try testing.expectEqualStrings(topic, u.getText("topic").?);
-    try testing.expect(u.get("body") == null);
-}
-
-test "the market role (shruggr/skein#120, #138): liveness {topic: tm_<txid>-live, window} per served topic; off → none; deregister or stop → unliveness, only for a topic asked" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const t1 = "tm_" ++ "ab" ** 32;
-    const t2 = "tm_" ++ "cd" ** 32;
-    const served: []const []const u8 = &.{ t1, t2 };
-
-    // The events as emitted, read back: the beacon's topic, the window offlineSeconds × 1000 (40 s by default).
-    try testing.expectEqual(@as(u64, 40), liveness.default_offline_s);
-    try testing.expectEqual(@as(u64, 30), liveness.default_interval_s);
-    const on_ev = readBack(a, try liveness.livenessEvent(a, try names.live(a, t1), liveness.default_offline_s * 1000));
-    try testing.expectEqualStrings("liveness", on_ev.getText("event").?);
-    try testing.expectEqualStrings(t1 ++ "-live", on_ev.getText("topic").?);
-    try testing.expectEqual(@as(u64, 40_000), on_ev.getUint("window").?);
-    try testing.expect(on_ev.get("program") == null and on_ev.get("fn") == null);
-    const off_ev = readBack(a, try liveness.unlivenessEvent(a, try names.live(a, t1)));
-    try testing.expectEqualStrings("unliveness", off_ev.getText("event").?);
-    try testing.expectEqualStrings(t1 ++ "-live", off_ev.getText("topic").?);
-    try testing.expect(off_ev.get("window") == null);
-    // 0.3.x's subscription, ended once on the way up.
-    const un = readBack(a, try liveness.unsubscribeEvent(a, try names.live(a, t1)));
-    try testing.expectEqualStrings("unsubscribe", un.getText("event").?);
-    try testing.expectEqualStrings(t1 ++ "-live", un.getText("topic").?);
-
-    // Market on, nothing standing: a liveness per served topic.
-    const on = try liveness.plan(a, &.{}, served);
-    try testing.expectEqual(@as(usize, 2), on.liveness.len);
-    try testing.expectEqualStrings(t1, on.liveness[0]);
-    try testing.expectEqualStrings(t2, on.liveness[1]);
-    try testing.expectEqual(@as(usize, 0), on.unliveness.len);
-    // Started again with the same set: nothing to change.
-    const again = try liveness.plan(a, served, served);
-    try testing.expectEqual(@as(usize, 0), again.liveness.len + again.unliveness.len);
-    // Market off (main.zig `market` wants nothing), nothing standing: nothing emitted.
-    const off = try liveness.plan(a, &.{}, &.{});
-    try testing.expectEqual(@as(usize, 0), off.liveness.len + off.unliveness.len);
-    // t2 deregistered, then a start: unliveness for t2, t1 left standing.
-    const dereg = try liveness.plan(a, served, &.{t1});
-    try testing.expectEqual(@as(usize, 0), dereg.liveness.len);
-    try testing.expectEqual(@as(usize, 1), dereg.unliveness.len);
-    try testing.expectEqualStrings(t2, dereg.unliveness[0]);
-    // A stop (or the role turned off): unliveness for every standing one, and only those.
-    const stop = try liveness.plan(a, served, &.{});
-    try testing.expectEqual(@as(usize, 2), stop.unliveness.len);
-    const stop_one = try liveness.plan(a, &.{t1}, &.{});
-    try testing.expectEqual(@as(usize, 1), stop_one.unliveness.len);
-    try testing.expectEqualStrings(t1, stop_one.unliveness[0]);
-}
-
-test "validation (0.3.1): validate per topic beacons it; unvalidate ends it; stop ends every beacon and keeps the set; start beacons it again; independent of the market role" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const t1 = "tm_" ++ "ab" ** 32;
-    const t2 = "tm_" ++ "cd" ** 32;
-
-    // validate t1, then t2: two beacons, the set {t1, t2}.
-    const v1 = try liveness.validation(a, .validate, &.{}, &.{}, t1);
-    try testing.expectEqual(@as(usize, 1), v1.beacon.len);
-    try testing.expectEqualStrings(t1, v1.beacon[0]);
-    const v2 = try liveness.validation(a, .validate, v1.validated, v1.beacon, t2);
-    try testing.expectEqual(@as(usize, 1), v2.beacon.len);
-    try testing.expectEqualStrings(t2, v2.beacon[0]);
-    try testing.expectEqual(@as(usize, 2), v2.validated.len);
-    const beaconing: []const []const u8 = &.{ t1, t2 };
-    // validate again: idempotent, nothing emitted, the set unchanged.
-    const again = try liveness.validation(a, .validate, v2.validated, beaconing, t2);
-    try testing.expectEqual(@as(usize, 0), again.beacon.len + again.unbeacon.len);
-    try testing.expectEqual(@as(usize, 2), again.validated.len);
-
-    // unvalidate t1: one unbeacon, the set {t2}; again: nothing.
-    const u = try liveness.validation(a, .unvalidate, v2.validated, beaconing, t1);
-    try testing.expectEqual(@as(usize, 0), u.beacon.len);
-    try testing.expectEqual(@as(usize, 1), u.unbeacon.len);
-    try testing.expectEqualStrings(t1, u.unbeacon[0]);
-    try testing.expectEqual(@as(usize, 1), u.validated.len);
-    try testing.expectEqualStrings(t2, u.validated[0]);
-    const un2 = try liveness.validation(a, .unvalidate, u.validated, &.{t2}, t1);
-    try testing.expectEqual(@as(usize, 0), un2.beacon.len + un2.unbeacon.len);
-
-    // stop with both validated: every beacon ended, the set kept.
-    const stop = try liveness.validation(a, .stop, v2.validated, beaconing, null);
-    try testing.expectEqual(@as(usize, 2), stop.unbeacon.len);
-    try testing.expectEqual(@as(usize, 0), stop.beacon.len);
-    try testing.expectEqual(@as(usize, 2), stop.validated.len);
-    // start: the set beaconed again.
-    const start = try liveness.validation(a, .start, stop.validated, &.{}, null);
-    try testing.expectEqual(@as(usize, 2), start.beacon.len);
-    try testing.expectEqualStrings(t1, start.beacon[0]);
-    try testing.expectEqualStrings(t2, start.beacon[1]);
-    try testing.expectEqual(@as(usize, 0), start.unbeacon.len);
-    // A start over 0.3.0's beacons (every served topic) with nothing validated: they end.
-    const upgrade = try liveness.validation(a, .start, &.{}, beaconing, null);
-    try testing.expectEqual(@as(usize, 0), upgrade.beacon.len);
-    try testing.expectEqual(@as(usize, 2), upgrade.unbeacon.len);
-    // validate / unvalidate need a topic.
-    try testing.expectError(error.NoTopic, liveness.validation(a, .validate, &.{}, &.{}, null));
-
-    // Independent of the market role: the market's plan reads the served topics and `market`
-    // (main.zig `market`), validation the validated set. A market host validating nothing:
-    // liveness, no beacon; a validator that is not a market: beacons, no liveness.
-    const market_only = try liveness.plan(a, &.{}, &.{ t1, t2 });
-    try testing.expectEqual(@as(usize, 2), market_only.liveness.len);
-    const no_beacon = try liveness.validation(a, .start, &.{}, &.{}, null);
-    try testing.expectEqual(@as(usize, 0), no_beacon.beacon.len);
-    const not_market = try liveness.plan(a, &.{}, &.{});
-    try testing.expectEqual(@as(usize, 0), not_market.liveness.len);
-    try testing.expectEqual(@as(usize, 2), start.beacon.len);
+    for ([_][]const u8{ "proofs", "heartbeat" }) |job| {
+        const bad: Value = .{ .map = try a.dupe(cbor.Entry, &.{
+            .{ .key = "kind", .value = .{ .text = "amm-p2p-tick" } },
+            .{ .key = "job", .value = .{ .text = job } },
+        }) };
+        try testing.expectError(error.BadTick, schedule.jobOf(bad));
+    }
+    try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
 }
 
 // selfPeerId (main.zig) asks the signer for [2, "skein instance"] / `libp2p:<handle>` / self and
 // takes this multihash of it; the host derives its node's key the same way from the instance's root
-// (skein 387e057, src/host/signer.ts `peerKey`), so the beacon's peerId is the node's peer ID.
+// (skein 387e057, src/host/signer.ts `peerKey`), so this is the node's peer ID (the relay's `isSelf`).
 test "the peer ID of a compressed secp256k1 key: the identity multihash of its protobuf PublicKey (js-libp2p's, 16Uiu2…)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2057,21 +1854,20 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     try testing.expectEqual(relay.Status.pending, (try book.getKind(a, .liquidity, relay.idOf(d.add))).?.status);
 }
 
-test "validate is gated by a row (0.3.2): the manifest's row {address: validate, sender: $owner, program: amm-p2p}; amm-p2p takes validate / unvalidate in box amm/validate only" {
+test "market and validator are the engine's (0.6.0, shruggr/skein#120): no validate row, no start or stop, no config.amm.ammP2p.market; config.overlay.market / .validator the only role settings" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const m = try dagjson.decode(a, manifest_json);
-    var found = false;
     for (m.get("dispatch").?.array) |row| {
-        if (!std.mem.eql(u8, scbor.Value.str(row.get("address")) orelse "", "validate")) continue;
-        try testing.expectEqualStrings("$owner", scbor.Value.str(row.get("sender")).?);
-        try testing.expectEqualStrings("amm-p2p", scbor.Value.str(row.get("program")).?);
-        found = true;
+        try testing.expect(!std.mem.eql(u8, scbor.Value.str(row.get("address")) orelse "", "validate"));
     }
-    try testing.expect(found);
-    // Taken in the row's box only: not in the app's own box, amm-p2p's box or the register box.
-    try testing.expectEqualStrings("amm/validate", names.validate_box);
-    try testing.expect(names.mayValidate("amm/validate"));
-    for ([_]?[]const u8{ null, "amm", "amm/amm-p2p", "amm/register", "amm/validated" }) |b| try testing.expect(!names.mayValidate(b));
+    try testing.expect(m.get("start") == null and m.get("stop") == null);
+    const config = m.get("config").?;
+    if (config.get("amm").?.get("ammP2p")) |p2p| {
+        try testing.expect(p2p.get("market") == null and p2p.get("heartbeatSeconds") == null and p2p.get("offlineSeconds") == null);
+    }
+    const ov_cfg = config.get("overlay").?;
+    try testing.expectEqual(@as(i128, 40_000), scbor.Value.intOf(ov_cfg.get("market").?.get("window")).?);
+    try testing.expectEqual(@as(i128, 30_000), scbor.Value.intOf(ov_cfg.get("validator").?.get("every")).?);
 }

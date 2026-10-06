@@ -19,9 +19,9 @@ describe("the app's base URL from the page's own URL", () => {
 });
 
 describe("the policy from the installed app record", () => {
-  it("reads config.amm (objects), as the programs do before the genesis defaults", () => {
-    const rec = { kind: "app", name: "amm", config: { amm: { ammValidator: { minValidatorFeeBps: 5, maxLpFeeBps: 100 }, ammP2p: { heartbeatSeconds: 30, offlineSeconds: 90 } } } };
-    expect(policyOf(rec)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, heartbeatSeconds: 30, offlineSeconds: 90 });
+  it("reads config.amm and config.overlay's market / validator (objects), as the programs do before the genesis defaults", () => {
+    const rec = { kind: "app", name: "amm", config: { amm: { ammValidator: { minValidatorFeeBps: 5, maxLpFeeBps: 100 } }, overlay: { market: { window: 90_000 }, validator: { every: 30_000 } } } };
+    expect(policyOf(rec)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, marketWindowMs: 90_000, validatorEveryMs: 30_000 });
     expect(policyOf({ kind: "app", name: "amm" })).toEqual({});
   });
 });

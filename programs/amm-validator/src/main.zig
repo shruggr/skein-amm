@@ -43,11 +43,12 @@
 //! same package, `match`, and `reply` / `resolved` when called again). Everything else is as above:
 //! the `{wait: true}` and its `await` are the relay thread's.
 //!
-//! The validated set (0.3.2): a swap, addLiquidity or deploy is signed only for a token whose
-//! topic `tm_<txid>` is in amm-p2p's validated set (the `validated` of the head `amm/p2p`, written
-//! by the owner's `validate` / `unvalidate` in box `amm/validate`); else refused `not_validating`.
-//! "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating" (David
-//! 2026-10-06): one setting, no other.
+//! The validator role (0.6.0, shruggr/skein#120, David 2026-10-06 evening): a swap, addLiquidity
+//! or deploy is signed only when the engine's `config.overlay.validator` is set and the token's
+//! topic `tm_<txid>` is in the engine's registered set (the head `<app>/topics`, written by the
+//! owner's `register` / `deregister`); else refused `not_validating`. "The validator program signs
+//! for any registered token when `validator` is set." (0.3.2–0.5.0: amm-p2p's validated set,
+//! `validate` / `unvalidate` in box `amm/validate`; gone.)
 //!
 //! Config: the app record's `config.amm.ammValidator` (`{"minValidatorFeeBps": n,
 //! "maxLpFeeBps": n, "maxCommissionBps": n?}`; maxCommissionBps optional:
@@ -105,19 +106,19 @@ fn settings(a: std.mem.Allocator, in: Value) !Settings {
     return std.json.parseFromSliceLeaky(Settings, a, text, .{ .ignore_unknown_fields = true }) catch error.BadConfig;
 }
 
-/// The head amm-p2p keeps its state under (amm-p2p relay.zig `p2p_head`).
-const p2p_head = "amm/p2p";
-
-/// The validated set (0.3.2): the `validated` of amm-p2p's record under the head `amm/p2p`, which
-/// the owner's `validate` / `unvalidate` write (box `amm/validate`). The one source: a topic not in
-/// it is not signed for. No head yet (nothing validated): empty.
-fn validatedSet(a: std.mem.Allocator) ![]const []const u8 {
-    const c = (try vm.head(a, p2p_head)) orelse return &.{};
-    const rec = try vm.store().getValue(a, c);
-    const vs = rec.getArray("validated") orelse return &.{};
-    var out: std.ArrayList([]const u8) = .empty;
-    for (vs) |v| if (v == .text) try out.append(a, v.text);
-    return out.items;
+/// The topics this instance signs for (0.6.0, shruggr/skein#120, David 2026-10-06 evening: "The
+/// validator program signs for any registered token when `validator` is set"): with the engine's
+/// `config.overlay.validator` set (skein-overlay 0.9.0 `config.rolesOf`, read from the input as the
+/// engine reads its configuration), every topic in the engine's registered set, the head
+/// `<app>/topics`; without it, none (each refused `not_validating`).
+fn validatedSet(a: std.mem.Allocator, in: Value) ![]const []const u8 {
+    const roles = try ov.config.rolesOf(a, in);
+    if (roles.validator == null) return &.{};
+    const c = (try vm.head(a, try ov.topics.headName(a, ov.calls.appOf(in)))) orelse return &.{};
+    const entries = try ov.topics.entriesOf(a, try vm.store().getValue(a, c));
+    const out = try a.alloc([]const u8, entries.len);
+    for (entries, out) |e, *o| o.* = e.topic;
+    return out;
 }
 
 /// The app's overlay state (`<app>/state`) over the chain app's (`chain/state`), as the step sees them.
@@ -183,7 +184,7 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
     const s = try settings(a, in);
     const now: i64 = if (in.getUint("now")) |n| @intCast(n) else 0;
     const served = try messages.respond(a, op, body, .{
-        .config = .{ .identity = identity, .min_validator_fee_bps = s.minValidatorFeeBps, .max_lp_fee_bps = s.maxLpFeeBps, .max_commission_bps = s.maxCommissionBps, .now_ms = now, .validated = try validatedSet(a) },
+        .config = .{ .identity = identity, .min_validator_fee_bps = s.minValidatorFeeBps, .max_lp_fee_bps = s.maxLpFeeBps, .max_commission_bps = s.maxCommissionBps, .now_ms = now, .validated = try validatedSet(a, in) },
         .view = ovv.view(),
         .oracle = oracle,
         .st = st,

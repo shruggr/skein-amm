@@ -1,20 +1,20 @@
-//! amm-p2p: the AMM overlay's validator liveness beacon, the market's
-//! liveness request, the marketplace relay and the app's pages, as one skein
-//! program (Zig, wasm32-wasi).
+//! amm-p2p: the AMM overlay's marketplace relay and the app's pages, as one
+//! skein program (Zig, wasm32-wasi).
 //! The standard overlay gossip — submissions on `<topic>`, STEAKs on
 //! `<topic>-admit`, proofs on `<topic>-proof` — is skein's overlay engine's
 //! (skein#74), not this program's.
 //!
-//! The bodies, events and plans are in liveness.zig, proofs.zig and
-//! schedule.zig (pure, tested natively); the libp2p shapes are libp2p.zig.
-//! This file wires them to the VM.
+//! The bodies and plans are in proofs.zig and schedule.zig (pure, tested
+//! natively); the libp2p shapes are libp2p.zig. This file wires them to the VM.
 //!
-//! **Liveness** (0.4.0, shruggr/skein#120 and #138, David 2026-10-06) is the
-//! runtime's, not this program's: a market host asks the runtime's liveness
-//! tool for each token it serves (`liveness {topic: tm_<txid>-live, window}`),
-//! and the page reads `GET /<app>/.live/<topic>` and names the validator (its
-//! identity key and peer ID) in the swap. This program keeps no last-seen map
-//! and judges no beat; the relay dials the peer it is given.
+//! **Market and validator** (0.6.0, shruggr/skein#120, David 2026-10-06 evening) are the overlay
+//! engine's, not this program's: "a skein runs as a market and/or a validator by two settings in
+//! the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator:
+//! {every}`), and registering a token's topic is the one act that drives both" — the engine emits
+//! `liveness` / `beacon` on `tm_<txid>-live` at `register` (skein-overlay 0.9.0). The page reads
+//! `GET /<app>/.live/<topic>` and names the validator (its identity key and peer ID) in the swap;
+//! the relay dials the peer it is given. This program keeps no validated set, no beacons, no
+//! liveness, and takes no start or stop.
 //!
 //! **Called** (input kind "call"; `fn`):
 //!
@@ -30,27 +30,8 @@
 //!   amm.pool.submit, amm.pool.status   an in-VM call of the interface amm.pool/1 (relay.zig: the pool deploy)
 //!   amm.liquidity.submit, amm.liquidity.status   an in-VM call of the interface amm.liquidity/1 (relay.zig: AddLiquidity)
 //!
-//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`; from the owner on
-//! `amm/validate`):
+//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`):
 //!
-//!   message {fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}   in box `amm/validate` only
-//!                                                     (0.3.2: the row from `$owner` is the permission;
-//!                                                     the set gates amm-validator's signing): the
-//!                                                     topic into (out of) the validated set, its
-//!                                                     `beacon` (`unbeacon`) on `tm_<txid>-live`;
-//!                                                     idempotent; answered {topic, validating}
-//!   message {kind: "amm-p2p-start" | "amm-p2p-stop"}   from the owner (the manifest's `start`, in box `amm`):
-//!                                                     a `beacon` event per validated topic on
-//!                                                     `tm_<txid>-live` (the host publishes it every
-//!                                                     heartbeatSeconds), or `unbeacon` for each (the
-//!                                                     set kept); with
-//!                                                     `ammP2p.market`, a `liveness` of each served
-//!                                                     `tm_<txid>-live`, window offlineSeconds (or `unliveness`)
-//!   message {kind: "amm-p2p-start" | "amm-p2p-stop", jobs: [...]}   the cron fallback: the schedules asked of
-//!                                                     (or stopped at) the cron provider (`local` `cron`)
-//!   message {kind: "amm-p2p-tick", job, name, due}      from the cron provider (skein#69): the heartbeat
-//!                                                     (publish), or a catch-up pass (a thread resting on
-//!                                                     the libp2p provider's answers to its direct calls)
 //!   message {fn, args} in box `amm`                    the app's box (APPS.md §4): amm.swap.submit | status | terms,
 //!                                                     amm.pool.submit | status, amm.liquidity.submit | status,
 //!                                                     answered to the sender (a submit: when the relay settles)
@@ -58,23 +39,26 @@
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!                                                     the caller named, or (that validator is this node) on
 //!                                                     what its own validator program awaited, called in-VM
+//!   message {kind: "amm-p2p-tick", job: "catchup", name, due}   from the cron provider (skein#69): a catch-up
+//!                                                     pass (a thread resting on the libp2p provider's answers
+//!                                                     to its direct calls). A utility: nothing schedules it
+//!                                                     (0.6.0: the start that did is gone)
 //!
-//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {cursor, beacons, subscriptions},
-//! validated: ["tm_<txid>", …], liveness: true}. `subscriptions` is the set of served topics with a
-//! standing `liveness` (`liveness: true`; a record without it is 0.3.x's, whose `subscriptions` were
-//! `subscribe`s to `validateLive`, ended at the first start or stop). 0.3.x's `live` map is dropped.
+//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {cursor}} (the
+//! catch-up cursor; a record 0.5.0 or earlier wrote also held `beacons`, `subscriptions`,
+//! `validated`, `liveness`, which are not read and dropped at the next write).
 //! The app's state under the head `amm/app` (relay.zig `Book`; skein #77:
 //! `app.headOf`): the installed app record's `state`, or (an instance wired
 //! by its genesis, no app record) the head's root itself: {kind:
 //! "amm-app-state", swaps, pools, liquidity}.
 //!
-//! Config: the installed app record's `config.amm` (`ammP2p`, `commission`),
-//! else genesis `defaults.ammP2p` and `defaults.ammCommission`, JSON objects
-//! in strings; the topics (`ammP2p.topics`, else every `tm_<txid>` the
-//! overlay serves, declared or registered with the engine, as the engine
-//! reads its configuration: skein-overlay `engine_vm.configured`);
-//! the functions' declarations: the app record's `provides`, else genesis
-//! `defaults.ammProvides` (JSON) (README.md).
+//! Config: the installed app record's `config.amm` (`ammP2p`: the catch-up's `topics`, `peers`,
+//! `window`, `batch`, `replyTimeoutMs`, all optional; `commission`), else genesis
+//! `defaults.ammP2p` and `defaults.ammCommission`, JSON objects in strings; the topics
+//! (`ammP2p.topics`, else every `tm_<txid>` the overlay serves, declared or registered with the
+//! engine, as the engine reads its configuration: skein-overlay `engine_vm.configured`); the
+//! functions' declarations: the app record's `provides`, else genesis `defaults.ammProvides`
+//! (JSON) (README.md).
 const std = @import("std");
 const w = @import("chain");
 const ov = @import("skein_overlay");
@@ -84,7 +68,6 @@ const names = @import("names.zig");
 const libp2p = @import("libp2p.zig");
 const schedule = @import("schedule.zig");
 const proofs = @import("proofs.zig");
-const liveness = @import("liveness.zig");
 const views = @import("views.zig");
 const relay = @import("relay.zig");
 const app = @import("app");
@@ -125,19 +108,12 @@ fn run(a: Allocator) anyerror!void {
 
 const Config = struct {
     topics: []const []const u8,
-    heartbeat_s: u64 = liveness.default_interval_s,
-    offline_s: u64 = liveness.default_offline_s,
-    catchup_s: u64 = 600,
     window: u32 = 12,
     batch: u32 = 6,
     /// Catch-up peers: base58 peer IDs or multiaddrs with /p2p/<id>, as `dial` takes them.
     peers: []const []const u8 = &.{},
     /// How long catch-up waits on a direct call's answer (ms).
     reply_timeout_ms: u64 = 30_000,
-    /// The market role (`ammP2p.market`, shruggr/skein#120, David 2026-10-06): this host serves a
-    /// market, so it asks the runtime's liveness tool for the `tm_<txid>-live` beacons of the tokens
-    /// it serves (#138), window `offline_s`. Off: no liveness asked.
-    market: bool = false,
 };
 
 /// A configuration section: the installed app record's `config.amm.<key>`
@@ -205,10 +181,9 @@ fn config(a: Allocator, in: Value) !Config {
         const j = std.json.parseFromSliceLeaky(std.json.Value, a, text, .{}) catch return error.BadConfig;
         if (j != .object) return error.BadConfig;
         const o = j.object;
-        inline for (.{ .{ "heartbeatSeconds", "heartbeat_s" }, .{ "offlineSeconds", "offline_s" }, .{ "catchupSeconds", "catchup_s" }, .{ "window", "window" }, .{ "batch", "batch" }, .{ "replyTimeoutMs", "reply_timeout_ms" } }) |f| {
+        inline for (.{ .{ "window", "window" }, .{ "batch", "batch" }, .{ "replyTimeoutMs", "reply_timeout_ms" } }) |f| {
             if (o.get(f[0])) |v| @field(cfg, f[1]) = if (v == .integer and v.integer > 0) @intCast(v.integer) else return error.BadConfig;
         }
-        if (o.get("market")) |v| cfg.market = if (v == .bool) v.bool else return error.BadConfig;
         if (o.get("topics")) |v| cfg.topics = try strings(a, v);
         if (o.get("peers")) |v| cfg.peers = try strings(a, v);
     }
@@ -236,55 +211,29 @@ const state_head = relay.p2p_head;
 
 const State = struct {
     s: w.store.Store,
+    /// The catch-up cursor: served topic `tm_<txid>` → the last block height settled.
     cursor: Map,
-    /// The beacons standing: served topic `tm_<txid>` → when its beacon was asked (ms).
-    beacons: Map,
-    /// The market's liveness standing (0.4.0): served topic `tm_<txid>` → when `liveness` of
-    /// `tm_<txid>-live` was asked (ms). Unliveness is emitted only for a topic in it.
-    subscriptions: Map,
-    /// Whether `subscriptions` holds 0.4.0's liveness topics (the record's `liveness: true`); false for
-    /// a record 0.3.x wrote, whose entries were `subscribe`s to `validateLive` (`market` ends them).
-    liveness: bool = true,
-    liveness_dirty: bool = false,
-    /// The validated set (0.3.1): the topics `tm_<txid>` the owner's `validate` added, in order, the
-    /// record's `validated` (inline, so the owner's page reads it with one explorer read of the head).
-    /// Kept across a stop; the beacons (and the cron fallback's heartbeat) follow it.
-    validated: []const []const u8 = &.{},
-    validated_dirty: bool = false,
 
     fn load(a: Allocator, s: w.store.Store) !State {
         const maps = try w.store.Maps.create(a, s);
-        var st: State = .{ .s = s, .cursor = maps.map(null), .beacons = maps.map(null), .subscriptions = maps.map(null) };
+        var st: State = .{ .s = s, .cursor = maps.map(null) };
         const c = (try vm.head(a, state_head)) orelse return st;
         const rec = try s.getValue(a, c);
         if (!eql(u8, rec.getText("kind") orelse "", "amm-p2p-state")) return error.BadState;
         const m = rec.get("maps") orelse return error.BadState;
         st.cursor = maps.map(m.getCid("cursor"));
-        st.beacons = maps.map(m.getCid("beacons"));
-        st.subscriptions = maps.map(m.getCid("subscriptions"));
-        st.liveness = rec.getBool("liveness") orelse false;
-        if (rec.getArray("validated")) |vs| {
-            const out = try a.alloc([]const u8, vs.len);
-            for (vs, out) |v, *o| o.* = if (v == .text) v.text else return error.BadState;
-            st.validated = out;
-        }
         return st;
     }
 
     /// Save and advance the head when anything changed: → the state record's CID, or null.
     fn commit(self: *State, a: Allocator) !?[]const u8 {
-        if (!self.cursor.dirty and !self.beacons.dirty and !self.subscriptions.dirty and !self.validated_dirty and !self.liveness_dirty) return null;
-        var es: [3]cbor.Entry = undefined;
-        inline for (.{ "cursor", "beacons", "subscriptions" }, 0..) |n, i| {
-            const m = &@field(self, n);
-            try m.flush();
-            es[i] = .{ .key = n, .value = if (m.root) |r| .{ .cid = r } else .null };
-        }
+        if (!self.cursor.dirty) return null;
+        try self.cursor.flush();
         const c = try self.s.putValue(a, .{ .map = try a.dupe(cbor.Entry, &.{
             .{ .key = "kind", .value = .{ .text = "amm-p2p-state" } },
-            .{ .key = "maps", .value = .{ .map = try a.dupe(cbor.Entry, &es) } },
-            .{ .key = "validated", .value = try textArray(a, self.validated) },
-            .{ .key = "liveness", .value = .{ .boolean = self.liveness } },
+            .{ .key = "maps", .value = .{ .map = try a.dupe(cbor.Entry, &.{
+                .{ .key = "cursor", .value = if (self.cursor.root) |r| .{ .cid = r } else .null },
+            }) } },
         }) });
         try vm.advance(state_head, c);
         return c;
@@ -398,57 +347,19 @@ fn step(a: Allocator, in: Value) !void {
     } else if (args.getCid("event") != null) {
         // No event is this program's since 0.4.0 (0.3.x's accepted heartbeats, `amm-live`, are gone).
         return error.BadEvent;
-    } else if (args.getCid("body")) |bc| blk: {
+    } else if (args.getCid("body")) |bc| {
         const body = try s.getValue(a, bc);
         const sender = args.getBytes("sender") orelse return error.BadInput;
-        // Validation, per topic (0.3.1): `{fn: "validate" | "unvalidate", args: {topic}}`.
-        if (body.getText("fn")) |f| {
-            const vop = std.meta.stringToEnum(liveness.ValidationOp, f) orelse return error.BadMessage;
-            if (vop != .validate and vop != .unvalidate) return error.BadMessage;
-            op = f;
-            try validationMessage(a, in, &st, args, body, f, vop, &fields);
-            break :blk;
-        }
+        // 0.6.0: no `validate` / `unvalidate` (the engine's `register` drives the validator role) and
+        // no start or stop (the engine's `register` drives the beacons and the market's liveness).
         op = body.getText("kind") orelse return error.BadMessage;
-        if (eql(u8, op, schedule.tick_kind)) {
-            if (!eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheCronProvider;
-            const job = try schedule.jobOf(body);
-            try fields.append(a, .{ .key = "job", .value = .{ .text = @tagName(job) } });
-            switch (job) {
-                .heartbeat => try heartbeat(a, in, &st, &fields),
-                .catchup => try catchup(a, in, &st, at, &fields),
-            }
-        } else if (eql(u8, op, schedule.start_kind) or eql(u8, op, schedule.stop_kind)) {
-            const owner = in.getBytes("owner") orelse "";
-            if (!eql(u8, sender, owner) and !eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheOwner;
-            const cfg = try config(a, in);
-            const start = eql(u8, op, schedule.start_kind);
-            // The market role: ask liveness of the served tokens' `-live` beacons (or end it).
-            try market(a, in, &st, cfg, start, &fields);
-            // The beacon (#126): the host publishes the heartbeat on each validated topic; nothing
-            // ticks. A stop ends the beacons and keeps the validated set; a start beacons it again.
-            // A start naming `jobs` asks the cron provider instead (the fallback, below).
-            if (body.getArray("jobs") == null) {
-                try applyValidation(a, in, &st, cfg, if (start) .start else .stop, null, &fields);
-                break :blk;
-            }
-            const cron = try providerKey(a, "cron");
-            const jobs = try schedule.jobsOf(a, body);
-            const out = try a.alloc(Value, jobs.len);
-            for (jobs, out) |j, *o| {
-                const req = if (eql(u8, op, schedule.start_kind))
-                    try schedule.tick(a, j, 1000 * switch (j) {
-                        .heartbeat => cfg.heartbeat_s,
-                        .catchup => cfg.catchup_s,
-                    }, names.own_box)
-                else
-                    try schedule.stop(a, j);
-                // The answer ({replyTo, name, next} or {replyTo, error}) is recorded in box `cron`; nothing awaits it.
-                _ = try emit(a, cron, "cron", req);
-                o.* = .{ .text = schedule.name(j) };
-            }
-            try fields.append(a, .{ .key = "schedules", .value = .{ .array = out } });
-        } else return error.BadMessage;
+        if (!eql(u8, op, schedule.tick_kind)) return error.BadMessage;
+        if (!eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheCronProvider;
+        const job = try schedule.jobOf(body);
+        try fields.append(a, .{ .key = "job", .value = .{ .text = @tagName(job) } });
+        switch (job) {
+            .catchup => try catchup(a, in, &st, at, &fields),
+        }
     } else return error.BadInput;
 
     if (try st.commit(a)) |c| try fields.append(a, .{ .key = "state", .value = .{ .cid = c } });
@@ -459,152 +370,6 @@ fn step(a: Allocator, in: Value) !void {
     });
     try es.appendSlice(a, fields.items);
     _ = try vm.finish(a, s, .{ .map = es.items });
-}
-
-fn identityKey(a: Allocator) ![33]u8 {
-    return wire.publicKeyResult(try walletCall(a, try wire.identityKeyFrame(a)));
-}
-
-/// The heartbeat body (opldotdev/amm-poc#3): this instance's identity and peer ID. The beat's
-/// time and signature are the host's frame (skein docs/MESSAGES.md "Beacons"; liveness.zig).
-fn heartbeatBody(a: Allocator, in: Value) ![]const u8 {
-    return liveness.encodeBody(a, .{ .identity_key = try identityKey(a), .peer_id = try selfPeerId(a, in) });
-}
-
-/// The cron fallback's heartbeat (a tick): the frame the host's beacon would publish — the body,
-/// the tick's time, signed here through the signer (the same key and protocol the host uses) — on
-/// each validated topic's `-live` topic, through the libp2p provider (its answer is not awaited).
-fn heartbeat(a: Allocator, in: Value, st: *State, fields: *std.ArrayList(cbor.Entry)) !void {
-    const at = in.getUint("at") orelse return error.BadInput;
-    const validated = st.validated;
-    if (validated.len == 0) return fields.append(a, .{ .key = "published", .value = .{ .uint = 0 } });
-    const body = try heartbeatBody(a, in);
-    const sender = try identityKey(a);
-    for (validated) |t| {
-        const topic = try names.live(a, t);
-        const d = try liveness.digest(a, topic, body, at, sender);
-        const sig = try wire.signatureResult(try walletCall(a, try wire.createSignatureFrame(a, liveness.protocol.security_level, liveness.protocol.name, liveness.key_id, .anyone, d)));
-        const frame = try liveness.encodeFrame(a, .{ .body = body, .at = at, .sender = sender, .signature = sig });
-        _ = try toLibp2p(a, try libp2p.publish(a, topic, frame));
-    }
-    try fields.append(a, .{ .key = "published", .value = .{ .uint = validated.len } });
-}
-
-/// Validation and the beacon (0.3.1; shruggr/skein#126, docs/MESSAGES.md "emit"). Beaconing is not
-/// a role (David 2026-10-06): a node beacons `tm_<txid>-live` for the topics it validates. The
-/// owner sets that up per topic (`validate` / `unvalidate`, like a topic's registration); the
-/// record's `validated` is the set, the map `beacons` the beacons standing; `liveness.validation`
-/// says what an op changes. A `beacon` event is `{event: "beacon", topic: "tm_<txid>-live", every:
-/// heartbeatSeconds × 1000, body}` — the host's libp2p node publishes `body` on it every `every`
-/// ms, logging nothing per beat; an `unbeacon` ends it. A stop ends every beacon and keeps the
-/// set; a start beacons the set again. Each beat is the host's frame `{body, at, sender,
-/// signature}` (liveness.zig): fresh and signed per beat.
-fn applyValidation(a: Allocator, in: Value, st: *State, cfg: Config, op: liveness.ValidationOp, topic: ?[]const u8, fields: *std.ArrayList(cbor.Entry)) !void {
-    const at: u64 = in.getUint("at") orelse return error.BadInput;
-    var standing: std.ArrayList([]const u8) = .empty;
-    for (try st.beacons.prefixed("")) |kv| try standing.append(a, try a.dupe(u8, kv.key));
-    const v = try liveness.validation(a, op, st.validated, standing.items, topic);
-    if (v.validated.len != st.validated.len) {
-        st.validated = v.validated;
-        st.validated_dirty = true;
-    }
-    for (v.unbeacon) |t| {
-        _ = try vm.emitEvent(a, try liveness.unbeaconEvent(a, try names.live(a, t)));
-        _ = try st.beacons.remove(t);
-    }
-    if (v.beacon.len > 0) {
-        const body = try heartbeatBody(a, in);
-        for (v.beacon) |t| {
-            _ = try vm.emitEvent(a, try liveness.beaconEvent(a, try names.live(a, t), cfg.heartbeat_s * 1000, body));
-            try st.beacons.put(t, .{ .int = @intCast(at) });
-        }
-    }
-    try fields.appendSlice(a, &.{
-        .{ .key = "validated", .value = try textArray(a, v.validated) },
-        .{ .key = "beacons", .value = try textArray(a, v.beacon) },
-        .{ .key = "unbeacons", .value = try textArray(a, v.unbeacon) },
-    });
-}
-
-fn contains(xs: []const []const u8, x: []const u8) bool {
-    for (xs) |y| if (eql(u8, x, y)) return true;
-    return false;
-}
-
-fn textArray(a: Allocator, xs: []const []const u8) !Value {
-    const out = try a.alloc(Value, xs.len);
-    for (xs, out) |x, *o| o.* = .{ .text = x };
-    return .{ .array = out };
-}
-
-/// `{fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/validate` (0.3.2): the
-/// topic into (or out of) the validated set, its beacon asked (or ended); idempotent. The row
-/// `{"address": "validate", "sender": "$owner", "program": "amm-p2p"}` is the permission: taken in
-/// that box only (`names.mayValidate`; elsewhere the step errors `NotTakenHere`), with no sender
-/// check here. The set is also the validator's: amm-validator signs for no topic outside it.
-/// Answered to the sender (box `amm`, when the address book reaches it) with `{topic, validating}`.
-fn validationMessage(a: Allocator, in: Value, st: *State, args: Value, body: Value, func: []const u8, op: liveness.ValidationOp, fields: *std.ArrayList(cbor.Entry)) !void {
-    const sender = args.getBytes("sender") orelse return error.BadInput;
-    if (!names.mayValidate(args.getText("box"))) return error.NotTakenHere;
-    const call_args = body.get("args") orelse return error.BadMessage;
-    const topic = call_args.getText("topic") orelse return error.BadMessage;
-    const n = names.parse(topic) orelse return error.BadTopic;
-    if (n.kind != .overlay) return error.BadTopic;
-    try applyValidation(a, in, st, try config(a, in), op, topic, fields);
-    const result: Value = .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "topic", .value = .{ .text = topic } },
-        .{ .key = "validating", .value = .{ .boolean = op == .validate } },
-    }) };
-    const answer = try relay.answerMessage(a, func, args.getCid("message") orelse return error.BadInput, result);
-    try fields.appendSlice(a, &.{
-        .{ .key = "answer", .value = answer },
-        .{ .key = "sent", .value = .{ .boolean = try answerSender(a, sender, answer) } },
-    });
-}
-
-/// The market role (`ammP2p.market`, shruggr/skein#120 and #138, David 2026-10-06): a start asks
-/// liveness of `tm_<txid>-live` for every served token topic not yet asked — `{event: "liveness",
-/// topic, window: offlineSeconds × 1000}`: the runtime's liveness tool keeps the verified beats newer
-/// than the window, served at `GET /<app>/.live/<topic>` — and ends it (`unliveness`) for a topic
-/// asked before and no longer served (deregistered meanwhile); a stop, or a start with the role off,
-/// ends every standing one. The standing set is the map `subscriptions`; unliveness only for a topic
-/// in it. amm-p2p is not stepped by a registration (the owner's `register` goes to the engine): the
-/// set is reconciled at each start. A state 0.3.x wrote (`liveness` false) held `subscribe`s to
-/// `validateLive` instead: each is unsubscribed first (a refused one — the kernel no longer has it —
-/// is passed over) and the set starts empty.
-fn market(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields: *std.ArrayList(cbor.Entry)) !void {
-    const at: u64 = in.getUint("at") orelse return error.BadInput;
-    if (!st.liveness) {
-        var ended: std.ArrayList(Value) = .empty;
-        for (try st.subscriptions.prefixed("")) |kv| {
-            const t = try a.dupe(u8, kv.key);
-            if (vm.emitEvent(a, try liveness.unsubscribeEvent(a, try names.live(a, t)))) |_| try ended.append(a, .{ .text = t }) else |_| {}
-            _ = try st.subscriptions.remove(t);
-        }
-        st.liveness = true;
-        st.liveness_dirty = true;
-        try fields.append(a, .{ .key = "unsubscribed", .value = .{ .array = ended.items } });
-    }
-    var standing: std.ArrayList([]const u8) = .empty;
-    for (try st.subscriptions.prefixed("")) |kv| try standing.append(a, try a.dupe(u8, kv.key));
-    const p = try liveness.plan(a, standing.items, if (start and cfg.market) cfg.topics else &.{});
-    const asked = try a.alloc(Value, p.liveness.len);
-    for (p.liveness, asked) |t, *o| {
-        _ = try vm.emitEvent(a, try liveness.livenessEvent(a, try names.live(a, t), cfg.offline_s * 1000));
-        try st.subscriptions.put(t, .{ .int = @intCast(at) });
-        o.* = .{ .text = t };
-    }
-    const ended = try a.alloc(Value, p.unliveness.len);
-    for (p.unliveness, ended) |t, *o| {
-        _ = try vm.emitEvent(a, try liveness.unlivenessEvent(a, try names.live(a, t)));
-        _ = try st.subscriptions.remove(t);
-        o.* = .{ .text = t };
-    }
-    try fields.appendSlice(a, &.{
-        .{ .key = "market", .value = .{ .boolean = cfg.market } },
-        .{ .key = "liveness", .value = .{ .array = asked } },
-        .{ .key = "unliveness", .value = .{ .array = ended } },
-    });
 }
 
 /// The read `/` (`{address: "/", prefix: true, program: "amm-p2p", fn: "serve", root: "www", index:

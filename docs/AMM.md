@@ -10,12 +10,12 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.8.0 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.7.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.7.0 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens` (the token list, a read in skein-mandala's manifest) is in the program, but this manifest declares no `/mandala/tokens` read |
+| `overlay` | skein-overlay 0.9.0 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic, and with it the market's liveness and the validator's beacon on `tm_<txid>-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.7.1 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.7.1 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read `/mandala/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
-| `amm-validator` | `programs/amm-validator` | the validator's three direct calls; submits by message to its own overlay |
-| `amm-p2p` | `programs/amm-p2p` | the liveness beacon, a market's liveness request, the relay, the pages (`www/` from the app's tree) |
+| `amm-validator` | `programs/amm-validator` | the validator's three direct calls, for every registered token when `config.overlay.validator` is set; submits by message to its own overlay |
+| `amm-p2p` | `programs/amm-p2p` | the relay, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
 | | `src/pool.zig` | the pool library (module `pool`), over `mandala`'s parser and rules |
 | | `pool/Pool.runar.go` | the contract |
 | | `web/ui` → `www/` | the AMM pages; `www/mandala/` the Mandala pages |
@@ -70,7 +70,8 @@ state.
 | `POST /submit` | the submission message's transport (`X-Topics` a registered topic): `200 {id}`, delivery only; no STEAK (skein-overlay 0.7.2+); the submission event is admitted into box `amm/submit` (0.7.6) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}`; `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
-| `GET /.live/tm_<txid>-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window; 404 when the app keeps no liveness for the topic |
+| `GET /.live/tm_<txid>-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` empty: the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (not a market, or the topic not registered) |
+| `GET /mandala/tokens` | mandala-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]`; a read (0.6.0) |
 | `POST /call` | amm-p2p: `{fn, args}` for the three interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
 
@@ -95,7 +96,6 @@ event (skein-overlay 0.7.6), answered to the sender in this box; `register` / `d
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
 | the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 3) | the instance itself, events |
-| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the liveness requests) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
 action) and the swap, deploy or add, and the validator the caller names —
@@ -110,104 +110,75 @@ marketplace relay").
 **libp2p**: `/amm-validator/1/swap`, `/addLiquidity`, `/deploy`
 (amm-validator; one signed-message package per frame); the engine's
 `<topic>`, `-admit`, `-proof` for each registered topic; `tm_<txid>-live`,
-published by the host's beacon (below), and subscribed, without admitting
-anything, by the liveness tool of a host serving a market (below, "The
-market role").
+beaconed by a validator's host and subscribed, without admitting anything,
+by a market's liveness tool (below).
 
-**Box `amm/amm-p2p`**: the owner's `{kind: "amm-p2p-start" | "amm-p2p-stop"}`
-(the Validator page) and the cron provider's ticks (the fallback, `jobs`).
-(0.3.x's admitted heartbeats, `amm-live`, are gone in 0.4.0.)
+**Box `amm/amm-p2p`**: the cron provider's ticks, `{kind: "amm-p2p-tick",
+job: "catchup"}` — a utility nothing schedules (0.6.0). amm-p2p takes no
+start or stop: the manifest has none, and the owner's `{kind:
+"amm-p2p-start" | "amm-p2p-stop"}` is refused (`BadMessage`).
 
-**Box `amm/validate`** (0.3.2): the owner's `{fn: "validate" | "unvalidate",
-args: {topic}}` (the Validator page). The row `validate` from `$owner` is the
-permission: nobody else's message is admitted into the box, and amm-p2p takes
-the two calls in this box only (elsewhere its step errors `NotTakenHere`),
-with no sender check of its own — as the engine takes `register` in
-`amm/register` only.
+**Market and validator** (0.6.0, shruggr/skein#120). David, 2026-10-06
+evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both". Two settings of the engine (skein-overlay 0.9.0), each
+optional, the only role settings; this manifest sets both:
 
-**Validation, per topic** (0.3.1, David 2026-10-06: beaconing is not a
-role; it comes with validating a topic). The owner sets it up like a
-topic's registration: `{fn: "validate", args: {topic: "tm_<txid>"}}` adds
-the topic to the validated set (the record's `validated` under `amm/p2p`)
-and emits its beacon; `{fn: "unvalidate", args: {topic}}` removes it and
-emits `unbeacon`. Both are idempotent and answered `{topic, validating}` to
-the sender's box `amm` (when the address book reaches it). They are taken in
-box `amm/validate` only, which row 2 (`validate` from `$owner`) admits the
-owner into (0.3.2). The market role is independent: a node may validate,
-host a market, or both.
+```json
+"config": {"overlay": {"market": {"window": 40000}, "validator": {"every": 30000}}}
+```
 
-**One setting** (0.3.2, David 2026-10-06): "If I'm validating, I'm pinging,
-I'm taking on new liquidity, and I'm validating." The validated set is the
-one switch, and there is no other: for a topic in it the node beacons
-`tm_<txid>-live` (pinging), its validator accepts an LP's liquidity —
-signs an `addLiquidity` and consents to a pool `deploy` as the pool's
-validator (taking on new liquidity means receiving it, not the node putting
-up funds of its own) — and signs swaps. For a token whose topic is not in
-the set, amm-validator refuses every direct call, `swap`, `addLiquidity` and
-`deploy`, with `{ok: false, reason: "not_validating", detail}` before
-checking or signing anything. It reads the set from amm-p2p's record (the
-`validated` of the head `amm/p2p`) at each call; `validate` / `unvalidate`
-are the only writers.
+The engine, on `register {topic: "tm_<txid>", program: "mandala-topic"}`
+(box `amm/register`, from the owner): subscribes the topic and seeds; with
+`market`, emits `{event: "liveness", topic: "tm_<txid>-live", window}`; with
+`validator`, `{event: "beacon", topic: "tm_<txid>-live", every, body:
+<empty>}` — "the beat needs no body: the frame carries the sender's
+identity key and the gossip message the peer id". `deregister` reverses
+both (`unliveness`, `unbeacon`). A start or a re-read emits nothing: the
+intents stand in the log.
 
-**The beacon** (shruggr/skein#126): on start amm-p2p emits, per validated
-topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds ×
-1000, body}` — the host's libp2p node publishes `body` there every `every`
-ms, logging nothing per beat — and `unbeacon {topic}` for a topic it
-beaconed that is not validated; on stop, `unbeacon` for each, the validated
-set kept (the beacons standing: map `beacons` under `amm/p2p`). `body` is amm-poc#3's signed heartbeat
-`{identityKey, peerId}`; each beat is the host's signed frame (skein
-387e057, docs/MESSAGES.md "Beacons"): dag-cbor `{body, at, sender,
-signature}`, `at` the beat's time, `sender` the instance's identity key,
-`signature` the instance's under `[2, "metanet handles envelope"]` / `send`
-/ anyone over sha2-256 of dag-cbor `{kind: "beacon", topic, body, at,
-sender}`. The runtime's liveness tool (below) checks the frame's signature
-against `sender`; the page checks that the body's `identityKey` is `sender`
-and dials nothing itself (it names `peerId` to the relay). A start that names `jobs` asks the cron provider instead (the 0.1.0 path,
-kept as the fallback; it signs the same frame itself, through the signer).
-The peer ID is derived: the signer's public key for `[2, "skein
-instance"]`, key ID `libp2p:<handle>`, counterparty self, as an identity
-multihash — the key the host's node runs (skein 387e057, signer.ts
-`peerKey`, from the instance's root).
+- **The validator.** amm-validator signs swaps and takes on new liquidity
+  — signs an LP's `addLiquidity`, consents to a pool `deploy` as the pool's
+  validator (receiving liquidity, not the node putting up funds of its own)
+  — for any token whose topic is in the engine's registered set (the head
+  `amm/topics`) when `config.overlay.validator` is set; otherwise every
+  `swap`, `addLiquidity` and `deploy` is refused `{ok: false, reason:
+  "not_validating", detail}` before anything is checked or signed. It reads
+  the setting and the set at each call. Each beat is the host's signed
+  frame (docs/MESSAGES.md "Beacons"): dag-cbor `{body, at, sender,
+  signature}`, `body` empty, `sender` the instance's identity key; the
+  gossip message's peer is the node's peer ID, derived from the instance's
+  root (`[2, "skein instance"]`, key ID `libp2p:<handle>`, counterparty
+  self; skein signer.ts `peerKey`).
+- **The market.** The runtime's liveness tool subscribes `tm_<txid>-live`
+  without admitting its messages (no entry, nothing logged), verifies each
+  beat's signature against `sender`, and keeps the beats newer than
+  `window`, the latest per sender, with the node's own published beats, in
+  memory; it serves them at `GET <base>/.live/tm_<txid>-live` → `[{sender,
+  at, body: <base64>, from: <peer ID>}]` newest first (404 when no liveness
+  is kept). The window is a margin over the beat (40 s against 30 s).
+- **The page** reads that endpoint per token, takes each beat's `sender`
+  (the validator) and `from` (its peer ID), shows the validators within the
+  window, plans (`market/plan.ts`) only over the pools whose validator is
+  there, and names the chosen one in the swap (`validator` and `peerId`).
 
-**The market role** (shruggr/skein#120 and #138, David 2026-10-06:
-liveness tracking is the runtime's own tool, with a standard shape; the
-body stays the app's). `config.amm.ammP2p.market` (default `false`). On a
-host that serves a market, the start also emits, once per served token
-topic (the registered set under `amm/topics` and any declared), `{event:
-"liveness", topic: "tm_<txid>-live", window: offlineSeconds × 1000}`
-(`offlineSeconds` default 40, `heartbeatSeconds` 30: a margin over the
-beat, both config). The runtime's liveness tool subscribes the topic at the
-node without admitting its messages (no entry, nothing logged), verifies
-each beat's signature against `sender`, and keeps the beats newer than the
-window, the latest per sender, with the node's own published beats, in
-memory; it serves them at `GET <base>/.live/tm_<txid>-live` →
-`[{sender, at, body: <base64>, from: <peer ID>}]` newest first (404 when no
-liveness is kept). A start ends it (`{event: "unliveness", topic}`) for a
-topic asked before and no longer served, and a stop, or a start with the
-role off, for every one; only a topic asked is ended (the set: map
-`subscriptions` under `amm/p2p`, the record's `liveness: true`). A host not
-serving a market asks nothing. A validator's host beacons its validated
-topics as above, whatever its role.
-
-The page reads that endpoint per token, decodes each `body`
-(`{identityKey, peerId}`, amm-p2p liveness.zig `Body`), shows the
-validators within the window, plans (`market/plan.ts`) only over the pools
-whose validator is there, and names the chosen one in the swap (`validator`
-and `peerId`). amm-p2p keeps no validator map and judges no beat: 0.3.x's
-`subscribe` to `validateLive`, its `amm-live` entries and the map `live`
-are gone; a 0.3.x state's standing `subscribe`s are unsubscribed at the
-first start or stop under 0.4.0.
+Gone in 0.6.0: `validate` / `unvalidate` (the box `amm/validate` and its
+row), amm-p2p's validated set (the record's `validated` under `amm/p2p`),
+its `beacon` / `liveness` emits and their bookkeeping (the maps `beacons`,
+`subscriptions`), its start / stop and the cron fallback's heartbeat, and
+`config.amm.ammP2p` (`market`, `heartbeatSeconds`, `offlineSeconds`:
+`validator.every` is the beat, `market.window` the offline threshold).
+Per-token permissioning is a later refinement: "if we needed that kind of
+split, we would split it across multiple skeins".
 
 ## The manifest
 
 `etc/app.json`: the six programs; `config.overlay` with no topics and the
 lookups `ls_mandala`, `ls_mandala_deploys` (both `mandala-lookup`) and
 `ls_amm` (`amm-lookup`), none with a `topics` list, so each listens to every
-topic served; gossip on (the default); `config.amm` (`ammP2p`:
-`heartbeatSeconds` 30, `offlineSeconds` 40, `market`; `ammValidator`,
+topic served; gossip on (the default); `market: {window: 40000}` and
+`validator: {every: 30000}` (0.6.0, above); `config.amm` (`ammValidator`,
 `commission`); `provides` the three `amm.*` interfaces (each `submit` with
-`peerId: "string"` beside `validator`, 0.4.0); `requires: ["chain/1"]`; `start` /
-`stop`.
+`peerId: "string"` beside `validator`, 0.4.0); `requires: ["chain/1"]`; no
+`start` / `stop` (0.6.0).
 
 ### The rows
 
@@ -215,16 +186,17 @@ In table order; mailbox addresses are relative to the app (shruggr/skein#128:
 `""` is the box `amm`, `"x"` is `amm/x`); the kernel takes the first row of
 the package's transport and address whose sender rule admits the sender:
 
-1. `register` from `$owner` → `overlay` (register / deregister)
-2. `validate` from `$owner` → `amm-p2p` (validate / unvalidate; 0.3.2)
-3. `""` from `event` → `overlay`
-4. `""` from `$self` → `overlay` (the engine's own watch, resume)
-5. `""` from `*` → `amm-p2p` (the relay's interfaces; the owner's start / stop)
-6. `amm-p2p` from `*` → `amm-p2p`
-7. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
-8. http `/call` → `amm-p2p` `call` (a message route: a signed request)
-9. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
-   `amm-validator` (each refused `not_validating` for a topic outside the validated set)
+1. `register` from `$owner` → `overlay` (register / deregister; with them the roles' events)
+2. `""` from `event` → `overlay`
+3. `""` from `$self` → `overlay` (the engine's own watch, resume)
+4. `""` from `*` → `amm-p2p` (the relay's interfaces)
+5. `amm-p2p` from `*` → `amm-p2p` (the cron provider's ticks)
+6. `submit` from `*` → `overlay`, `filter: "beef"` (submissions from anyone, by message and from `POST /submit`; skein-overlay 0.7.6)
+7. http `/call` → `amm-p2p` `call` (a message route: a signed request)
+8. libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` →
+   `amm-validator` (each refused `not_validating` without `config.overlay.validator`, or for a topic not registered)
+
+(0.5.0 had a row `validate` from `$owner` → `amm-p2p` second; gone in 0.6.0.)
 
 then, derived by the install from `config.overlay`: http `/submit` (`filter:
 beef`) → `overlay`, and the read `/lookup` (below).
@@ -248,15 +220,16 @@ share a path; exact paths match before a prefix, so `/call`, `/submit` and
 | `/listTopicManagers`, `/listLookupServiceProviders` | read | `overlay` `listTopicManagers`, `listLookupServiceProviders` | 0.5.0 (http rows before) |
 | `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `overlay` `topicDocumentation`, `lookupDocumentation` | 0.5.0 (http rows before) |
 | `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `amm-p2p` `serve` | 0.5.0 (an http row before) |
+| `/mandala/tokens` | read | `mandala-lookup` `tokens` | 0.6.0 |
 | `/.live/tm_<txid>-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
 
-The boxes (`register`, `validate`, `""`, `amm-p2p`, `submit`) and the libp2p
+The boxes (`register`, `""`, `amm-p2p`, `submit`) and the libp2p
 rows above are rows; they are messages, never reads. amm-p2p's `serve`
 reads only (the head `amm/app` and the tree's blobs) and runs as a call
 unchanged.
 
-Rows 3 and 4 are the derived engine rows, listed so they come before row 5:
+Rows 2 and 3 are the derived engine rows, listed so they come before row 4:
 a `*` row admits events and the instance's own messages too, so after it
 the engine would get neither.
 
@@ -267,19 +240,21 @@ the engine would get neither.
   submission paused on a parent resumes only when a later submission brings
   it.
 - **`tm_<txid>-live` off a market host.** Liveness is kept by a host
-  serving a market (`ammP2p.market`, above); on any other host its `.live`
-  read answers 404 and its Swap page plans nothing.
+  serving a market (`config.overlay.market`, above); on any other host its
+  `.live` read answers 404 and its Swap page plans nothing.
 - **Catch-up and proofs by block.** Never specified; sync is
   shruggr/skein#112's `want`. The `/amm/proofs/1.0.0` row is gone and no
   start schedules the catch-up pass; the code stays as a utility
   (`proofsByBlock`, `catchup`).
-- **Liveness on register / deregister.** amm-p2p is not stepped by the
-  engine's registrations (the owner's `register` goes to the engine alone):
-  on a market host liveness is asked for a topic registered after the start
-  at the next start, and ended for one deregistered at the next start or
-  stop. A changed `offlineSeconds` takes effect for a standing topic after a
-  stop and a start. Beacons follow the validated set, not the
-  registrations.
+- **A setting changed after a register.** The roles' events are emitted at
+  `register` / `deregister` only (the intents stand in the log): a market
+  window or a beat changed by a reinstall applies to the topics registered
+  after it; a topic registered before keeps its standing liveness and beacon
+  (deregister and register it again). An instance upgraded from 0.5.0 keeps
+  the beacons and liveness amm-p2p emitted then (keyed by app and topic, as
+  the engine's are; a register of a topic registered already emits nothing,
+  so deregister and register it to replace them). Their beats still carry
+  0.5.0's body, which the page no longer reads.
 - **Governance per token** (#120 item 4) and the other Mandala queries:
   skein-mandala docs/MANDALA.md "Not built".
 - **Run end to end.** The programs are tested natively and the pages

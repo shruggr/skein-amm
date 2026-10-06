@@ -228,7 +228,7 @@ const Fx = struct {
     fn init(a: std.mem.Allocator, names: []const []const u8) !*Fx {
         const f = try a.create(Fx);
         const id = w.beef.txidOf(unhex(a, vec.token_deploy));
-        // Validating the fixture token's topic (0.3.2: the validated set gates every signature).
+        // Validating the fixture token's topic (0.6.0: registered, with config.overlay.validator set, gates every signature).
         const validated = try a.dupe([]const u8, &.{try validator.topicOf(a, id)});
         f.* = .{ .a = a, .id = id, .mem = MemView.init(a, id), .cfg = .{ .identity = key33(vec.identity), .validated = validated } };
         for (names) |n| _ = try f.mem.hold(f.raw(n));
@@ -960,7 +960,7 @@ test "refused: not our pool, not a pool input, unknown pool, wrong method, slot 
     try testing.expectEqual(@as(usize, 0), f.oracle.calls);
 }
 
-test "the validated set (0.3.2): in it, a swap, an addLiquidity and a deploy are signed as before; not in it, each is refused not_validating, nothing signed" {
+test "the validated topics (0.3.2; 0.6.0: the registered set when config.overlay.validator is set): in it, a swap, an addLiquidity and a deploy are signed as before; not in it, each is refused not_validating, nothing signed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

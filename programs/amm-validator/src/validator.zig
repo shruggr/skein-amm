@@ -7,7 +7,8 @@
 //!   2. the pool is an output this instance's overlay holds, and it is a
 //!      pool (the compiled Pool code) whose ValidatorIdentity is ours,
 //!      and its token topic is one this instance validates (`Config.validated`,
-//!      amm-p2p's validated set; else `not_validating`, 0.3.2);
+//!      the engine's registered set with `config.overlay.validator` set;
+//!      else `not_validating`, 0.6.0);
 //!   3. it is still live in the topic; if a transaction we hold spent it,
 //!      the refusal carries the pool's newest state (continuations are
 //!      always output 0: followed from spender to spender) — unless that
@@ -106,15 +107,14 @@ pub const Config = struct {
     max_lp_fee_bps: i64 = 10_000,
     max_commission_bps: ?i64 = null,
     now_ms: i64 = 0,
-    /// The topics this instance validates (0.3.2): amm-p2p's validated set, the `validated` of
-    /// the head `amm/p2p`, which the owner's `validate` / `unvalidate` write (box `amm/validate`).
-    /// "If I'm validating, I'm pinging, I'm taking on new liquidity, and I'm validating" (David
-    /// 2026-10-06): a swap, an addLiquidity or a deploy for a token whose topic is not in it is
+    /// The topics this instance validates (0.6.0): with the engine's `config.overlay.validator`
+    /// set, the engine's registered set (the head `<app>/topics`); without it, none (main.zig
+    /// `validatedSet`). A swap, an addLiquidity or a deploy for a token whose topic is not in it is
     /// refused `not_validating`, before anything is checked or signed. Empty: nothing is signed.
     validated: []const []const u8 = &.{},
 };
 
-/// Whether `topic` is in the validated set (`Config.validated`).
+/// Whether `topic` is one this instance validates (`Config.validated`).
 pub fn validating(cfg: Config, topic: []const u8) bool {
     for (cfg.validated) |t| if (std.mem.eql(u8, t, topic)) return true;
     return false;
@@ -166,7 +166,7 @@ pub const Reason = enum {
     wrong_validator_key,
     /// A Swap's or an AddLiquidity's outputs are not the contract's: detail which.
     bad_outputs,
-    /// The pool's token topic is not in the validated set (`Config.validated`, 0.3.2): detail the topic.
+    /// The pool's token topic is not one this instance validates (`Config.validated`; 0.6.0: registered, with `config.overlay.validator` set): detail the topic.
     not_validating,
 };
 

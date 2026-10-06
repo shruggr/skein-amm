@@ -1,7 +1,7 @@
 /**
- * The Validator page: the heartbeat start/stop request through a fake
- * AuthFetch, the explorer's genesis read, the this-instance view from mocked
- * manifest / resolve / live answers, and pools-served filtering.
+ * The Validator page: the explorer's genesis and app-record reads (the policy
+ * and the two role settings) through a fake AuthFetch, the this-instance view
+ * from mocked manifest / resolve / live answers, and pools-served filtering.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -10,17 +10,7 @@ import type { FetchLike } from "../src/lp/validators";
 import { ago } from "../src/lp/validators";
 import { hostLabel, instanceAddress, livenessLine, loadThisInstance, poolsServedBy } from "../src/validator/instance";
 import { beatEntry } from "./liveRead";
-import {
-  dagBytesHex,
-  heartbeatRequest,
-  policyOf,
-  readGenesis,
-  readValidated,
-  sendHeartbeatControl,
-  sendValidation,
-  validationRequest,
-  type AuthFetchLike,
-} from "../src/validator/control";
+import { dagBytesHex, policyOf, readAppPolicy, readGenesis, type AuthFetchLike } from "../src/validator/control";
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/instance-v2/${name}`, import.meta.url), "utf8")) as unknown;
 
@@ -41,88 +31,6 @@ function fakeAuthFetch(answer: (url: string, config?: { method?: string; body?: 
   return { af, calls };
 }
 
-describe("heartbeat start / stop (BRC-33 sendMessage)", () => {
-  it("builds the message into the instance's own box amm-p2p", () => {
-    expect(heartbeatRequest("start", AMM2.toUpperCase())).toEqual({
-      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-start" } },
-    });
-    expect(heartbeatRequest("stop", AMM2)).toEqual({
-      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-stop" } },
-    });
-  });
-
-  it("POSTs it to <origin>/sendMessage through AuthFetch, JSON, and reads an admission", async () => {
-    const { af, calls } = fakeAuthFetch(() => ({
-      status: 200,
-      body: { status: "success", message: "Your message has been sent to 1 recipient(s).", results: [{ recipient: AMM2, messageId: "bafy1" }], id: "bafy1" },
-    }));
-    const r = await sendHeartbeatControl(af, "http://amm2.localhost:8300/", AMM2, "start");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("http://amm2.localhost:8300/sendMessage");
-    expect(calls[0]!.config?.method).toBe("POST");
-    expect(calls[0]!.config?.headers).toEqual({ "content-type": "application/json" });
-    expect(JSON.parse(calls[0]!.config!.body!)).toEqual({
-      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { kind: "amm-p2p-start" } },
-    });
-    expect(r.admitted).toBe(true);
-    expect(r.id).toBe("bafy1");
-    expect(r.refusal).toBeUndefined();
-  });
-
-  it("reports the subscription table's refusal", async () => {
-    const { af } = fakeAuthFetch(() => ({
-      status: 403,
-      body: { status: "error", code: "ERR_NOT_SUBSCRIBED", description: "This instance takes no messages from you in that box." },
-    }));
-    const r = await sendHeartbeatControl(af, "http://amm2.localhost:8300", AMM2, "stop");
-    expect(r.admitted).toBe(false);
-    expect(r.status).toBe(403);
-    expect(r.refusal).toBe("ERR_NOT_SUBSCRIBED: This instance takes no messages from you in that box.");
-    expect(r.request).toEqual(heartbeatRequest("stop", AMM2));
-  });
-
-  it("a non-JSON answer is a refusal with its text", async () => {
-    const { af } = fakeAuthFetch(() => ({ status: 401, body: "unauthorized" }));
-    const r = await sendHeartbeatControl(af, "http://amm2.localhost:8300", AMM2, "start");
-    expect(r.admitted).toBe(false);
-    expect(r.refusal).toBe("HTTP 401: unauthorized");
-  });
-});
-
-describe("validation per topic (0.3.1; box 0.3.2): validate / unvalidate into box amm/validate; the set read through the explorer", () => {
-  const T = `tm_${"ab".repeat(32)}`;
-  it("builds {fn, args: {topic}} for the same box as start/stop", () => {
-    expect(validationRequest("validate", T, AMM2.toUpperCase())).toEqual({
-      message: { recipient: AMM2, messageBox: "amm/validate", body: { fn: "validate", args: { topic: T } } },
-    });
-    expect(validationRequest("unvalidate", T, AMM2).message.body).toEqual({ fn: "unvalidate", args: { topic: T } });
-  });
-
-  it("POSTs it to <origin>/sendMessage", async () => {
-    const { af, calls } = fakeAuthFetch(() => ({ status: 200, body: { status: "success", id: "bafy2" } }));
-    const r = await sendValidation(af, "http://amm2.localhost:8300/", AMM2, "unvalidate", T);
-    expect(calls[0]!.url).toBe("http://amm2.localhost:8300/sendMessage");
-    expect(JSON.parse(calls[0]!.config!.body!).message.body).toEqual({ fn: "unvalidate", args: { topic: T } });
-    expect(r.action).toBe("unvalidate");
-    expect(r.admitted).toBe(true);
-  });
-
-  it("reads the head <app>/p2p and its record's validated; no head = none; 403 = unreadable", async () => {
-    const { af, calls } = fakeAuthFetch((url) =>
-      url.endsWith("/explore/head/amm/p2p")
-        ? { status: 200, body: { tree: { "/": "bafyState" } } }
-        : { status: 200, body: { kind: "amm-p2p-state", maps: {}, validated: [T] } },
-    );
-    expect(await readValidated(af, "http://amm2.localhost:8300", "amm")).toEqual([T]);
-    expect(calls.map((c) => c.url)).toEqual([
-      "http://amm2.localhost:8300/explore/head/amm/p2p",
-      "http://amm2.localhost:8300/explore/record/bafyState",
-    ]);
-    expect(await readValidated(fakeAuthFetch(() => ({ status: 404, body: "" })).af, "http://x", "amm")).toEqual([]);
-    expect(await readValidated(fakeAuthFetch(() => ({ status: 403, body: "" })).af, "http://x", "amm")).toBeUndefined();
-  });
-});
-
 describe("the explorer (owner only): genesis owner and policy", () => {
   const ownerHex = "027c21b23e13472d370821454a34874d934ee5721bb3327ceb489c38d1a4b0f21b";
   const b64 = (hex: string) => Buffer.from(hex, "hex").toString("base64").replace(/=+$/, "");
@@ -131,8 +39,8 @@ describe("the explorer (owner only): genesis owner and policy", () => {
     owner: { "/": { bytes: b64(ownerHex) } },
     identity: { "/": { bytes: b64(AMM2) } },
     defaults: {
-      ammP2p: JSON.stringify({ topics: ["tm_x"], peerId: AMM2_PEER, heartbeatSeconds: 30, offlineSeconds: 90 }),
       ammValidator: '{"minValidatorFeeBps":5,"maxLpFeeBps":100}',
+      overlayValidator: '{"every":30000}',
     },
   };
 
@@ -142,16 +50,29 @@ describe("the explorer (owner only): genesis owner and policy", () => {
     expect(dagBytesHex(42)).toBeUndefined();
   });
 
-  it("reads the policy from the genesis defaults (JSON strings)", () => {
-    expect(policyOf(genesis)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, heartbeatSeconds: 30, offlineSeconds: 90, peerId: AMM2_PEER });
+  it("reads the policy from the genesis defaults (JSON strings); no overlayMarket: not a market", () => {
+    expect(policyOf(genesis)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, validatorEveryMs: 30_000 });
     expect(policyOf({ kind: "genesis" })).toEqual({});
+  });
+
+  it("reads the policy and the two role settings from the app record (0.6.0): config.amm.ammValidator, config.overlay.market / .validator", async () => {
+    const app = {
+      kind: "app",
+      name: "amm",
+      config: { overlay: { lookups: {}, market: { window: 40_000 }, validator: { every: 30_000 } }, amm: { ammValidator: { minValidatorFeeBps: 5, maxLpFeeBps: 100 } } },
+    };
+    expect(policyOf(app)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, marketWindowMs: 40_000, validatorEveryMs: 30_000 });
+    expect(policyOf({ kind: "app", config: { overlay: {}, amm: {} } })).toEqual({});
+    const { af, calls } = fakeAuthFetch((url) => (url.endsWith("/explore/head/amm/app") ? { status: 200, body: { tree: { "/": "bafyApp" } } } : { status: 200, body: app }));
+    expect(await readAppPolicy(af, "http://amm2.localhost:8300", "amm")).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, marketWindowMs: 40_000, validatorEveryMs: 30_000 });
+    expect(calls.map((c) => c.url)).toEqual(["http://amm2.localhost:8300/explore/head/amm/app", "http://amm2.localhost:8300/explore/record/bafyApp"]);
   });
 
   it("log entry 0 with its record", async () => {
     const { af, calls } = fakeAuthFetch(() => ({ status: 200, body: { entries: [{ n: 0, entry: { "/": "bafyg" }, record: genesis }] } }));
     const g = await readGenesis(af, "http://amm2.localhost:8300");
     expect(calls.map((c) => [c.url, c.config?.method])).toEqual([["http://amm2.localhost:8300/explore/log?before=1&limit=1", "GET"]]);
-    expect(g).toMatchObject({ ok: true, owner: ownerHex, identity: AMM2, policy: { minValidatorFeeBps: 5, maxLpFeeBps: 100, heartbeatSeconds: 30 } });
+    expect(g).toMatchObject({ ok: true, owner: ownerHex, identity: AMM2, policy: { minValidatorFeeBps: 5, maxLpFeeBps: 100, validatorEveryMs: 30_000 } });
   });
 
   it("follows a record that links the genesis", async () => {

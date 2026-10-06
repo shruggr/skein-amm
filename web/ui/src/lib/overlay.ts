@@ -29,8 +29,6 @@
  * names its token (`tokenId`: `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`).
  */
 import type { PoolState } from "@amm-poc/matching-engine";
-import { Utils } from "@bsv/sdk";
-import { decode as decodeCbor } from "cbor2";
 
 // ---------------------------------------------------------------------------
 // Names
@@ -132,7 +130,7 @@ export function parseOutputList(answer: unknown): LookupOutput[] {
 
 /**
  * The liveness window, ms: a validator whose last beat is older is not offered
- * (the app's `config.amm.ammP2p.offlineSeconds`, 40 s against a 30 s beat; the
+ * (the app's `config.overlay.market.window`, 40 s against a 30 s beat; the
  * instance's own read already keeps only the beats within its window).
  */
 export const LIVE_WINDOW_MS = 40_000;
@@ -167,35 +165,25 @@ export function liveUrl(base: string, liveTopic: string): string {
   return `${base.replace(/\/+$/, "")}/.live/${encodeURIComponent(liveTopic)}`;
 }
 
-function bytesHex(b: Uint8Array): string {
-  return Utils.toHex(Array.from(b));
-}
-
 /**
  * The liveness read's answer, `[{sender: <hex>, at: <ms>, body: <base64>, from: <peer ID>}]`
- * newest first, as the validators live: each `body` is the beacon's (programs/amm-p2p
- * liveness.zig `Body`), dag-cbor `{identityKey: bytes(33), peerId: bytes}`. A beat whose body
- * does not decode or names another identity than its (verified) `sender` is skipped; the latest
- * beat per identity is kept; `live` when within `windowMs` of `now`.
+ * newest first, as the validators live. The beat has no body (skein-amm 0.6.0, shruggr/skein#120,
+ * David 2026-10-06: "the frame carries the sender's identity key and the gossip message the peer
+ * id"): the validator's identity is `sender` (the host verified the beat's signature against it)
+ * and its peer ID `from`. An entry without both is skipped; the latest beat per identity is kept;
+ * `live` when within `windowMs` of `now`.
  */
 export function parseLiveBeats(answer: unknown, now: number, windowMs: number = LIVE_WINDOW_MS): LiveAnswer {
   const byKey = new Map<string, LiveValidator>();
   for (const x of Array.isArray(answer) ? (answer as Record<string, unknown>[]) : []) {
-    if (!x || typeof x !== "object" || typeof x.sender !== "string" || typeof x.body !== "string") continue;
+    if (!x || typeof x !== "object" || typeof x.sender !== "string" || !/^[0-9a-fA-F]{66}$/.test(x.sender)) continue;
+    if (typeof x.from !== "string" || x.from.length === 0) continue;
     const at = typeof x.at === "number" ? x.at : 0;
-    let body: { identityKey?: unknown; peerId?: unknown };
-    try {
-      body = decodeCbor(Uint8Array.from(Utils.toArray(x.body, "base64"))) as typeof body;
-    } catch {
-      continue;
-    }
-    if (!(body?.identityKey instanceof Uint8Array) || !(body.peerId instanceof Uint8Array) || body.peerId.length === 0) continue;
-    const identityKey = bytesHex(body.identityKey);
-    if (identityKey !== x.sender.toLowerCase()) continue;
+    const identityKey = x.sender.toLowerCase();
     const prev = byKey.get(identityKey);
     if (prev && prev.at >= at) continue;
     const ageMs = Math.max(0, now - at);
-    byKey.set(identityKey, { identityKey, peerId: Utils.toBase58(Array.from(body.peerId)), at, ageMs, live: ageMs <= windowMs });
+    byKey.set(identityKey, { identityKey, peerId: x.from, at, ageMs, live: ageMs <= windowMs });
   }
   return { now, windowMs, validators: [...byKey.values()].sort((p, q) => q.at - p.at), kept: true };
 }

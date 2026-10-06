@@ -6,6 +6,10 @@ The AMM validator as a [skein](https://github.com/shruggr/skein) handler program
 zig build test-amm-validator   # from the repo root: the package, the protocol, the refusals, signing against the Go fixtures, and the submission, natively
 ```
 
+## 0.6.0: the engine's validator setting and registered set gate every signature
+
+This section supersedes "0.3.2" below. David, 2026-10-06 evening (shruggr/skein#120): "The validator program signs for any registered token when `validator` is set." A `swap`, `addLiquidity` or `deploy` direct call (or the relay's local call) is answered only when the engine's `config.overlay.validator` is set (read from the step's input as the engine reads its configuration, skein-overlay 0.9.0 `config.rolesOf`) and the token's topic `tm_<txid>` is in the engine's registered set, the head `<app>/topics` (`main.zig` `validatedSet`, into `Config.validated`). Otherwise `{ok: false, reason: "not_validating", detail: "this validator does not validate tm_<txid>"}`, at the same point as before, nothing asked of the oracle, signed or submitted. The owner's `register` / `deregister` (box `<app>/register`, the engine's) are the only writers of the set; amm-p2p's validated set and `validate` / `unvalidate` are gone. A malformed `config.overlay.validator` fails the call (`BadRoles`).
+
 ## 0.4.0: called in-VM by this instance's own relay
 
 When a taker names this node as the validator to its own relay (amm-p2p's `amm.*.submit` with `peerId` this node's), the relay cannot dial itself: its relay thread calls this program's fn (`swap`, `deploy`, `addLiquidity`) in-VM from its step, with the argument the front door gives a frame's handler — `{transport: "local", protocol, body: <the same signed package>, match: {program, fn, app}}`, plus `reply` / `resolved` when called again (amm-p2p `callValidator`). `directCall` takes `transport: "local"` beside `libp2p`; everything else is unchanged, and the `{wait: true}` and its `await` are the relay thread's.

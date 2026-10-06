@@ -110,11 +110,10 @@ describe("market view from the instance's answers", () => {
     const k2 = "02" + "22".repeat(32);
     const two = parseLiveBeats([beatEntry(k2, PEER, 900), beatEntry(id, PEER, 800), beatEntry(id, PEER, 950)], 1000);
     expect(two.validators.map((x) => [x.identityKey, x.at])).toEqual([[id, 950], [k2, 900]]);
-    // Skipped: a body naming another identity than its sender, a body that is not the beacon's, no body.
-    const odd = parseLiveBeats(
-      [beatEntry(k2, PEER, 900, id), { sender: id, at: 900, body: Utils.toBase64([1, 2, 3]), from: PEER }, { sender: id, at: 900 }, "junk"],
-      1000,
-    );
+    // The identity is the sender, the peer ID `from`; the body is not read (the beat has none).
+    expect(parseLiveBeats([{ sender: id.toUpperCase(), at: 900, body: Utils.toBase64([1, 2, 3]), from: PEER }], 1000).validators).toMatchObject([{ identityKey: id, peerId: PEER }]);
+    // Skipped: no peer ID, a sender that is not a key, no sender.
+    const odd = parseLiveBeats([{ sender: id, at: 900, body: "" }, { sender: "zz", at: 900, from: PEER }, { at: 900, from: PEER }, "junk"], 1000);
     expect(odd.validators).toEqual([]);
     expect(parseLiveBeats({ not: "an array" }, 1000).validators).toEqual([]);
     // 404: the instance keeps no liveness for the topic.

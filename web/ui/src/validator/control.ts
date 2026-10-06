@@ -1,46 +1,17 @@
 /**
- * The owner's controls over this instance as a validator, over HTTP, signed
- * by the connected BRC-100 wallet through `@bsv/sdk`'s `AuthFetch` (BRC-103
+ * The owner's reads of this instance as a validator, over HTTP, signed by the
+ * connected BRC-100 wallet through `@bsv/sdk`'s `AuthFetch` (BRC-103
  * handshake at `<origin>/.well-known/auth`, every request BRC-104-signed):
+ * the explorer (`GET <origin>/explore…`, read op `explore`, the owner only by
+ * the stock reads table; others get 403) — the genesis (log entry 0, `{kind:
+ * "genesis", owner, identity, defaults}`) for the owner key, and the installed
+ * app record (`<app>/app`) for the policy: `config.amm.ammValidator` and the
+ * engine's two role settings, `config.overlay.market {window}` and
+ * `config.overlay.validator {every}` (skein-amm 0.6.0, shruggr/skein#120).
  *
- * - heartbeat start / stop: a message into the app's box `amm/amm-p2p`
- *   (the manifest's `"amm-p2p"`, relative to the app: shruggr/skein#128)
- *   through the stock BRC-33 messagebox route, `POST <origin>/sendMessage`
- *   (skein docs/MESSAGES.md "The messagebox"; programs/messagebox
- *   `sendMessage`):
- *
- *     {message: {recipient: <the instance's identity key, hex>,
- *                messageBox: "amm/amm-p2p",
- *                body: {kind: "amm-p2p-start"} | {kind: "amm-p2p-stop"}}}
- *
- *   Start asks the host for a beacon per validated token topic
- *   (`tm_<txid>-live`); stop ends them and keeps the validated set.
- *
- * - validate / unvalidate (skein-amm 0.3.1; box 0.3.2): `{fn: "validate" |
- *   "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/validate`, per
- *   topic: the topic into (out of) amm-p2p's validated set, its beacon asked
- *   (ended). The set is read through the explorer (`readValidated`). One
- *   setting: a validated topic is beaconed and amm-validator signs its swaps,
- *   addLiquidity and deploys; outside the set it refuses them
- *   (`not_validating`). The box's row, `{"address": "validate", "sender":
- *   "$owner", "program": "amm-p2p"}`, is the permission: the messagebox
- *   admits only the owner there (403 `ERR_NOT_SUBSCRIBED` for anyone else).
- *
- *   The sender is the key the session proved. For the instance's own key as
- *   recipient the messagebox admits the message when the subscription table
- *   has an entry for (sender, box), else 403 `ERR_NOT_SUBSCRIBED`. v2's
- *   genesis subscribes `{box: "amm-p2p", handler: "amm-p2p"}` with no
- *   sender (anyone: it also carries peers' admitted heartbeats and the cron
- *   ticks), so the messagebox admits anyone's start/stop (200) and amm-p2p
- *   itself refuses a sender that is neither `in.owner` nor the cron
- *   provider by erroring its step (`NotTheOwner`). That refusal is on the
- *   instance's thread, not in the HTTP answer: a 200 means "admitted", and
- *   only the peer's liveness read (`/amm/.live/tm_<txid>-live`) shows whether the heartbeat runs.
- *
- * - the explorer (`GET <origin>/explore…`, read op `explore`, the owner only
- *   by the stock reads table; others get 403): the genesis (log entry 0,
- *   `{kind: "genesis", owner, identity, defaults: {ammP2p, ammValidator, …}}`)
- *   gives the owner key and the validator's policy.
+ * Nothing is sent from here (0.6.0): the heartbeat start / stop and the
+ * per-topic validate / unvalidate are gone. Registering a token's topic with
+ * the engine (the Tokens page) is the one act that drives both roles.
  */
 
 /** What the page needs of `AuthFetch` (and what the tests fake). */
@@ -51,132 +22,12 @@ export interface AuthFetchLike {
   ): Promise<Pick<Response, "status" | "text">>;
 }
 
-export const AMM_P2P_BOX = "amm/amm-p2p";
-/** The box `validate` / `unvalidate` are taken in (0.3.2): the manifest's row `validate` from `$owner`. */
-export const VALIDATE_BOX = "amm/validate";
-
-export type HeartbeatAction = "start" | "stop";
-
-export interface SendMessageRequest {
-  message: {
-    recipient: string;
-    messageBox: string;
-    body: { kind: "amm-p2p-start" } | { kind: "amm-p2p-stop" } | ValidationBody;
-  };
-}
-
-/** Validation, per topic (skein-amm 0.3.1): `{fn: "validate" | "unvalidate", args: {topic}}`. */
-export type ValidationAction = "validate" | "unvalidate";
-export interface ValidationBody {
-  fn: ValidationAction;
-  args: { topic: string };
-}
-
-/**
- * The BRC-33 sendMessage body: start (the beacons) or stop (every beacon
- * ended). Neither names `jobs`, which is amm-p2p's cron fallback.
- */
-export function heartbeatRequest(action: HeartbeatAction, instanceIdentityKey: string): SendMessageRequest {
-  return {
-    message: {
-      recipient: instanceIdentityKey.toLowerCase(),
-      messageBox: AMM_P2P_BOX,
-      body: action === "start" ? { kind: "amm-p2p-start" } : { kind: "amm-p2p-stop" },
-    },
-  };
-}
-
-/**
- * The BRC-33 sendMessage body for `validate` / `unvalidate` of one token
- * topic, into box `amm/validate` (0.3.2), which only the owner's row
- * admits: amm-p2p adds the topic to (or removes it from) its validated set
- * and asks (or ends) the topic's beacon on `tm_<txid>-live`; amm-validator
- * signs for the topics in the set only.
- */
-export function validationRequest(action: ValidationAction, topic: string, instanceIdentityKey: string): SendMessageRequest {
-  return {
-    message: {
-      recipient: instanceIdentityKey.toLowerCase(),
-      messageBox: VALIDATE_BOX,
-      body: { fn: action, args: { topic } },
-    },
-  };
-}
-
-export interface HeartbeatResult {
-  action: HeartbeatAction | ValidationAction;
-  url: string;
-  request: SendMessageRequest;
-  status: number;
-  /** The answer as JSON when it is JSON, else its text. */
-  answer: unknown;
-  /** 200 with `status: "success"`: the messagebox admitted the message. */
-  admitted: boolean;
-  /** The admitted mail record's CID (`id`). */
-  id?: string;
-  /** The refusal's code / description (403 `ERR_NOT_SUBSCRIBED`, 401, …). */
-  refusal?: string;
-}
-
 function parseBody(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
     return text;
   }
-}
-
-/** `POST <instance>/sendMessage` through the wallet-backed AuthFetch. */
-export async function sendHeartbeatControl(
-  authFetch: AuthFetchLike,
-  instanceUrl: string,
-  instanceIdentityKey: string,
-  action: HeartbeatAction,
-): Promise<HeartbeatResult> {
-  return postMessage(authFetch, instanceUrl, action, heartbeatRequest(action, instanceIdentityKey));
-}
-
-/** `POST <instance>/sendMessage`: `validate` / `unvalidate` of `topic`. */
-export async function sendValidation(
-  authFetch: AuthFetchLike,
-  instanceUrl: string,
-  instanceIdentityKey: string,
-  action: ValidationAction,
-  topic: string,
-): Promise<HeartbeatResult> {
-  return postMessage(authFetch, instanceUrl, action, validationRequest(action, topic, instanceIdentityKey));
-}
-
-async function postMessage(
-  authFetch: AuthFetchLike,
-  instanceUrl: string,
-  action: HeartbeatAction | ValidationAction,
-  request: SendMessageRequest,
-): Promise<HeartbeatResult> {
-  const url = `${instanceUrl.replace(/\/+$/, "")}/sendMessage`;
-  const res = await authFetch.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  const answer = parseBody(await res.text());
-  const a = (answer && typeof answer === "object" ? answer : {}) as Record<string, unknown>;
-  const admitted = res.status === 200 && a.status === "success";
-  const out: HeartbeatResult = { action, url, request, status: res.status, answer, admitted };
-  if (typeof a.id === "string") out.id = a.id;
-  if (!admitted) {
-    const code = typeof a.code === "string" ? a.code : `HTTP ${res.status}`;
-    const desc = typeof a.description === "string" ? a.description : typeof answer === "string" ? answer.slice(0, 200) : "";
-    out.refusal = desc ? `${code}: ${desc}` : code;
-  }
-  return out;
-}
-
-/** The by-hand fallback from the v2 deploy README (run on the host, as the cron provider). */
-export function byHandCommand(handleName: string | undefined): string {
-  const h = handleName ?? "<handle>";
-  const home = h === "amm3" ? "$PWD/deploy/.run/amm3/home" : "$PWD/deploy/.run/home";
-  return `# in the deploy's checkout (v2: ~/Work/agent-env/amm/amm-poc)\nSKEIN_HOME=${home} ~/Work/agent-env/skein/bin/skein-host event ${h} amm-p2p '{"kind":"amm-p2p-start"}'`;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +37,10 @@ export function byHandCommand(handleName: string | undefined): string {
 export interface ValidatorPolicy {
   minValidatorFeeBps?: number;
   maxLpFeeBps?: number;
-  heartbeatSeconds?: number;
-  offlineSeconds?: number;
-  peerId?: string;
+  /** `config.overlay.market.window` (ms): this instance is a market; absent, it is not. */
+  marketWindowMs?: number;
+  /** `config.overlay.validator.every` (ms): this instance is a validator; absent, it is not. */
+  validatorEveryMs?: number;
 }
 
 export interface GenesisRead {
@@ -225,7 +77,7 @@ function linkOf(v: unknown): string | undefined {
   return typeof l === "string" ? l : undefined;
 }
 
-/** A genesis default: a JSON string (as the genesis keeps `ammP2p` / `ammValidator`) or an object. */
+/** A genesis default: a JSON string (as the genesis keeps `ammValidator`) or an object. */
 function jsonDefault(v: unknown): Record<string, unknown> | undefined {
   if (typeof v === "string") {
     try {
@@ -241,24 +93,27 @@ function jsonDefault(v: unknown): Record<string, unknown> | undefined {
 const num = (v: unknown) => (typeof v === "number" ? v : undefined);
 
 /**
- * The policy from a genesis record's `defaults` (JSON strings), or from an
- * installed app record's `config.amm` (`{kind: "app", config: {amm:
- * {ammValidator, ammP2p}}}`), which the programs read first.
+ * The policy from a genesis record's `defaults` (JSON strings: `ammValidator`,
+ * `overlayMarket`, `overlayValidator`), or from an installed app record's
+ * `config` (`{kind: "app", config: {amm: {ammValidator}, overlay: {market?:
+ * {window}, validator?: {every}}}}`), which the programs read first.
  */
 export function policyOf(rec: Record<string, unknown>): ValidatorPolicy {
-  const amm = rec.kind === "app" ? (((rec.config ?? {}) as Record<string, unknown>).amm ?? {}) : undefined;
-  const d = (amm ?? rec.defaults ?? {}) as Record<string, unknown>;
-  const v = jsonDefault(d.ammValidator) ?? {};
-  const p = jsonDefault(d.ammP2p) ?? {};
+  const config = rec.kind === "app" ? ((rec.config ?? {}) as Record<string, unknown>) : undefined;
+  const d = (rec.defaults ?? {}) as Record<string, unknown>;
+  const amm = (config ? config.amm ?? {} : d) as Record<string, unknown>;
+  const ov = (config ? config.overlay ?? {} : {}) as Record<string, unknown>;
+  const v = jsonDefault(amm.ammValidator) ?? {};
+  const market = jsonDefault(config ? ov.market : d.overlayMarket);
+  const validator = jsonDefault(config ? ov.validator : d.overlayValidator);
   const out: ValidatorPolicy = {};
   const set = <K extends keyof ValidatorPolicy>(k: K, x: ValidatorPolicy[K] | undefined) => {
     if (x !== undefined) out[k] = x;
   };
   set("minValidatorFeeBps", num(v.minValidatorFeeBps));
   set("maxLpFeeBps", num(v.maxLpFeeBps));
-  set("heartbeatSeconds", num(p.heartbeatSeconds));
-  set("offlineSeconds", num(p.offlineSeconds));
-  set("peerId", typeof p.peerId === "string" ? p.peerId : undefined);
+  set("marketWindowMs", num(market?.window));
+  set("validatorEveryMs", num(validator?.every));
   return out;
 }
 
@@ -331,28 +186,4 @@ export async function readAppPolicy(authFetch: AuthFetchLike, instanceUrl: strin
   if (!cid) return undefined;
   const rec = await get(`/explore/record/${cid}`);
   return rec && typeof rec === "object" && (rec as { kind?: unknown }).kind === "app" ? policyOf(rec as Record<string, unknown>) : undefined;
-}
-
-/**
- * The validated set through the explorer (the owner's read), as the token
- * topics page reads `<app>/topics`: the head `<app>/p2p` (`GET
- * <instance>/explore/head/<app>/p2p` → `{tree}`), then its record
- * `{kind: "amm-p2p-state", maps, validated: ["tm_<txid>", …]}`. Empty when
- * the head is not written yet (nothing validated); undefined when it cannot
- * be read (403: not the owner).
- */
-export async function readValidated(authFetch: AuthFetchLike, instanceUrl: string, app: string): Promise<string[] | undefined> {
-  const base = instanceUrl.replace(/\/+$/, "");
-  const get = async (path: string) => {
-    const res = await authFetch.fetch(`${base}${path}`, { method: "GET" });
-    if (res.status === 404) return null;
-    return res.status === 200 ? parseBody(await res.text()) : undefined;
-  };
-  const head = (await get(`/explore/head/${app}/p2p`)) as { tree?: unknown } | null | undefined;
-  if (head === null) return [];
-  const cid = linkOf(head?.tree);
-  if (!cid) return undefined;
-  const rec = (await get(`/explore/record/${cid}`)) as { kind?: unknown; validated?: unknown } | null | undefined;
-  if (!rec || rec.kind !== "amm-p2p-state") return undefined;
-  return Array.isArray(rec.validated) ? rec.validated.filter((t): t is string => typeof t === "string") : [];
 }

@@ -106,7 +106,7 @@ pub const app_name = "amm";
 /// app's heads are `<app>/…`, its root `<app>/app`), where the relay keeps
 /// its state.
 pub const app_head = app_name ++ "/app";
-/// This program's own state (the validated set, the beacons, the market's liveness and the catch-up cursor),
+/// This program's own state (the catch-up cursor; 0.6.0),
 /// under the app's name too: under #77 an installed app advances only heads
 /// named `<app>/…`.
 pub const p2p_head = app_name ++ "/p2p";

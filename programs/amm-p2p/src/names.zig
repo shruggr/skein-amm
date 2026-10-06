@@ -4,7 +4,7 @@
 //! and `<topic>-proof` (skein#74). This program adds, in the same suffix
 //! style:
 //!
-//!   tm_<txid>-live         GossipSub: validator heartbeats {identityKey, peerId, sig, at} (the beacon)
+//!   tm_<txid>-live         GossipSub: validator heartbeats (the overlay engine's beacon, skein-overlay 0.9.0)
 //!   /amm/proofs/1.0.0      a direct call (a libp2p stream): proofs by block hash (a utility since
 //!                          0.2.0: no row routes it)
 //!
@@ -15,20 +15,8 @@ pub const live_suffix = "-live";
 pub const proofs_protocol = "/amm/proofs/1.0.0";
 
 /// This program's own box, as the kernel's table holds it (the manifest's `"amm-p2p"`, relative to
-/// the app: shruggr/skein#128): the accepted heartbeats (events), the cron provider's ticks and
-/// the start/stop messages.
+/// the app: shruggr/skein#128): the cron provider's ticks.
 pub const own_box = "amm/amm-p2p";
-
-/// The box the owner's `validate` / `unvalidate` are taken in (0.3.2): the manifest's row
-/// `{"address": "validate", "sender": "$owner", "program": "amm-p2p"}`, resolved. The row is the
-/// permission (as the engine's `register` in `<app>/register`): amm-p2p takes the two calls in this
-/// box only, from whoever the row admits, and checks no sender itself.
-pub const validate_box = "amm/validate";
-
-/// Whether a `validate` / `unvalidate` may be taken in `box` (the step's `args.box`).
-pub fn mayValidate(box: ?[]const u8) bool {
-    return std.mem.eql(u8, box orelse "", validate_box);
-}
 
 pub const Kind = enum { overlay, live };
 
