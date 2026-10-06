@@ -6,12 +6,17 @@
  * the stock reads table; others get 403) — the genesis (log entry 0, `{kind:
  * "genesis", owner, identity, defaults}`) for the owner key, and the installed
  * app record (`<app>/app`) for the policy: `config.amm.ammValidator` and the
- * engine's two role settings, `config.overlay.market {window}` and
- * `config.overlay.validator {every}` (skein-amm 0.6.0, shruggr/skein#120).
+ * engine's two roles, market and validator (skein-amm 0.6.0, shruggr/skein#120).
+ * The roles are the owner's switch (0.6.2, skein-overlay 0.9.2; David,
+ * 2026-10-07: "this shouldn't have been a config in the manifest. This
+ * should be a setting that the user is configuring"): read as the engine
+ * reads them, the switch kept in the registered set's record (`<app>/topics`:
+ * `market?: {window} | {off: true}`, `validator?: {every} | {off: true}`)
+ * over the app record's `config.overlay.market {window}` /
+ * `config.overlay.validator {every}` (`withSwitches`).
  *
- * Nothing is sent from here (0.6.0): the heartbeat start / stop and the
- * per-topic validate / unvalidate are gone. Registering a token's topic with
- * the engine (the Tokens page) is the one act that drives both roles.
+ * Nothing is sent from here: the switches are on the Token topics page, mandala/tokens/ (the
+ * engine's `market` / `validator` message to `<app>/register`).
  */
 
 /** What the page needs of `AuthFetch` (and what the tests fake). */
@@ -37,9 +42,9 @@ function parseBody(text: string): unknown {
 export interface ValidatorPolicy {
   minValidatorFeeBps?: number;
   maxLpFeeBps?: number;
-  /** `config.overlay.market.window` (ms): this instance is a market; absent, it is not. */
+  /** The market's liveness window (ms; the switch, else `config.overlay.market.window`): this instance is a market; absent, it is not. */
   marketWindowMs?: number;
-  /** `config.overlay.validator.every` (ms): this instance is a validator; absent, it is not. */
+  /** The validator's beat (ms; the switch, else `config.overlay.validator.every`): this instance is a validator; absent, it is not. */
   validatorEveryMs?: number;
 }
 
@@ -181,9 +186,31 @@ export async function readAppPolicy(authFetch: AuthFetchLike, instanceUrl: strin
     const res = await authFetch.fetch(`${base}${path}`, { method: "GET" });
     return res.status === 200 ? parseBody(await res.text()) : undefined;
   };
-  const head = (await get(`/explore/head/${app}/app`)) as { tree?: unknown } | undefined;
-  const cid = linkOf(head?.tree);
-  if (!cid) return undefined;
-  const rec = await get(`/explore/record/${cid}`);
-  return rec && typeof rec === "object" && (rec as { kind?: unknown }).kind === "app" ? policyOf(rec as Record<string, unknown>) : undefined;
+  const headRecord = async (name: string) => {
+    const cid = linkOf(((await get(`/explore/head/${name}`)) as { tree?: unknown } | undefined)?.tree);
+    return cid ? await get(`/explore/record/${cid}`) : undefined;
+  };
+  const rec = await headRecord(`${app}/app`);
+  if (!rec || typeof rec !== "object" || (rec as { kind?: unknown }).kind !== "app") return undefined;
+  return withSwitches(policyOf(rec as Record<string, unknown>), await headRecord(`${app}/topics`));
+}
+
+/**
+ * The roles in effect (skein-overlay 0.9.2, `topics.effective`): the owner's
+ * switch kept in the registered set's record `<app>/topics` (`market: {window}
+ * | {off: true}`, `validator: {every} | {off: true}`) over the policy's
+ * `config.overlay` values; a role never switched keeps the manifest's.
+ */
+export function withSwitches(policy: ValidatorPolicy, topicsRecord: unknown): ValidatorPolicy {
+  const r = (topicsRecord ?? {}) as Record<string, unknown>;
+  if (r.kind !== "overlay-topics") return policy;
+  const out: ValidatorPolicy = { ...policy };
+  for (const [role, field, key] of [["market", "window", "marketWindowMs"], ["validator", "every", "validatorEveryMs"]] as const) {
+    const sw = r[role] as Record<string, unknown> | undefined;
+    if (!sw || typeof sw !== "object") continue;
+    const ms = num(sw[field]);
+    if (sw.off === true || ms === undefined) delete out[key];
+    else out[key] = ms;
+  }
+  return out;
 }

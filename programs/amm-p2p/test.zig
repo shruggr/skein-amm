@@ -1854,7 +1854,7 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     try testing.expectEqual(relay.Status.pending, (try book.getKind(a, .liquidity, relay.idOf(d.add))).?.status);
 }
 
-test "market and validator are the engine's (0.6.0, shruggr/skein#120): no validate row, no start or stop, no config.amm.ammP2p.market; config.overlay.market / .validator the only role settings" {
+test "market and validator are the engine's (0.6.0, shruggr/skein#120), the owner's switch (0.6.2, David 2026-10-07): no validate row, no start or stop, no config.amm.ammP2p.market; config.overlay.market / .validator absent, both off until the owner turns one on" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1867,7 +1867,8 @@ test "market and validator are the engine's (0.6.0, shruggr/skein#120): no valid
     if (config.get("amm").?.get("ammP2p")) |p2p| {
         try testing.expect(p2p.get("market") == null and p2p.get("heartbeatSeconds") == null and p2p.get("offlineSeconds") == null);
     }
+    // "this shouldn't have been a config in the manifest. This should be a setting that the user is
+    // configuring": the owner turns a role on at install (--config) or by the engine's switch.
     const ov_cfg = config.get("overlay").?;
-    try testing.expectEqual(@as(i128, 40_000), scbor.Value.intOf(ov_cfg.get("market").?.get("window")).?);
-    try testing.expectEqual(@as(i128, 30_000), scbor.Value.intOf(ov_cfg.get("validator").?.get("every")).?);
+    try testing.expect(ov_cfg.get("market") == null and ov_cfg.get("validator") == null);
 }

@@ -43,8 +43,10 @@
 //! same package, `match`, and `reply` / `resolved` when called again). Everything else is as above:
 //! the `{wait: true}` and its `await` are the relay thread's.
 //!
-//! The validator role (0.6.0, shruggr/skein#120, David 2026-10-06 evening): a swap, addLiquidity
-//! or deploy is signed only when the engine's `config.overlay.validator` is set and the token's
+//! The validator role (0.6.0, shruggr/skein#120, David 2026-10-06 evening; 0.6.2: the owner's
+//! switch, skein-overlay 0.9.2 `validator {every} | {off: true}` in `<app>/register`, over
+//! `config.overlay.validator`): a swap, addLiquidity
+//! or deploy is signed only when the engine's validator role is on and the token's
 //! topic `tm_<txid>` is in the engine's registered set (the head `<app>/topics`, written by the
 //! owner's `register` / `deregister`); else refused `not_validating`. "The validator program signs
 //! for any registered token when `validator` is set." (0.3.2–0.5.0: amm-p2p's validated set,
@@ -107,15 +109,18 @@ fn settings(a: std.mem.Allocator, in: Value) !Settings {
 }
 
 /// The topics this instance signs for (0.6.0, shruggr/skein#120, David 2026-10-06 evening: "The
-/// validator program signs for any registered token when `validator` is set"): with the engine's
-/// `config.overlay.validator` set (skein-overlay 0.9.0 `config.rolesOf`, read from the input as the
-/// engine reads its configuration), every topic in the engine's registered set, the head
-/// `<app>/topics`; without it, none (each refused `not_validating`).
+/// validator program signs for any registered token when `validator` is set"): with the validator
+/// role in effect, every topic in the engine's registered set, the head `<app>/topics`; without
+/// it, none (each refused `not_validating`). The role in effect is the engine's (0.6.2, skein-overlay
+/// 0.9.2): the owner's switch kept in that same record (`topics.switchesOf`) over
+/// `config.overlay.validator` (`config.rolesOf`, read from the input as the engine reads its
+/// configuration) — `topics.effective`.
 fn validatedSet(a: std.mem.Allocator, in: Value) ![]const []const u8 {
-    const roles = try ov.config.rolesOf(a, in);
-    if (roles.validator == null) return &.{};
     const c = (try vm.head(a, try ov.topics.headName(a, ov.calls.appOf(in)))) orelse return &.{};
-    const entries = try ov.topics.entriesOf(a, try vm.store().getValue(a, c));
+    const rec = try vm.store().getValue(a, c);
+    const roles = ov.topics.effective(try ov.topics.switchesOf(rec), try ov.config.rolesOf(a, in));
+    if (roles.validator == null) return &.{};
+    const entries = try ov.topics.entriesOf(a, rec);
     const out = try a.alloc([]const u8, entries.len);
     for (entries, out) |e, *o| o.* = e.topic;
     return out;

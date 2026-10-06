@@ -31,6 +31,18 @@ picker lists the validators live on any served token, merged). The Validator
 page reads the peer's `.live` read of this instance's token topics. Where the
 text below says `/live`, `thresholdMs` or "heartbeat seen", read this.
 
+**skein-amm 0.6.2: the roles are the owner's switch** (skein-overlay 0.9.2;
+David, 2026-10-07: "this shouldn't have been a config in the manifest. This
+should be a setting that the user is configuring"). The manifest sets
+neither; the owner turns each on with the Market and Validator switches on
+the Token topics page (`mandala/tokens/`, skein-mandala 0.7.3: `{fn:
+"market" | "validator", …}` to `amm/register`), or `--config` at install.
+The Validator page's Policy shows the roles in effect, read as the engine
+reads them: the switch kept in `amm/topics` over the app record's
+`config.overlay.market` / `.validator` (`src/validator/control.ts`
+`withSwitches`). Below, "with `config.overlay.market`" reads "with the
+market on".
+
 **skein-amm 0.6.0: market and validator are the engine's** (shruggr/skein#120,
 David 2026-10-06 evening). Registering a token's topic (the Tokens page) is
 the one act: with `config.overlay.market {window}` the engine asks for the

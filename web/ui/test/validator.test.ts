@@ -10,7 +10,7 @@ import type { FetchLike } from "../src/lp/validators";
 import { ago } from "../src/lp/validators";
 import { hostLabel, instanceAddress, livenessLine, loadThisInstance, poolsServedBy } from "../src/validator/instance";
 import { beatEntry } from "./liveRead";
-import { dagBytesHex, policyOf, readAppPolicy, readGenesis, type AuthFetchLike } from "../src/validator/control";
+import { dagBytesHex, policyOf, readAppPolicy, readGenesis, withSwitches, type AuthFetchLike } from "../src/validator/control";
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/instance-v2/${name}`, import.meta.url), "utf8")) as unknown;
 
@@ -65,7 +65,23 @@ describe("the explorer (owner only): genesis owner and policy", () => {
     expect(policyOf({ kind: "app", config: { overlay: {}, amm: {} } })).toEqual({});
     const { af, calls } = fakeAuthFetch((url) => (url.endsWith("/explore/head/amm/app") ? { status: 200, body: { tree: { "/": "bafyApp" } } } : { status: 200, body: app }));
     expect(await readAppPolicy(af, "http://amm2.localhost:8300", "amm")).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, marketWindowMs: 40_000, validatorEveryMs: 30_000 });
-    expect(calls.map((c) => c.url)).toEqual(["http://amm2.localhost:8300/explore/head/amm/app", "http://amm2.localhost:8300/explore/record/bafyApp"]);
+    expect(calls.map((c) => c.url)).toEqual(["http://amm2.localhost:8300/explore/head/amm/app", "http://amm2.localhost:8300/explore/record/bafyApp", "http://amm2.localhost:8300/explore/head/amm/topics"]);
+  });
+
+  it("the roles in effect (0.6.2, skein-overlay 0.9.2): the owner's switch in <app>/topics over config.overlay; the manifest sets neither", async () => {
+    const app = { kind: "app", name: "amm", config: { overlay: { lookups: {} }, amm: { ammValidator: { minValidatorFeeBps: 5, maxLpFeeBps: 100 } } } };
+    const set = (sw: Record<string, unknown>) => ({ kind: "overlay-topics", topics: [{ topic: "tm_x", program: "mandala-topic" }], ...sw });
+    expect(withSwitches(policyOf(app), undefined)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100 });
+    expect(withSwitches(policyOf(app), set({}))).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100 });
+    expect(withSwitches(policyOf(app), set({ market: { window: 40_000 }, validator: { every: 30_000 } }))).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, marketWindowMs: 40_000, validatorEveryMs: 30_000 });
+    // Off over a manifest value: off; never switched: the manifest's.
+    expect(withSwitches({ marketWindowMs: 40_000, validatorEveryMs: 30_000 }, set({ market: { off: true } }))).toEqual({ validatorEveryMs: 30_000 });
+    const { af } = fakeAuthFetch((url) =>
+      url.endsWith("/explore/head/amm/app") ? { status: 200, body: { tree: { "/": "bafyApp" } } }
+      : url.endsWith("/explore/head/amm/topics") ? { status: 200, body: { tree: { "/": "bafySet" } } }
+      : url.endsWith("/bafySet") ? { status: 200, body: set({ validator: { every: 30_000 } }) }
+      : { status: 200, body: app });
+    expect(await readAppPolicy(af, "http://amm2.localhost:8300", "amm")).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100, validatorEveryMs: 30_000 });
   });
 
   it("log entry 0 with its record", async () => {

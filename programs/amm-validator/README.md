@@ -8,6 +8,8 @@ zig build test-amm-validator   # from the repo root: the package, the protocol, 
 
 ## 0.6.0: the engine's validator setting and registered set gate every signature
 
+**0.6.2** (skein-overlay 0.9.2; David, 2026-10-07: "this shouldn't have been a config in the manifest. This should be a setting that the user is configuring"): "`config.overlay.validator` is set" below reads "the validator role is on": the owner's switch kept in the registered set's record `<app>/topics` (`validator: {every} | {off: true}`, the engine's `validator` message in `<app>/register`) over `config.overlay.validator` (`main.zig` `validatedSet`: `topics.effective(topics.switchesOf(<the set's record>), config.rolesOf(in))`). The manifest sets neither role.
+
 This section supersedes "0.3.2" below. David, 2026-10-06 evening (shruggr/skein#120): "The validator program signs for any registered token when `validator` is set." A `swap`, `addLiquidity` or `deploy` direct call (or the relay's local call) is answered only when the engine's `config.overlay.validator` is set (read from the step's input as the engine reads its configuration, skein-overlay 0.9.0 `config.rolesOf`) and the token's topic `tm_<txid>` is in the engine's registered set, the head `<app>/topics` (`main.zig` `validatedSet`, into `Config.validated`). Otherwise `{ok: false, reason: "not_validating", detail: "this validator does not validate tm_<txid>"}`, at the same point as before, nothing asked of the oracle, signed or submitted. The owner's `register` / `deregister` (box `<app>/register`, the engine's) are the only writers of the set; amm-p2p's validated set and `validate` / `unvalidate` are gone. A malformed `config.overlay.validator` fails the call (`BadRoles`).
 
 ## 0.4.0: called in-VM by this instance's own relay
