@@ -436,6 +436,67 @@ test "the market role (shruggr/skein#120, #119): subscribe tm_<txid>-live to amm
     try testing.expectEqual(@as(usize, 2), stop.unsubscribe.len);
 }
 
+test "validation (0.3.1): validate per topic beacons it; unvalidate ends it; stop ends every beacon and keeps the set; start beacons it again; independent of the market role" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const t1 = "tm_" ++ "ab" ** 32;
+    const t2 = "tm_" ++ "cd" ** 32;
+
+    // validate t1, then t2: two beacons, the set {t1, t2}.
+    const v1 = try liveness.validation(a, .validate, &.{}, &.{}, t1);
+    try testing.expectEqual(@as(usize, 1), v1.beacon.len);
+    try testing.expectEqualStrings(t1, v1.beacon[0]);
+    const v2 = try liveness.validation(a, .validate, v1.validated, v1.beacon, t2);
+    try testing.expectEqual(@as(usize, 1), v2.beacon.len);
+    try testing.expectEqualStrings(t2, v2.beacon[0]);
+    try testing.expectEqual(@as(usize, 2), v2.validated.len);
+    const beaconing: []const []const u8 = &.{ t1, t2 };
+    // validate again: idempotent, nothing emitted, the set unchanged.
+    const again = try liveness.validation(a, .validate, v2.validated, beaconing, t2);
+    try testing.expectEqual(@as(usize, 0), again.beacon.len + again.unbeacon.len);
+    try testing.expectEqual(@as(usize, 2), again.validated.len);
+
+    // unvalidate t1: one unbeacon, the set {t2}; again: nothing.
+    const u = try liveness.validation(a, .unvalidate, v2.validated, beaconing, t1);
+    try testing.expectEqual(@as(usize, 0), u.beacon.len);
+    try testing.expectEqual(@as(usize, 1), u.unbeacon.len);
+    try testing.expectEqualStrings(t1, u.unbeacon[0]);
+    try testing.expectEqual(@as(usize, 1), u.validated.len);
+    try testing.expectEqualStrings(t2, u.validated[0]);
+    const un2 = try liveness.validation(a, .unvalidate, u.validated, &.{t2}, t1);
+    try testing.expectEqual(@as(usize, 0), un2.beacon.len + un2.unbeacon.len);
+
+    // stop with both validated: every beacon ended, the set kept.
+    const stop = try liveness.validation(a, .stop, v2.validated, beaconing, null);
+    try testing.expectEqual(@as(usize, 2), stop.unbeacon.len);
+    try testing.expectEqual(@as(usize, 0), stop.beacon.len);
+    try testing.expectEqual(@as(usize, 2), stop.validated.len);
+    // start: the set beaconed again.
+    const start = try liveness.validation(a, .start, stop.validated, &.{}, null);
+    try testing.expectEqual(@as(usize, 2), start.beacon.len);
+    try testing.expectEqualStrings(t1, start.beacon[0]);
+    try testing.expectEqualStrings(t2, start.beacon[1]);
+    try testing.expectEqual(@as(usize, 0), start.unbeacon.len);
+    // A start over 0.3.0's beacons (every served topic) with nothing validated: they end.
+    const upgrade = try liveness.validation(a, .start, &.{}, beaconing, null);
+    try testing.expectEqual(@as(usize, 0), upgrade.beacon.len);
+    try testing.expectEqual(@as(usize, 2), upgrade.unbeacon.len);
+    // validate / unvalidate need a topic.
+    try testing.expectError(error.NoTopic, liveness.validation(a, .validate, &.{}, &.{}, null));
+
+    // Independent of the market role: the market's plan reads the served topics and `market`
+    // (main.zig `market`), validation the validated set. A market host validating nothing:
+    // subscriptions, no beacon; a validator that is not a market: beacons, no subscription.
+    const market_only = try liveness.plan(a, &.{}, &.{ t1, t2 });
+    try testing.expectEqual(@as(usize, 2), market_only.subscribe.len);
+    const no_beacon = try liveness.validation(a, .start, &.{}, &.{}, null);
+    try testing.expectEqual(@as(usize, 0), no_beacon.beacon.len);
+    const not_market = try liveness.plan(a, &.{}, &.{});
+    try testing.expectEqual(@as(usize, 0), not_market.subscribe.len);
+    try testing.expectEqual(@as(usize, 2), start.beacon.len);
+}
+
 test "the market role: a beat delivered by the subscription is judged and stepped into the validator map the relay reads" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

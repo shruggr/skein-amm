@@ -21,6 +21,17 @@ Ported from amm-poc `programs/amm-p2p` (skein-overlay 0.2.0, skein-sdk 0.3.0) on
 - **STOP: the heartbeat topic is not routed.** The heartbeat is still published on `tm_<txid>-live` for each served token topic, and `validateLive` still judges it, but no row in the app routes `tm_<txid>-live` to it: amm-poc's manifest had one libp2p row per token (`tm_{{TXID}}-live`), templated per instance, and a dynamic overlay's manifest names no token. How validator liveness per token is addressed is not decided (`liveVerdict`, src/main.zig).
 - **The peer ID.** amm-poc filled `ammP2p.peerId` per instance (`{{PEER_ID}}`). skein gives a program no way to learn its own peer ID (a step's input has `self.identity`, no peer ID; the host derives the libp2p key from the master secret, `[2, "skein instance"]`, key ID `libp2p:<handle>`), so the manifest carries none; without it `amm-p2p-start` schedules no heartbeat (catch-up only).
 
+## 0.3.1 (validation per topic)
+
+This section supersedes what the rest of this file says where they differ.
+
+- **Beaconing is not a role** (David 2026-10-06): a node beacons `tm_<txid>-live` for the topics its owner has set up validation for, set up per topic like a registration. In box `amm/amm-p2p`: `{fn: "validate", args: {topic: "tm_<txid>"}}` adds the topic to the validated set and, when it is not already beaconed, emits `{event: "beacon", topic: "tm_<txid>-live", every, body}`; `{fn: "unvalidate", args: {topic}}` removes it and emits `{event: "unbeacon", topic}` when it is beaconed. Both are idempotent and answered `{fn, request, replyTo, result: {topic, validating}}` to the sender's box `amm` (`answerSender`, when the address book reaches it); the step's result lists `validated`, `beacons`, `unbeacons`, `answer`, `sent`. The topic must be a token topic `tm_<txid>` (`BadTopic`).
+- **Gated by the sender.** Row 5 (`amm-p2p` from `*`) admits anyone; amm-p2p acts only when the message's sender is `in.owner` (the step errors `NotTheOwner`, as for start/stop; the cron provider is not admitted here).
+- **Start / stop.** A start (without `jobs`) beacons every validated topic and unbeacons any beacon outside the set (0.3.0's beacons on every served topic end at the first start); a stop unbeacons every one and keeps the set, so the next start beacons it again. The cron fallback's heartbeat publishes on the validated topics. `liveness.validation` is the plan (tested natively); `ammP2p.topics` no longer decides the beacons.
+- **State.** `amm/p2p` is `{kind: "amm-p2p-state", maps: {live, cursor, beacons, subscriptions}, validated: ["tm_<txid>", …]}`: the set inline, so the owner's Validator page reads it with the explorer (`/explore/head/amm/p2p`, then the record), as the token topics page reads `amm/topics`.
+- **The market role** (0.3.0) is untouched and independent: a node may validate, host a market, or both.
+- **STOP: amm-validator has no per-topic switch.** It signs for any topic its overlay admits and reads nothing of amm-p2p's state; gating its signatures on the validated set is not built (not decided how: a read of `amm/p2p`, or a set of its own).
+
 ## 0.3.0 (the market role)
 
 This section supersedes what the rest of this file says where they differ (the Port STOP "the heartbeat topic is not routed" and 0.2.0's "Not routed: `tm_<txid>-live`" included).

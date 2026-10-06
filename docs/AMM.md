@@ -92,7 +92,7 @@ event (skein-overlay 0.7.6), answered to the sender in this box; `register` / `d
 | `amm.pool/1` | `submit` (writes), `status` | anyone |
 | `amm.liquidity/1` | `submit` (writes), `status` | anyone |
 | the engine's | its own `watch`, `resume` (and the libp2p routes' admits, row 2) | the instance itself, events |
-| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the subscriptions) | the owner |
+| amm-p2p's | `{kind: "amm-p2p-start" \| "amm-p2p-stop"}` (the manifest's `start` / `stop`; the beacons, and on a market host the subscriptions); `{fn: "validate" \| "unvalidate", args: {topic}}` (0.3.1: the validated set) | the owner |
 
 `amm.*.submit` takes the funding transaction (the wallet's `noSend`
 action) and the swap, deploy or add, checks the pair, records it under
@@ -107,15 +107,26 @@ published by the host's beacon (below), and subscribed by a host serving a
 market (below, "The market role").
 
 **Box `amm/amm-p2p`**: the owner's `{kind: "amm-p2p-start" | "amm-p2p-stop"}`
-(the Validator page), the cron provider's ticks (the fallback, `jobs`), and
+and `{fn: "validate" | "unvalidate", args: {topic}}` (the Validator page), the cron provider's ticks (the fallback, `jobs`), and
 admitted heartbeats (`amm-live`, on a market host: below).
 
-**The beacon** (shruggr/skein#126): on start amm-p2p emits, per served token
+**Validation, per topic** (0.3.1, David 2026-10-06: beaconing is not a
+role; it comes with validating a topic). The owner sets it up like a
+topic's registration: `{fn: "validate", args: {topic: "tm_<txid>"}}` adds
+the topic to the validated set (the record's `validated` under `amm/p2p`)
+and emits its beacon; `{fn: "unvalidate", args: {topic}}` removes it and
+emits `unbeacon`. Both are idempotent and answered `{topic, validating}` to
+the sender's box `amm` (when the address book reaches it). Row 5 admits
+anyone into `amm/amm-p2p`; amm-p2p acts only on a message from `in.owner`
+(the step errors `NotTheOwner` otherwise). The market role is independent:
+a node may validate, host a market, or both.
+
+**The beacon** (shruggr/skein#126): on start amm-p2p emits, per validated
 topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds ×
 1000, body}` — the host's libp2p node publishes `body` there every `every`
 ms, logging nothing per beat — and `unbeacon {topic}` for a topic it
-beaconed that is no longer served; on stop, `unbeacon` for each (the set
-under `amm/p2p`, map `beacons`). `body` is amm-poc#3's signed heartbeat
+beaconed that is not validated; on stop, `unbeacon` for each, the validated
+set kept (the beacons standing: map `beacons` under `amm/p2p`). `body` is amm-poc#3's signed heartbeat
 `{identityKey, peerId}`; each beat is the host's signed frame (skein
 387e057, docs/MESSAGES.md "Beacons"): dag-cbor `{body, at, sender,
 signature}`, `at` the beat's time, `sender` the instance's identity key,
@@ -146,7 +157,8 @@ map, live within `offlineSeconds`, as amm-poc did. A start unsubscribes
 served, and a stop, or a start with the role off, unsubscribes every one
 (the set: map `subscriptions` under `amm/p2p`). A host not serving a market
 subscribes nothing; its map stays empty and its relay refuses a swap
-`validator_offline`. A validator's host beacons as above, whatever its role.
+`validator_offline`. A validator's host beacons its validated topics as
+above, whatever its role.
 
 ## The manifest
 
@@ -198,11 +210,14 @@ the engine would get neither.
   shruggr/skein#112's `want`. The `/amm/proofs/1.0.0` row is gone and no
   start schedules the catch-up pass; the code stays as a utility
   (`proofsByBlock`, `catchup`).
-- **The beacon and the subscription on register / deregister.** amm-p2p is
-  not stepped by the engine's registrations (the owner's `register` goes to
-  the engine alone): a topic registered after the start is beaconed, and on
-  a market host subscribed, at the next start; one deregistered is
-  unbeaconed and unsubscribed at the next start or stop.
+- **The subscription on register / deregister.** amm-p2p is not stepped by
+  the engine's registrations (the owner's `register` goes to the engine
+  alone): on a market host a topic registered after the start is subscribed
+  at the next start; one deregistered is unsubscribed at the next start or
+  stop. Beacons follow the validated set, not the registrations.
+- **The validator's per-topic gate.** amm-validator signs for any topic its
+  overlay admits; it reads no validated set (0.3.1: amm-p2p's set gates the
+  beacon only).
 - **Governance per token** (#120 item 4) and the other Mandala queries:
   skein-mandala docs/MANDALA.md "Not built".
 - **Run end to end.** The programs are tested natively and the pages

@@ -14,7 +14,10 @@ import {
   heartbeatRequest,
   policyOf,
   readGenesis,
+  readValidated,
   sendHeartbeatControl,
+  sendValidation,
+  validationRequest,
   type AuthFetchLike,
 } from "../src/validator/control";
 
@@ -82,6 +85,40 @@ describe("heartbeat start / stop (BRC-33 sendMessage)", () => {
     const r = await sendHeartbeatControl(af, "http://amm2.localhost:8300", AMM2, "start");
     expect(r.admitted).toBe(false);
     expect(r.refusal).toBe("HTTP 401: unauthorized");
+  });
+});
+
+describe("validation per topic (0.3.1): validate / unvalidate into box amm/amm-p2p; the set read through the explorer", () => {
+  const T = `tm_${"ab".repeat(32)}`;
+  it("builds {fn, args: {topic}} for the same box as start/stop", () => {
+    expect(validationRequest("validate", T, AMM2.toUpperCase())).toEqual({
+      message: { recipient: AMM2, messageBox: "amm/amm-p2p", body: { fn: "validate", args: { topic: T } } },
+    });
+    expect(validationRequest("unvalidate", T, AMM2).message.body).toEqual({ fn: "unvalidate", args: { topic: T } });
+  });
+
+  it("POSTs it to <origin>/sendMessage", async () => {
+    const { af, calls } = fakeAuthFetch(() => ({ status: 200, body: { status: "success", id: "bafy2" } }));
+    const r = await sendValidation(af, "http://amm2.localhost:8300/", AMM2, "unvalidate", T);
+    expect(calls[0]!.url).toBe("http://amm2.localhost:8300/sendMessage");
+    expect(JSON.parse(calls[0]!.config!.body!).message.body).toEqual({ fn: "unvalidate", args: { topic: T } });
+    expect(r.action).toBe("unvalidate");
+    expect(r.admitted).toBe(true);
+  });
+
+  it("reads the head <app>/p2p and its record's validated; no head = none; 403 = unreadable", async () => {
+    const { af, calls } = fakeAuthFetch((url) =>
+      url.endsWith("/explore/head/amm/p2p")
+        ? { status: 200, body: { tree: { "/": "bafyState" } } }
+        : { status: 200, body: { kind: "amm-p2p-state", maps: {}, validated: [T] } },
+    );
+    expect(await readValidated(af, "http://amm2.localhost:8300", "amm")).toEqual([T]);
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://amm2.localhost:8300/explore/head/amm/p2p",
+      "http://amm2.localhost:8300/explore/record/bafyState",
+    ]);
+    expect(await readValidated(fakeAuthFetch(() => ({ status: 404, body: "" })).af, "http://x", "amm")).toEqual([]);
+    expect(await readValidated(fakeAuthFetch(() => ({ status: 403, body: "" })).af, "http://x", "amm")).toBeUndefined();
   });
 });
 

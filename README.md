@@ -3,9 +3,10 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.3.0**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
-and skein-mandala 0.5.2; validator liveness by role (shruggr/skein#120,
-David 2026-10-06): a host serving a market subscribes the beacons. Ported from amm-poc (b-open-io/amm-poc, its
+and its pages. Version **0.3.1**: on skein-overlay 0.7.7 (skein-sdk 0.7.1)
+and skein-mandala 0.5.2; a host serving a market subscribes the beacons
+(0.3.0, shruggr/skein#120), and a node beacons only the topics its owner
+has set up validation for, per topic (0.3.1, David 2026-10-06). Ported from amm-poc (b-open-io/amm-poc, its
 `programs/`, `pool/` and `web/`) in 0.1.0 (shruggr/skein#120).
 
 ## What it is
@@ -89,11 +90,27 @@ wildcard DNS, `<host>/@<handle>/amm`).
    ```
 
    `tm_mandala_deploys` (the discovery topic) is registered the same way.
-4. **Start the beacon**: the manifest's `start`, `{kind: "amm-p2p-start"}`
+4. **Validate topics, per topic** (0.3.1): beaconing is not a role; a node
+   beacons `tm_<txid>-live` for the topics it validates. The owner sets that
+   up per topic, like a registration, in box `amm/amm-p2p` (the Validator
+   page's Validate / Stop validating):
+
+   ```
+   box:  amm/amm-p2p
+   body: {"fn": "validate", "args": {"topic": "tm_<txid>"}}
+   body: {"fn": "unvalidate", "args": {"topic": "tm_<txid>"}}
+   ```
+
+   Each is idempotent and answered `{topic, validating}`; `validate` adds the
+   topic to the validated set (`validated` in the head `amm/p2p`) and asks the
+   host for its beacon, `unvalidate` removes it and ends the beacon. The row
+   (`amm-p2p` from `*`) admits anyone; amm-p2p acts only on the owner's
+   (`NotTheOwner` errors the step otherwise).
+
+   **Start the beacon**: the manifest's `start`, `{kind: "amm-p2p-start"}`
    in box `amm` (or the Validator page's Start, box `amm/amm-p2p`), reaches
-   amm-p2p, which asks the host for one beacon per served token topic. A
-   topic registered later needs a start again; a deregistered topic's beacon
-   ends at the next start or at the stop.
+   amm-p2p, which asks the host for one beacon per validated topic; the stop
+   ends them and keeps the set, so the next start beacons it again.
 
    **The market role** (`config.amm.ammP2p.market`, default `false`): a host
    serving a market sets it, and the same start also subscribes each served
@@ -130,7 +147,7 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.3.0 |
+| this app | 0.3.1 |
 | skein-overlay | v0.7.7 (9e30a64) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-mandala | v0.5.2 (cd9ae27) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

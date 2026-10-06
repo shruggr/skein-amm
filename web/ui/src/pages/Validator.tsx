@@ -2,7 +2,7 @@
  * The Validator page: the owner's view of their own skein instance as an AMM
  * validator — who it is (handle, identity, peer ID), whether a peer hears its
  * heartbeat, its policy when the owner can read it, the heartbeat start/stop
- * messages (as the owner, through the wallet-backed AuthFetch), the pools it
+ * messages, the topics it validates (validate / stop validating, per topic) (as the owner, through the wallet-backed AuthFetch), the pools it
  * serves and the validators it sees.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -18,10 +18,13 @@ import {
   byHandCommand,
   readAppPolicy,
   readGenesis,
+  readValidated,
   sendHeartbeatControl,
+  sendValidation,
   type GenesisRead,
   type HeartbeatAction,
   type HeartbeatResult,
+  type ValidationAction,
 } from "../validator/control";
 import { LiveTable } from "./LiveTable";
 
@@ -151,9 +154,10 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
       <h2>Register / heartbeat</h2>
       <p>
         <small>
-          A validator registers by heartbeating on <code>tm_&lt;txid&gt;-live</code>; peers list it on their{" "}
-          <code>/amm/live</code>. The schedule starts when amm-p2p receives <code>{"{kind: \"amm-p2p-start\"}"}</code> in
-          box <code>amm/amm-p2p</code> from the owner (or the cron provider), after every boot. These buttons send that
+          A validator heartbeats on <code>tm_&lt;txid&gt;-live</code> for each topic it validates (below); markets list it
+          on their <code>/amm/live</code>. The heartbeat starts when amm-p2p receives{" "}
+          <code>{"{kind: \"amm-p2p-start\"}"}</code> in box <code>amm/amm-p2p</code> from the owner (or the cron provider),
+          after every boot; stop ends it and keeps the validated topics. These buttons send that
           message as the connected wallet: <code>POST {t?.address.origin ?? "<instance>"}/sendMessage</code> (BRC-33),
           BRC-104-signed by the wallet.
         </small>
@@ -199,6 +203,110 @@ function HeartbeatSection(props: { t: ThisInstance | null; genesis: GenesisRead 
         <small>By hand on the host (sent as the cron provider, which amm-p2p also accepts):</small>
       </p>
       <pre>{byHandCommand(t?.address.name)}</pre>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function ValidationSection(props: { t: ThisInstance | null; refreshKey: number }) {
+  const { t, refreshKey } = props;
+  const authFetch = useAuthFetch();
+  const origin = t?.address.origin;
+  const [topics, setTopics] = useState<string[] | null>(null);
+  const [validated, setValidated] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [result, setResult] = useState<HeartbeatResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const read = useCallback(async () => {
+    setError(null);
+    try {
+      setTopics((await listTokenTopics(AMM_OVERLAY)).filter((x) => x.kind === "native").map((x) => x.topic));
+      const app = appName(AMM_OVERLAY);
+      if (authFetch && origin && app) {
+        const v = await readValidated(authFetch, origin, app);
+        setValidated(v ?? null);
+        if (!v) setError("the validated set is not readable: the explorer answers the instance's owner only");
+      }
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, [authFetch, origin]);
+
+  useEffect(() => {
+    void read();
+  }, [read, refreshKey]);
+
+  async function send(action: ValidationAction, topic: string) {
+    if (!authFetch || !origin || !t?.identityKey) return;
+    setBusy(topic);
+    setError(null);
+    setResult(null);
+    try {
+      setResult(await sendValidation(authFetch, origin, t.identityKey, action, topic));
+      await read();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const ready = !!authFetch && !!t?.identityKey;
+  const all = [...new Set([...(topics ?? []), ...(validated ?? [])])];
+  return (
+    <section>
+      <h2>Validation</h2>
+      <p>
+        <small>
+          Per topic, the owner sets up validation: <code>{"{fn: \"validate\" | \"unvalidate\", args: {topic}}"}</code>{" "}
+          in box <code>amm/amm-p2p</code>. A validated topic is beaconed on <code>tm_&lt;txid&gt;-live</code> while the
+          heartbeat runs. The set is read through the explorer (owner only).
+        </small>
+      </p>
+      {topics === null ? (
+        <p>Reading…</p>
+      ) : all.length === 0 ? (
+        <p><small>The instance serves no token topics.</small></p>
+      ) : (
+        <table className="tokens">
+          <thead>
+            <tr>
+              <th>Topic</th>
+              <th>Validating</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {all.map((topic) => {
+              const on = validated?.includes(topic);
+              return (
+                <tr key={topic}>
+                  <td><code title={topic}>{shortKey(topic)}</code></td>
+                  <td>{validated === null ? "?" : on ? <span className="ok">yes</span> : "no"}</td>
+                  <td>
+                    <button type="button" disabled={!ready || busy !== null || on === true} onClick={() => void send("validate", topic)}>
+                      {busy === topic && !on ? "Sending…" : "Validate"}
+                    </button>
+                    <button type="button" disabled={!ready || busy !== null || on === false} onClick={() => void send("unvalidate", topic)}>
+                      {busy === topic && on ? "Sending…" : "Stop validating"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {!authFetch && <small>connect the owner's wallet to read and change the set</small>}
+      {error && <p className="bad" role="alert">{error}</p>}
+      {result && (
+        <p>
+          <strong>{result.action === "validate" ? "Validate" : "Stop validating"}:</strong> HTTP {result.status}{" "}
+          {result.admitted ? <span className="ok">admitted</span> : <span className="bad">refused: {result.refusal}</span>}
+        </p>
+      )}
     </section>
   );
 }
@@ -426,6 +534,7 @@ export function ValidatorPage() {
       </section>
       <ThisInstanceSection t={t} error={tError} />
       <HeartbeatSection t={t} genesis={genesis} onSent={() => void refresh()} />
+      <ValidationSection t={t} refreshKey={refreshKey} />
       <PolicySection genesis={genesis} onRead={setGenesis} origin={t?.address.origin} />
       <PoolsServedSection identityKey={t?.identityKey} peerLive={t?.peer?.entry?.live} refreshKey={refreshKey} />
       <PeersSection live={live} error={liveError} />

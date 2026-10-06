@@ -37,6 +37,10 @@
 //! market (`ammP2p.market`) subscribes `tm_<txid>-live` to `validateLive`
 //! for each token it serves (`subscribeEvent`, `plan`); no other host does.
 //!
+//! Who beacons (0.3.1, David 2026-10-06): not a role — a node beacons
+//! `tm_<txid>-live` for the topics it validates, set up per topic by the
+//! owner (`validate` / `unvalidate`, `validation`).
+//!
 //! Consumer: `live(map, identityKey, now, threshold)` → the peer ID and
 //! time, while `now - at <= threshold`.
 const std = @import("std");
@@ -121,6 +125,45 @@ pub fn plan(a: Allocator, standing: []const []const u8, want: []const []const u8
     for (want) |t| if (!contains(standing, t) and !contains(sub.items, t)) try sub.append(a, t);
     for (standing) |t| if (!contains(want, t)) try unsub.append(a, t);
     return .{ .subscribe = sub.items, .unsubscribe = unsub.items };
+}
+
+/// Validation (0.3.1, David 2026-10-06: beaconing is not a role, it comes with validating a topic).
+/// The owner sets it up per topic, like a topic's registration: `validate {topic}` adds the topic to
+/// the validated set and beacons it; `unvalidate {topic}` removes it and ends its beacon. A stop ends
+/// every beacon and keeps the set; a start beacons the set again (and ends any beacon outside it).
+pub const ValidationOp = enum { validate, unvalidate, start, stop };
+
+/// What an op does, given the validated set and the beacons standing: the set after it, the topics
+/// to `beacon` and the ones to `unbeacon`.
+pub const Validation = struct { validated: []const []const u8, beacon: []const []const u8, unbeacon: []const []const u8 };
+
+pub fn validation(a: Allocator, op: ValidationOp, validated: []const []const u8, beaconing: []const []const u8, topic: ?[]const u8) !Validation {
+    var set: std.ArrayList([]const u8) = .empty;
+    var beacon: std.ArrayList([]const u8) = .empty;
+    var unbeacon: std.ArrayList([]const u8) = .empty;
+    switch (op) {
+        .validate => {
+            const t = topic orelse return error.NoTopic;
+            try set.appendSlice(a, validated);
+            if (!contains(validated, t)) try set.append(a, t);
+            if (!contains(beaconing, t)) try beacon.append(a, t);
+        },
+        .unvalidate => {
+            const t = topic orelse return error.NoTopic;
+            for (validated) |v| if (!std.mem.eql(u8, v, t)) try set.append(a, v);
+            if (contains(beaconing, t)) try unbeacon.append(a, t);
+        },
+        .start => {
+            try set.appendSlice(a, validated);
+            try beacon.appendSlice(a, validated);
+            for (beaconing) |b| if (!contains(validated, b)) try unbeacon.append(a, b);
+        },
+        .stop => {
+            try set.appendSlice(a, validated);
+            try unbeacon.appendSlice(a, beaconing);
+        },
+    }
+    return .{ .validated = set.items, .beacon = beacon.items, .unbeacon = unbeacon.items };
 }
 
 fn contains(xs: []const []const u8, x: []const u8) bool {

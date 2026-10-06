@@ -27,10 +27,15 @@
 //! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`):
 //!
 //!   event   {kind: "amm-live", …}                      an accepted heartbeat: the last-seen map
+//!   message {fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}   from the owner (0.3.1): the
+//!                                                     topic into (out of) the validated set, its
+//!                                                     `beacon` (`unbeacon`) on `tm_<txid>-live`;
+//!                                                     idempotent; answered {topic, validating}
 //!   message {kind: "amm-p2p-start" | "amm-p2p-stop"}   from the owner (the manifest's `start`, in box `amm`):
-//!                                                     a `beacon` event per served token topic on
+//!                                                     a `beacon` event per validated topic on
 //!                                                     `tm_<txid>-live` (the host publishes it every
-//!                                                     heartbeatSeconds), or `unbeacon` for each; with
+//!                                                     heartbeatSeconds), or `unbeacon` for each (the
+//!                                                     set kept); with
 //!                                                     `ammP2p.market`, a `subscribe` of each served
 //!                                                     `tm_<txid>-live` to `validateLive` (or `unsubscribe`)
 //!   message {kind: "amm-p2p-start" | "amm-p2p-stop", jobs: [...]}   the cron fallback: the schedules asked of
@@ -44,7 +49,7 @@
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay" | "amm-liquidity-relay", id}   the relay (launched by a submit): a thread resting on
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!
-//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor, beacons, subscriptions}}.
+//! State under the head `amm/p2p` (`relay.p2p_head`): {kind: "amm-p2p-state", maps: {live, cursor, beacons, subscriptions}, validated: ["tm_<txid>", …]}.
 //! The app's state under the head `amm/app` (relay.zig `Book`; skein #77:
 //! `app.headOf`): the installed app record's `state`, or (an instance wired
 //! by its genesis, no app record) the head's root itself: {kind:
@@ -224,6 +229,11 @@ const State = struct {
     beacons: Map,
     /// The market's subscriptions standing: served topic `tm_<txid>` → when `tm_<txid>-live` was subscribed (ms).
     subscriptions: Map,
+    /// The validated set (0.3.1): the topics `tm_<txid>` the owner's `validate` added, in order, the
+    /// record's `validated` (inline, so the owner's page reads it with one explorer read of the head).
+    /// Kept across a stop; the beacons (and the cron fallback's heartbeat) follow it.
+    validated: []const []const u8 = &.{},
+    validated_dirty: bool = false,
 
     fn load(a: Allocator, s: w.store.Store) !State {
         const maps = try w.store.Maps.create(a, s);
@@ -236,12 +246,17 @@ const State = struct {
         st.cursor = maps.map(m.getCid("cursor"));
         st.beacons = maps.map(m.getCid("beacons"));
         st.subscriptions = maps.map(m.getCid("subscriptions"));
+        if (rec.getArray("validated")) |vs| {
+            const out = try a.alloc([]const u8, vs.len);
+            for (vs, out) |v, *o| o.* = if (v == .text) v.text else return error.BadState;
+            st.validated = out;
+        }
         return st;
     }
 
     /// Save and advance the head when anything changed: → the state record's CID, or null.
     fn commit(self: *State, a: Allocator) !?[]const u8 {
-        if (!self.live.dirty and !self.cursor.dirty and !self.beacons.dirty and !self.subscriptions.dirty) return null;
+        if (!self.live.dirty and !self.cursor.dirty and !self.beacons.dirty and !self.subscriptions.dirty and !self.validated_dirty) return null;
         var es: [4]cbor.Entry = undefined;
         inline for (.{ "live", "cursor", "beacons", "subscriptions" }, 0..) |n, i| {
             const m = &@field(self, n);
@@ -251,6 +266,7 @@ const State = struct {
         const c = try self.s.putValue(a, .{ .map = try a.dupe(cbor.Entry, &.{
             .{ .key = "kind", .value = .{ .text = "amm-p2p-state" } },
             .{ .key = "maps", .value = .{ .map = try a.dupe(cbor.Entry, &es) } },
+            .{ .key = "validated", .value = try textArray(a, self.validated) },
         }) });
         try vm.advance(state_head, c);
         return c;
@@ -484,25 +500,35 @@ fn step(a: Allocator, in: Value) !void {
     } else if (args.getCid("body")) |bc| blk: {
         const body = try s.getValue(a, bc);
         const sender = args.getBytes("sender") orelse return error.BadInput;
+        // Validation, per topic (0.3.1): `{fn: "validate" | "unvalidate", args: {topic}}`.
+        if (body.getText("fn")) |f| {
+            const vop = std.meta.stringToEnum(liveness.ValidationOp, f) orelse return error.BadMessage;
+            if (vop != .validate and vop != .unvalidate) return error.BadMessage;
+            op = f;
+            try validationMessage(a, in, &st, args, body, f, vop, &fields);
+            break :blk;
+        }
         op = body.getText("kind") orelse return error.BadMessage;
         if (eql(u8, op, schedule.tick_kind)) {
             if (!eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheCronProvider;
             const job = try schedule.jobOf(body);
             try fields.append(a, .{ .key = "job", .value = .{ .text = @tagName(job) } });
             switch (job) {
-                .heartbeat => try heartbeat(a, in, &fields),
+                .heartbeat => try heartbeat(a, in, &st, &fields),
                 .catchup => try catchup(a, in, &st, at, &fields),
             }
         } else if (eql(u8, op, schedule.start_kind) or eql(u8, op, schedule.stop_kind)) {
             const owner = in.getBytes("owner") orelse "";
             if (!eql(u8, sender, owner) and !eql(u8, sender, try providerKey(a, "cron"))) return error.NotTheOwner;
             const cfg = try config(a, in);
+            const start = eql(u8, op, schedule.start_kind);
             // The market role: subscribe the served tokens' `-live` beacons (or end them).
-            try market(a, in, &st, cfg, eql(u8, op, schedule.start_kind), &fields);
-            // The beacon (#126): the host publishes the heartbeat; nothing ticks. A start naming
-            // `jobs` asks the cron provider instead (the fallback, below).
+            try market(a, in, &st, cfg, start, &fields);
+            // The beacon (#126): the host publishes the heartbeat on each validated topic; nothing
+            // ticks. A stop ends the beacons and keeps the validated set; a start beacons it again.
+            // A start naming `jobs` asks the cron provider instead (the fallback, below).
             if (body.getArray("jobs") == null) {
-                try beacons(a, in, &st, cfg, eql(u8, op, schedule.start_kind), &fields);
+                try applyValidation(a, in, &st, cfg, if (start) .start else .stop, null, &fields);
                 break :blk;
             }
             const cron = try providerKey(a, "cron");
@@ -546,50 +572,89 @@ fn heartbeatBody(a: Allocator, in: Value) ![]const u8 {
 
 /// The cron fallback's heartbeat (a tick): the frame the host's beacon would publish — the body,
 /// the tick's time, signed here through the signer (the same key and protocol the host uses) — on
-/// each topic's `-live` topic, through the libp2p provider (its answer is not awaited).
-fn heartbeat(a: Allocator, in: Value, fields: *std.ArrayList(cbor.Entry)) !void {
-    const cfg = try config(a, in);
+/// each validated topic's `-live` topic, through the libp2p provider (its answer is not awaited).
+fn heartbeat(a: Allocator, in: Value, st: *State, fields: *std.ArrayList(cbor.Entry)) !void {
     const at = in.getUint("at") orelse return error.BadInput;
+    const validated = st.validated;
+    if (validated.len == 0) return fields.append(a, .{ .key = "published", .value = .{ .uint = 0 } });
     const body = try heartbeatBody(a, in);
     const sender = try identityKey(a);
-    for (cfg.topics) |t| {
+    for (validated) |t| {
         const topic = try names.live(a, t);
         const d = try liveness.digest(a, topic, body, at, sender);
         const sig = try wire.signatureResult(try walletCall(a, try wire.createSignatureFrame(a, liveness.protocol.security_level, liveness.protocol.name, liveness.key_id, .anyone, d)));
         const frame = try liveness.encodeFrame(a, .{ .body = body, .at = at, .sender = sender, .signature = sig });
         _ = try toLibp2p(a, try libp2p.publish(a, topic, frame));
     }
-    try fields.append(a, .{ .key = "published", .value = .{ .uint = cfg.topics.len } });
+    try fields.append(a, .{ .key = "published", .value = .{ .uint = validated.len } });
 }
 
-/// The beacon (shruggr/skein#126, docs/MESSAGES.md "emit"): on start, one `beacon` event per served
-/// token topic, `{event: "beacon", topic: "tm_<txid>-live", every: heartbeatSeconds × 1000, body}`
-/// — the host's libp2p node publishes `body` on it every `every` ms, logging nothing per beat — and
-/// an `unbeacon` for a topic beaconed before and no longer served (deregistered meanwhile); on
-/// stop, an `unbeacon` for each standing one. The standing set is the map `beacons`. Each beat is
-/// the host's frame `{body, at, sender, signature}` (liveness.zig): fresh and signed per beat.
-fn beacons(a: Allocator, in: Value, st: *State, cfg: Config, start: bool, fields: *std.ArrayList(cbor.Entry)) !void {
+/// Validation and the beacon (0.3.1; shruggr/skein#126, docs/MESSAGES.md "emit"). Beaconing is not
+/// a role (David 2026-10-06): a node beacons `tm_<txid>-live` for the topics it validates. The
+/// owner sets that up per topic (`validate` / `unvalidate`, like a topic's registration); the
+/// record's `validated` is the set, the map `beacons` the beacons standing; `liveness.validation`
+/// says what an op changes. A `beacon` event is `{event: "beacon", topic: "tm_<txid>-live", every:
+/// heartbeatSeconds × 1000, body}` — the host's libp2p node publishes `body` on it every `every`
+/// ms, logging nothing per beat; an `unbeacon` ends it. A stop ends every beacon and keeps the
+/// set; a start beacons the set again. Each beat is the host's frame `{body, at, sender,
+/// signature}` (liveness.zig): fresh and signed per beat.
+fn applyValidation(a: Allocator, in: Value, st: *State, cfg: Config, op: liveness.ValidationOp, topic: ?[]const u8, fields: *std.ArrayList(cbor.Entry)) !void {
     const at: u64 = in.getUint("at") orelse return error.BadInput;
-    var asked: std.ArrayList(Value) = .empty;
-    var ended: std.ArrayList(Value) = .empty;
-    const body: ?[]const u8 = if (start and cfg.topics.len > 0) try heartbeatBody(a, in) else null;
-    for (try st.beacons.prefixed("")) |kv| {
-        const served = start and for (cfg.topics) |t| {
-            if (eql(u8, t, kv.key)) break true;
-        } else false;
-        if (served) continue;
-        _ = try vm.emitEvent(a, try liveness.unbeaconEvent(a, try names.live(a, kv.key)));
-        _ = try st.beacons.remove(kv.key);
-        try ended.append(a, .{ .text = try a.dupe(u8, kv.key) });
+    var standing: std.ArrayList([]const u8) = .empty;
+    for (try st.beacons.prefixed("")) |kv| try standing.append(a, try a.dupe(u8, kv.key));
+    const v = try liveness.validation(a, op, st.validated, standing.items, topic);
+    if (v.validated.len != st.validated.len) {
+        st.validated = v.validated;
+        st.validated_dirty = true;
     }
-    if (body) |b| for (cfg.topics) |t| {
-        _ = try vm.emitEvent(a, try liveness.beaconEvent(a, try names.live(a, t), cfg.heartbeat_s * 1000, b));
-        try st.beacons.put(t, .{ .int = @intCast(at) });
-        try asked.append(a, .{ .text = t });
-    };
+    for (v.unbeacon) |t| {
+        _ = try vm.emitEvent(a, try liveness.unbeaconEvent(a, try names.live(a, t)));
+        _ = try st.beacons.remove(t);
+    }
+    if (v.beacon.len > 0) {
+        const body = try heartbeatBody(a, in);
+        for (v.beacon) |t| {
+            _ = try vm.emitEvent(a, try liveness.beaconEvent(a, try names.live(a, t), cfg.heartbeat_s * 1000, body));
+            try st.beacons.put(t, .{ .int = @intCast(at) });
+        }
+    }
     try fields.appendSlice(a, &.{
-        .{ .key = "beacons", .value = .{ .array = asked.items } },
-        .{ .key = "unbeacons", .value = .{ .array = ended.items } },
+        .{ .key = "validated", .value = try textArray(a, v.validated) },
+        .{ .key = "beacons", .value = try textArray(a, v.beacon) },
+        .{ .key = "unbeacons", .value = try textArray(a, v.unbeacon) },
+    });
+}
+
+fn contains(xs: []const []const u8, x: []const u8) bool {
+    for (xs) |y| if (eql(u8, x, y)) return true;
+    return false;
+}
+
+fn textArray(a: Allocator, xs: []const []const u8) !Value {
+    const out = try a.alloc(Value, xs.len);
+    for (xs, out) |x, *o| o.* = .{ .text = x };
+    return .{ .array = out };
+}
+
+/// `{fn: "validate" | "unvalidate", args: {topic: "tm_<txid>"}}` in box `amm/amm-p2p`, from the
+/// owner: the topic into (or out of) the validated set, its beacon asked (or ended); idempotent.
+/// Answered to the sender (box `amm`, when the address book reaches it) with `{topic, validating}`.
+fn validationMessage(a: Allocator, in: Value, st: *State, args: Value, body: Value, func: []const u8, op: liveness.ValidationOp, fields: *std.ArrayList(cbor.Entry)) !void {
+    const sender = args.getBytes("sender") orelse return error.BadInput;
+    if (!eql(u8, sender, in.getBytes("owner") orelse "")) return error.NotTheOwner;
+    const call_args = body.get("args") orelse return error.BadMessage;
+    const topic = call_args.getText("topic") orelse return error.BadMessage;
+    const n = names.parse(topic) orelse return error.BadTopic;
+    if (n.kind != .overlay) return error.BadTopic;
+    try applyValidation(a, in, st, try config(a, in), op, topic, fields);
+    const result: Value = .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "topic", .value = .{ .text = topic } },
+        .{ .key = "validating", .value = .{ .boolean = op == .validate } },
+    }) };
+    const answer = try relay.answerMessage(a, func, args.getCid("message") orelse return error.BadInput, result);
+    try fields.appendSlice(a, &.{
+        .{ .key = "answer", .value = answer },
+        .{ .key = "sent", .value = .{ .boolean = try answerSender(a, sender, answer) } },
     });
 }
 
