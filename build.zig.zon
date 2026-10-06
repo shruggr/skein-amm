@@ -1,22 +1,22 @@
 .{
     .name = .skein_amm,
-    .version = "0.3.5",
+    .version = "0.3.6",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.7.7.tar.gz",
-            .hash = "skein_overlay-0.7.7-IMuNgaVkGQAv4PwrJC7vvtupsF4YTY8QrhpyCNo3YDCh",
+            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.7.8.tar.gz",
+            .hash = "skein_overlay-0.7.8-IMuNgQ38GQCe4tDWSQ35G2tdrV275jeY2Qd0HFD-7F2l",
         },
         // The Mandala components: the `mandala` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/mandala-topic.wasm, bin/mandala-lookup.wasm, copied
         // into bin/. (Its pages, www/, are outside the package's paths: scripts/mandala-pages.sh
         // copies them from the same tag's tarball by URL and sha256.)
         .skein_mandala = .{
-            .url = "https://github.com/shruggr/skein-mandala/archive/refs/tags/v0.6.1.tar.gz",
-            .hash = "skein_mandala-0.6.1-_DlbUucGGQCQV8XMh8NBmIzMQoq282w0REY3bhxEQLST",
+            .url = "https://github.com/shruggr/skein-mandala/archive/refs/tags/v0.6.2.tar.gz",
+            .hash = "skein_mandala-0.6.2-_DlbUrRYGQAQH0NNTjMQaesmY-ushlKedt3n6aQsbw-d",
         },
     },
     .paths = .{

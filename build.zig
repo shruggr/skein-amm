@@ -12,11 +12,11 @@
 // `mandala` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.7.7)
-//                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.6.1) copied beside
+//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.7.8)
+//                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.6.2) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
-// The Mandala pages (skein-mandala v0.6.1's www/) are copied into www/mandala/ by
+// The Mandala pages (skein-mandala v0.6.2's www/) are copied into www/mandala/ by
 // scripts/mandala-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
 // The AMM pages are built from web/ui into www/ (scripts/www.sh runs both).
 const std = @import("std");

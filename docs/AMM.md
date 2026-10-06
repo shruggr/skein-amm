@@ -10,7 +10,7 @@ topic per token, registered by the owner at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.7.7 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
+| `overlay` | skein-overlay 0.7.8 (`bin/overlay.wasm`, copied) | a submission in box `amm/submit`, by message or from `/submit` (delivery only), answered to the submitter's box; `/lookup`, gossip, the listing routes; `register` / `deregister` a topic; hands every admitted BEEF to the chain app |
 | `mandala-topic` | skein-mandala 0.6.0 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
 | `mandala-lookup` | skein-mandala 0.6.0 (copied) | `ls_mandala`, `ls_mandala_deploys` |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |

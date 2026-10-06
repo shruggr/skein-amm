@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "amm",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "programs": {
     "overlay": "bin/overlay.wasm",
     "mandala-topic": "bin/mandala-topic.wasm",
