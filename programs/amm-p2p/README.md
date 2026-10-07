@@ -10,6 +10,15 @@ zig build test-amm-p2p   # from the repo root: the direct call's request and rep
                          # the same for a pool deploy and an AddLiquidity; the manifest's role settings, natively
 ```
 
+## 0.7.0 (skein's routes, filters and roles, shruggr/skein#143)
+
+This section supersedes what the rest of this file says where they differ.
+
+- **The message path is this program's box `amm/amm-p2p`** (`names.own_box`), not the app's box `amm`: a box has one route now (no sender to tell two apart), and `amm` is the overlay engine's (its derived mailbox route: its own watch, resume and wait). A `{fn, args}` message in `amm/amm-p2p` is the call, answered to the sender in that same box (`answerSender`; was `amm`); the cron ticks share the box as before. Read "box `amm`" below as `amm/amm-p2p` for the relay's interfaces.
+- **`/call`**: the route lists `kernel.brc104`, so the caller is the signed request's key; `app.admitted` (the dispatch rows' senders) is no longer consulted (there are none): who may call is the kernel's gate, and `call` is gated by no role.
+- **The pages**: the read route `/` (prefix, `root: "www"`, `index: "index.html"`) with the filter `page` → `amm-p2p.serve`; called as a filter (the input's `filter: true`) `serve` answers `{answer: <the page>}`, otherwise the same.
+- No `owner` was read here; the manifest's `"amm-p2p"` route is `{"address": "amm-p2p", "handler": "amm-p2p"}`.
+
 ## 0.6.0 (market and validator are the engine's, shruggr/skein#120)
 
 This section supersedes what the rest of this file says where they differ: every section below on liveness, the beacon, validation, the market role, start / stop and the heartbeat describes what is gone. Decided by David, 2026-10-06 evening: "a skein runs as a market and/or a validator by two settings in the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator: {every}`), and registering a token's topic is the one act that drives both." The engine (skein-overlay 0.9.0) emits `liveness` / `beacon` on `tm_<txid>-live` at `register` and `unliveness` / `unbeacon` at `deregister`; the beat has no body (the frame carries the instance's identity key, the gossip message its peer ID).
@@ -125,7 +134,7 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 |---|---|---|
 | `libp2p:tm_<txid>-live` (GossipSub topic) | none (0.4.0) | the runtime's liveness tool on a market host (`liveness`), read at `GET /amm/.live/tm_<txid>-live`; this program judges no beat |
 | `libp2p:/amm/proofs/1.0.0` (direct call) | `proofsByBlock` | answer one request frame with one reply frame |
-| `/amm/` (a read, prefix: `reads[]`, shruggr/skein#135) | `serve` | the pages, `www/` of the app's tree; a call, anyone, signed or not, nothing logged |
+| `/amm/` (a read route, prefix, its filter `page`, shruggr/skein#143) | `serve` | the pages, `www/` of the app's tree; a filter's answer, anyone, signed or not, nothing logged |
 | `/amm/call` (HTTP row, APPS.md §4: a signed request) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit`, `amm.pool.submit` and `amm.liquidity.submit` wait on their relay |
 
 `<txid>` is the token's deploy txid, 64 lowercase hex characters in display order; the topic name has no suffix (`tm_<txid>`), and the liveness topic adds `-live`, in skein's `-admit`/`-proof` style. Bodies are dag-cbor; hashes and txids are 32 bytes in internal byte order.

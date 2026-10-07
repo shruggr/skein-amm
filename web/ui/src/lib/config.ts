@@ -17,11 +17,6 @@
  *                      peer ID) from the peer's liveness read of its token
  *                      topics (GET .live/tm_<txid>-live, kept where the peer
  *                      is a market for the token)
- *   VITE_AMM_OWNER_IDENTITY  optional: the instance owner's identity key
- *                      (public), when known from the deploy. No route
- *                      exposes the owner to a non-owner; the Validator page
- *                      only uses it to say whether the connected wallet is
- *                      the owner before trying
  *   VITE_FEE_RATE      the miner fee rate, sats per 1000 bytes, the Swap page
  *                      applies to the swap transaction it builds (default
  *                      100). The swap's fee is paid from the exact funding
@@ -73,9 +68,6 @@ export const REFRESH_MS = Number(env?.VITE_AMM_REFRESH_MS ?? 10_000);
 
 /** The peer instance whose liveness read (`GET .live/tm_<txid>-live`) tells us whether our heartbeat is heard. `VITE_AMM_PEER_OVERLAY`; unset or "" disables. */
 export const AMM_PEER_OVERLAY = (env?.VITE_AMM_PEER_OVERLAY ?? "").replace(/\/+$/, "");
-
-/** The owner's identity key if configured (public key, compressed hex), else "". `VITE_AMM_OWNER_IDENTITY`. */
-export const AMM_OWNER_IDENTITY = (env?.VITE_AMM_OWNER_IDENTITY ?? "").trim().toLowerCase();
 
 /**
  * Miner fee rate for the swap transaction the page builds, sats per 1000

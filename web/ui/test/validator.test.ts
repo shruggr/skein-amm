@@ -31,12 +31,11 @@ function fakeAuthFetch(answer: (url: string, config?: { method?: string; body?: 
   return { af, calls };
 }
 
-describe("the explorer (owner only): genesis owner and policy", () => {
+describe("the explorer (root only): the genesis and policy", () => {
   const ownerHex = "027c21b23e13472d370821454a34874d934ee5721bb3327ceb489c38d1a4b0f21b";
   const b64 = (hex: string) => Buffer.from(hex, "hex").toString("base64").replace(/=+$/, "");
   const genesis = {
     kind: "genesis",
-    owner: { "/": { bytes: b64(ownerHex) } },
     identity: { "/": { bytes: b64(AMM2) } },
     defaults: {
       ammValidator: '{"minValidatorFeeBps":5,"maxLpFeeBps":100}',
@@ -68,7 +67,7 @@ describe("the explorer (owner only): genesis owner and policy", () => {
     expect(calls.map((c) => c.url)).toEqual(["http://amm2.localhost:8300/explore/head/amm/app", "http://amm2.localhost:8300/explore/record/bafyApp", "http://amm2.localhost:8300/explore/head/amm/topics"]);
   });
 
-  it("the roles in effect (0.6.2, skein-overlay 0.9.2): the owner's switch in <app>/topics over config.overlay; the manifest sets neither", async () => {
+  it("the roles in effect (0.6.2, skein-overlay 0.9.2): root's switch in <app>/topics over config.overlay; the manifest sets neither", async () => {
     const app = { kind: "app", name: "amm", config: { overlay: { lookups: {} }, amm: { ammValidator: { minValidatorFeeBps: 5, maxLpFeeBps: 100 } } } };
     const set = (sw: Record<string, unknown>) => ({ kind: "overlay-topics", topics: [{ topic: "tm_x", program: "mandala-topic" }], ...sw });
     expect(withSwitches(policyOf(app), undefined)).toEqual({ minValidatorFeeBps: 5, maxLpFeeBps: 100 });
@@ -88,7 +87,7 @@ describe("the explorer (owner only): genesis owner and policy", () => {
     const { af, calls } = fakeAuthFetch(() => ({ status: 200, body: { entries: [{ n: 0, entry: { "/": "bafyg" }, record: genesis }] } }));
     const g = await readGenesis(af, "http://amm2.localhost:8300");
     expect(calls.map((c) => [c.url, c.config?.method])).toEqual([["http://amm2.localhost:8300/explore/log?before=1&limit=1", "GET"]]);
-    expect(g).toMatchObject({ ok: true, owner: ownerHex, identity: AMM2, policy: { minValidatorFeeBps: 5, maxLpFeeBps: 100, validatorEveryMs: 30_000 } });
+    expect(g).toMatchObject({ ok: true, identity: AMM2, policy: { minValidatorFeeBps: 5, maxLpFeeBps: 100, validatorEveryMs: 30_000 } });
   });
 
   it("follows a record that links the genesis", async () => {
@@ -103,15 +102,16 @@ describe("the explorer (owner only): genesis owner and policy", () => {
       "http://amm2.localhost:8300/explore/record/bafyg",
     ]);
     expect(g.ok).toBe(true);
-    expect(g.owner).toBe(ownerHex);
+    expect(g.identity).toBe(AMM2);
+    expect("owner" in g).toBe(false);
   });
 
-  it("a non-owner's 403", async () => {
+  it("a 403 for a key without root", async () => {
     const { af } = fakeAuthFetch(() => ({ status: 403, body: { status: "error" } }));
     const g = await readGenesis(af, "http://amm2.localhost:8300");
     expect(g.ok).toBe(false);
     expect(g.status).toBe(403);
-    expect(g.error).toMatch(/owner only/);
+    expect(g.error).toMatch(/root only/);
   });
 });
 

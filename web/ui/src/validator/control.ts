@@ -1,13 +1,13 @@
 /**
- * The owner's reads of this instance as a validator, over HTTP, signed by the
+ * Root's reads of this instance as a validator, over HTTP, signed by the
  * connected BRC-100 wallet through `@bsv/sdk`'s `AuthFetch` (BRC-103
  * handshake at `<origin>/.well-known/auth`, every request BRC-104-signed):
- * the explorer (`GET <origin>/explore…`, read op `explore`, the owner only by
- * the stock reads table; others get 403) — the genesis (log entry 0, `{kind:
- * "genesis", owner, identity, defaults}`) for the owner key, and the installed
+ * the explorer (`GET <origin>/explore…`, gated by root, shruggr/skein#143;
+ * others get 403) — the genesis (log entry 0, `{kind: "genesis", identity,
+ * defaults, …}`) for the instance's identity, and the installed
  * app record (`<app>/app`) for the policy: `config.amm.ammValidator` and the
  * engine's two roles, market and validator (skein-amm 0.6.0, shruggr/skein#120).
- * The roles are the owner's switch (0.6.2, skein-overlay 0.9.2; David,
+ * The roles are root's switch (0.6.2, skein-overlay 0.9.2; David,
  * 2026-10-07: "this shouldn't have been a config in the manifest. This
  * should be a setting that the user is configuring"): read as the engine
  * reads them, the switch kept in the registered set's record (`<app>/topics`:
@@ -36,7 +36,7 @@ function parseBody(text: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
-// The explorer (owner only): the genesis, its owner and defaults
+// The explorer (root only): the genesis, its identity and defaults
 // ---------------------------------------------------------------------------
 
 export interface ValidatorPolicy {
@@ -51,8 +51,6 @@ export interface ValidatorPolicy {
 export interface GenesisRead {
   ok: boolean;
   status: number;
-  /** The genesis's owner key (hex), when read. */
-  owner?: string;
   /** The genesis's identity key (hex), when read. */
   identity?: string;
   policy?: ValidatorPolicy;
@@ -131,7 +129,7 @@ function isGenesis(v: unknown): v is Record<string, unknown> {
  * `GET <instance>/explore/log?before=1&limit=1` (log entry 0, with its record
  * as DAG-JSON); a record that only links the genesis is followed through
  * `GET <instance>/explore/record/<cid>` (at most two hops). A 403 is the
- * reads table refusing a caller that is not the owner.
+ * explorer's gate refusing a caller that does not hold root (shruggr/skein#143).
  */
 export async function readGenesis(authFetch: AuthFetchLike, instanceUrl: string): Promise<GenesisRead> {
   const base = instanceUrl.replace(/\/+$/, "");
@@ -144,7 +142,7 @@ export async function readGenesis(authFetch: AuthFetchLike, instanceUrl: string)
     const b = (first.body ?? {}) as Record<string, unknown>;
     const why =
       first.status === 403
-        ? "refused (403): the explorer answers the instance's owner only, and the connected wallet is not it"
+        ? "refused (403): the explorer answers root only, and the connected wallet does not hold root on this instance"
         : `HTTP ${first.status}${typeof b.description === "string" ? `: ${b.description}` : ""}`;
     return { ok: false, status: first.status, error: why };
   }
@@ -154,12 +152,10 @@ export async function readGenesis(authFetch: AuthFetchLike, instanceUrl: string)
     const c = candidate as Record<string, unknown>;
     const found = [c, c.record, c.genesis].find(isGenesis);
     if (found) {
-      const owner = dagBytesHex(found.owner);
       const identity = dagBytesHex(found.identity);
       return {
         ok: true,
         status: 200,
-        ...(owner ? { owner } : {}),
         ...(identity ? { identity } : {}),
         policy: policyOf(found),
       };
@@ -175,7 +171,7 @@ export async function readGenesis(authFetch: AuthFetchLike, instanceUrl: string)
 }
 
 /**
- * The installed app's policy through the explorer (the owner's read): the
+ * The installed app's policy through the explorer (root's read): the
  * head `<app>/app` (`GET <instance>/explore/head/<app>/app` → `{tree: <the
  * app record's CID>}`), then the record (`/explore/record/<cid>`), its
  * `config.amm`. Undefined when the head or the record cannot be read.
@@ -196,7 +192,7 @@ export async function readAppPolicy(authFetch: AuthFetchLike, instanceUrl: strin
 }
 
 /**
- * The roles in effect (skein-overlay 0.9.2, `topics.effective`): the owner's
+ * The roles in effect (skein-overlay 0.9.2, `topics.effective`): root's
  * switch kept in the registered set's record `<app>/topics` (`market: {window}
  * | {off: true}`, `validator: {every} | {off: true}`) over the policy's
  * `config.overlay` values; a role never switched keeps the manifest's.

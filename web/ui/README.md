@@ -41,6 +41,17 @@ writes a token id `<txid>_0`, read the bare `<txid>`. The remove-liquidity
 submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
 using authfetch for the submit http method").
 
+**skein-amm 0.7.0: root, not an owner** (shruggr/skein#143, skein's routes,
+filters and roles). The explorer (`/explore`) and the engine's
+`amm/register` box (register, deregister, the Market and Validator
+switches) are gated by the role `root`, which the key that claimed the
+instance holds (and any key root grants it to). The pages send the same
+messages and reads; read "the owner" below as root. Gone: the genesis
+`owner` the Validator page read (`readGenesis`) and `VITE_AMM_OWNER_IDENTITY`
+(nothing used it). The pages are served by the read route `/` (its filter
+`page`, amm-p2p's `serve`); `/call` takes a signed request
+(`kernel.brc104`), unchanged for the pages.
+
 **skein-amm 0.6.2: the roles are the owner's switch** (skein-overlay 0.9.2;
 David, 2026-10-07: "this shouldn't have been a config in the manifest. This
 should be a setting that the user is configuring"). The manifest sets
@@ -104,13 +115,10 @@ pages' sections below.
   wallet lost** beyond the BEEF's reach.
 - **Pools / Validator: the validator's fee terms are not readable** through
   any open route (genesis `defaults.ammValidator`); the Validator page reads
-  them through the owner-only explorer when the wallet is the owner.
+  them through the explorer when the wallet holds root (0.7.0).
 - **Validator: editing the policy** (fees, heartbeat interval): a genesis
   config change; the app offers no config change yet (`config.amm` via the
   manifest or a `writes: true` function, skein #72 build 3).
-- **Validator: learning the owner's key** from the instance as a non-owner:
-  no route exposes it (`VITE_AMM_OWNER_IDENTITY` can name it for the
-  display).
 - **Validator: seeing amm-p2p's refusal of a non-owner's start/stop.** The
   messagebox admits it (200; box `amm-p2p` is subscribed for any sender);
   amm-p2p errors its step on the instance's thread, which no HTTP answer
@@ -125,7 +133,6 @@ untracked, or the environment):
 |---|---|---|
 | `VITE_AMM_OVERLAY` | the page's own directory (`appBaseOf`) | the AMM app's base URL (every page); its origin is the instance (messagebox, `/.well-known/auth`, `/explore`). Set it for a dev server on another origin |
 | `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_<txid>-live` reads (0.4.0); unset disables |
-| `VITE_AMM_OWNER_IDENTITY` | (none) | optional, the instance owner's public identity key, only to tell the user whether the connected wallet is the owner |
 | `VITE_AMM_REFRESH_MS` | `10000` | the Swap page's refresh |
 | `VITE_FEE_RATE` | `100` | the swap's miner fee rate, sats per 1000 bytes: the funding output carries `ceil(size × rate / 1000)` for the final swap (below, "Funding") |
 
@@ -462,7 +469,7 @@ public/
   manifest.json        W3C manifest + metanet.groupPermissions ("Permissions")
 src/
   lib/
-    config.ts          VITE_AMM_OVERLAY / VITE_AMM_PEER_OVERLAY / VITE_AMM_OWNER_IDENTITY / VITE_AMM_REFRESH_MS
+    config.ts          VITE_AMM_OVERLAY / VITE_AMM_PEER_OVERLAY / VITE_AMM_REFRESH_MS
     overlay.ts         the instance client: listTopicManagers, lookup (freeform and BEEF), live; topic names
     keys.ts             validator signing-key derivation (BRC-43, "amm pool", anyone counterparty)
   pool/
@@ -928,22 +935,20 @@ the owner) against amm2: `sendMessage` answered `200 {"status":"success",
 amm3's `/amm/live` was unchanged. The page says that a 200 is "admitted",
 not "started", and points at the peer's liveness (Refresh).
 
-Owner: v2's owner is the deploy's throwaway key (`deploy/lib/owner.ts`,
-`deploy/.run/home/owner.identity` = `027c21b2…b0f21b`), not a wallet, so a
-BRC-100 wallet is not v2's owner and its start/stop is refused by amm-p2p.
-The page compares the wallet's identity with the owner read from the
-genesis through the explorer (when the wallet is the owner) or with
-`VITE_AMM_OWNER_IDENTITY`; with neither it says the owner cannot be learned
-and lets the user try. The by-hand fallback from the v2 README is shown:
-`SKEIN_HOME=$PWD/deploy/.run/home ~/Work/agent-env/skein/bin/skein-host event amm2 amm-p2p '{"kind":"amm-p2p-start"}'`.
+Root (0.7.0, shruggr/skein#143): there is no owner any more. The explorer
+and the engine's `register` box (the switches) are gated by the role
+`root`; the genesis names no owner, so the page no longer reads one or
+compares the wallet with it (`VITE_AMM_OWNER_IDENTITY` is gone). A wallet
+that does not hold root gets the explorer's 403.
 
 **Policy.** Min validator fee bps, max LP fee bps (genesis
 `defaults.ammValidator`), heartbeat interval and offline threshold
 (`defaults.ammP2p`): "not readable from the instance" by default. "Read
-through the explorer (owner only)" does `GET <origin>/explore/log?before=1&limit=1`
+through the explorer (root only)" does `GET <origin>/explore/log?before=1&limit=1`
 through AuthFetch (log entry 0, the genesis record as DAG-JSON; a record
 that links the genesis is followed through `/explore/record/<cid>`) and
-shows the policy and the owner key; a non-owner gets the 403. Not run
+shows the policy (0.7.0: no owner key, the genesis names none); a key
+without root gets the 403. Not run
 against v2 as the owner (no wallet holds v2's owner key), so the genesis
 shape is from skein's sources (`kernel-zig/src/log.zig` `isGenesis`,
 `programs/frontdoor/explore.zig`) and tested against a constructed answer.

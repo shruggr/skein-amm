@@ -1,10 +1,10 @@
 /**
- * The Validator page: the owner's view of their own skein instance as an AMM
+ * The Validator page: root's view of their own skein instance as an AMM
  * validator — who it is (handle, identity, peer ID), whether a peer hears its
  * heartbeat, the token topics registered with its engine, its policy and the
- * two roles in effect (market, validator: the owner's switch on the Tokens
+ * two roles in effect (market, validator: root's switch on the Tokens
  * page (mandala/tokens/), kept in `<app>/topics`, over `config.overlay.market` / `.validator`;
- * skein-amm 0.6.2) when the owner can read them (through the wallet-backed
+ * skein-amm 0.6.2) when root can read them (through the wallet-backed
  * AuthFetch), the pools it serves and the validators it sees. Nothing is sent
  * from here: the two switches are on the Token topics page (mandala/tokens/).
  */
@@ -197,17 +197,17 @@ function PolicySection(props: { genesis: GenesisRead | null; onRead: (g: Genesis
       ) : (
         <p className="warn">
           Not readable from the instance: min validator fee, max LP fee (the app record's <code>config.amm.ammValidator</code>) and
-          the two roles (the owner&apos;s switch in <code>&lt;app&gt;/topics</code>, else <code>config.overlay.market</code> /{" "}
+          the two roles (root&apos;s switch in <code>&lt;app&gt;/topics</code>, else <code>config.overlay.market</code> /{" "}
           <code>config.overlay.validator</code>) are not exposed by any open route.
         </p>
       )}
       <p>
         <small>
-          The owner can read them through the explorer (<code>/explore</code>, BRC-104, owner only), signed by the wallet.
+          Root can read them through the explorer (<code>/explore</code>, BRC-104, root only), signed by the wallet.
         </small>
       </p>
       <button type="button" disabled={!authFetch || !origin || busy} onClick={() => void read()}>
-        {busy ? "Reading…" : "Read through the explorer (owner only)"}
+        {busy ? "Reading…" : "Read through the explorer (root only)"}
       </button>
       {!authFetch && <small> connect a wallet first</small>}
       {genesis && !genesis.ok && <p className="bad">{genesis.error}</p>}

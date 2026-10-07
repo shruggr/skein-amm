@@ -6,6 +6,10 @@ The AMM validator as a [skein](https://github.com/shruggr/skein) handler program
 zig build test-amm-validator   # from the repo root: the package, the protocol, the refusals, signing against the Go fixtures, and the submission, natively
 ```
 
+## 0.7.0: routes (shruggr/skein#143)
+
+Unchanged code; the manifest's routes: libp2p `/amm-validator/1/swap`, `/addLiquidity`, `/deploy` → `amm-validator.swap`, `.addLiquidity`, `.deploy` (no filters, as the rows had none). The submission goes to box `<app>/submit`, whose route lists `kernel.beef` → `overlay.submit` (was the row `submit` from `*`, `filter: "beef"`). The validator role is root's switch (was the owner's), read the same way. No `owner` input was read.
+
 ## 0.6.0: the engine's validator setting and registered set gate every signature
 
 **0.6.2** (skein-overlay 0.9.2; David, 2026-10-07: "this shouldn't have been a config in the manifest. This should be a setting that the user is configuring"): "`config.overlay.validator` is set" below reads "the validator role is on": the owner's switch kept in the registered set's record `<app>/topics` (`validator: {every} | {off: true}`, the engine's `validator` message in `<app>/register`) over `config.overlay.validator` (`main.zig` `validatedSet`: `topics.effective(topics.switchesOf(<the set's record>), config.rolesOf(in))`). The manifest sets neither role.

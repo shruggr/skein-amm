@@ -1854,12 +1854,12 @@ test "liquidity relay: dispatch by the manifest (app/etc/app.json, amm.liquidity
     try testing.expectEqual(relay.Status.pending, (try book.getKind(a, .liquidity, relay.idOf(d.add))).?.status);
 }
 
-test "market and validator are the engine's (0.6.0, shruggr/skein#120), the owner's switch (0.6.2, David 2026-10-07): no validate row, no start or stop, no config.amm.ammP2p.market; config.overlay.market / .validator absent, both off until the owner turns one on" {
+test "market and validator are the engine's (0.6.0, shruggr/skein#120), root's switch (0.6.2, David 2026-10-07): no validate route, no start or stop, no config.amm.ammP2p.market; config.overlay.market / .validator absent, both off until root turns one on" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const m = try dagjson.decode(a, manifest_json);
-    for (m.get("dispatch").?.array) |row| {
+    for (m.get("routes").?.array) |row| {
         try testing.expect(!std.mem.eql(u8, scbor.Value.str(row.get("address")) orelse "", "validate"));
     }
     try testing.expect(m.get("start") == null and m.get("stop") == null);
@@ -1868,7 +1868,49 @@ test "market and validator are the engine's (0.6.0, shruggr/skein#120), the owne
         try testing.expect(p2p.get("market") == null and p2p.get("heartbeatSeconds") == null and p2p.get("offlineSeconds") == null);
     }
     // "this shouldn't have been a config in the manifest. This should be a setting that the user is
-    // configuring": the owner turns a role on at install (--config) or by the engine's switch.
+    // configuring": root turns a role on at install (--config) or by the engine's switch.
     const ov_cfg = config.get("overlay").?;
     try testing.expect(ov_cfg.get("market") == null and ov_cfg.get("validator") == null);
+}
+
+test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, reads or senders; the box amm is the engine's (derived), amm-p2p's box amm/amm-p2p; register root's; the reads read routes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const m = try dagjson.decode(a, manifest_json);
+    try testing.expect(m.get("dispatch") == null and m.get("reads") == null);
+    const gated = m.get("roles").?.get("root").?.array;
+    try testing.expectEqual(@as(usize, 3), gated.len);
+    const filters = m.get("filters").?;
+    try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
+    try testing.expectEqualStrings("mandala-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
+    var seen: u8 = 0;
+    for (m.get("routes").?.array) |r| {
+        try testing.expect(r.get("sender") == null and r.get("program") == null);
+        const t = scbor.Value.str(r.get("transport")) orelse "mailbox";
+        const addr = scbor.Value.str(r.get("address")).?;
+        const h = scbor.Value.str(r.get("handler"));
+        // No route of the app's own on its box `amm` ("" or "amm"): the engine's, derived.
+        if (std.mem.eql(u8, t, "mailbox")) try testing.expect(addr.len > 0 and !std.mem.eql(u8, addr, "amm"));
+        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "amm-p2p")) {
+            try testing.expectEqualStrings("amm-p2p", h.?);
+            seen |= 1;
+        }
+        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "register")) {
+            try testing.expectEqualStrings("overlay.register", h.?);
+            seen |= 2;
+        }
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/call")) {
+            try testing.expectEqualStrings("amm-p2p.call", h.?);
+            try testing.expectEqualStrings("kernel.brc104", scbor.Value.str(r.get("filters").?.array[0]).?);
+            seen |= 4;
+        }
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) {
+            try testing.expect(h == null);
+            try testing.expectEqualStrings("page", scbor.Value.str(r.get("filters").?.array[0]).?);
+            seen |= 8;
+        }
+    }
+    try testing.expectEqual(@as(u8, 15), seen);
+    try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
 }

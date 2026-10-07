@@ -20,21 +20,24 @@
 //!
 //!   proofsByBlock   a /amm/proofs/1.0.0 frame → {verdict: accept, body: {bump} | {missing: true}}
 //!                   (a utility: no row routes it since 0.2.0; sync is shruggr/skein#112's `want`)
-//!   serve           the read `/` (prefix; the manifest's `reads[]`, shruggr/skein#135: a call, anyone,
-//!                   signed or not, nothing logged): the app's pages, `www/` of the app's own tree
-//!                   (skein-sdk `files.serve`, shruggr/skein#125); it reads only
-//!   call            route /amm/call (APPS.md §4): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`,
+//!   serve           the read route `/` (prefix; the filter `page`, shruggr/skein#143: anyone, signed
+//!                   or not, nothing logged; called as a filter it answers `{answer: <the page>}`):
+//!                   the app's pages, `www/` of the app's own tree (skein-sdk `files.serve`,
+//!                   shruggr/skein#125); it reads only
+//!   call            route /amm/call (APPS.md §4; kernel.brc104: the caller is the signed request's key,
+//!                   who may call is the kernel's gate, 0.7.0): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`,
 //!                   `amm.pool.submit` and `amm.liquidity.submit` answer {wait: true} and, called again with
 //!                   `resolved`, the record
 //!   amm.swap.submit, amm.swap.status, amm.swap.terms   an in-VM call of the interface amm.swap/1 (relay.zig)
 //!   amm.pool.submit, amm.pool.status   an in-VM call of the interface amm.pool/1 (relay.zig: the pool deploy)
 //!   amm.liquidity.submit, amm.liquidity.status   an in-VM call of the interface amm.liquidity/1 (relay.zig: AddLiquidity)
 //!
-//! **Stepped** (a `mailbox` row from anyone on the boxes `amm` and `amm/amm-p2p`):
+//! **Stepped** (the `mailbox` route on the box `amm/amm-p2p`; since 0.7.0, shruggr/skein#143, the
+//! app's box `amm` is the overlay engine's alone):
 //!
-//!   message {fn, args} in box `amm`                    the app's box (APPS.md §4): amm.swap.submit | status | terms,
+//!   message {fn, args} in box `amm/amm-p2p`            this program's box (APPS.md §4): amm.swap.submit | status | terms,
 //!                                                     amm.pool.submit | status, amm.liquidity.submit | status,
-//!                                                     answered to the sender (a submit: when the relay settles)
+//!                                                     answered to the sender in that box (a submit: when the relay settles)
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay" | "amm-liquidity-relay", id}   the relay (launched by a submit): a thread resting on
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!                                                     the caller named, or (that validator is this node) on
@@ -260,7 +263,11 @@ fn call(a: Allocator, in: Value) !void {
     const func = in.getText("fn") orelse return error.BadInput;
     const arg = try vm.callArg(a, in);
     if (eql(u8, func, "call") and arg.get("match") != null) return vm.answer(a, try appRoute(a, in, arg));
-    if (eql(u8, func, "serve")) return vm.answer(a, try servePages(a, arg));
+    // The read route `/` (shruggr/skein#143): its filter `page`, answering `{answer: <the page>}`.
+    if (eql(u8, func, "serve")) {
+        const page = try servePages(a, arg);
+        return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, page) else page);
+    }
     if (isAppFn(func)) return vm.answer(a, try appCall(a, in, func, arg));
     if (eql(u8, func, "proofsByBlock")) return vm.answer(a, try proofsByBlock(a, in, arg));
     return error.UnknownFunction;
@@ -321,8 +328,10 @@ fn step(a: Allocator, in: Value) !void {
     const args = in.get("args") orelse return error.BadInput;
     // The relay thread (launched by amm.swap.submit or amm.pool.submit).
     if (relay.Kind.ofRelay(args.getText("kind") orelse "")) |kind| return relayStep(a, in, args, kind);
-    // A message in the app's box: a call {fn, args} (APPS.md §4).
-    if (eql(u8, args.getText("box") orelse "", relay.app_name)) {
+    // A message in this program's box `amm/amm-p2p`: a call {fn, args} (APPS.md §4). (Before
+    // 0.7.0 the app's box `amm`, shared with the overlay engine by sender; since shruggr/skein#143 a
+    // box has one route, and `amm` is the engine's: its own watch, resume and wait.)
+    if (eql(u8, args.getText("box") orelse "", names.own_box)) {
         // Stepped again when the relay thread it launched comes to rest: the relay answered the sender.
         if (in.get("resolved") != null) {
             _ = try vm.finish(a, s, try resultRecord(a, "relayed", &.{}));
@@ -370,6 +379,17 @@ fn step(a: Allocator, in: Value) !void {
     });
     try es.appendSlice(a, fields.items);
     _ = try vm.finish(a, s, .{ .map = es.items });
+}
+
+/// Whether this call is a filter's: the input's `filter: true` (skein docs/APPS.md §2 "Filters").
+fn isFilter(in: Value) bool {
+    const f = in.get("filter") orelse return false;
+    return f == .boolean and f.boolean;
+}
+
+/// An http answer `{status, type?, headers?, body}` as a filter's `{answer: …}`.
+fn asFilterAnswer(a: Allocator, http: Value) !Value {
+    return .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "answer", .value = http }}) };
 }
 
 /// The read `/` (`{address: "/", prefix: true, program: "amm-p2p", fn: "serve", root: "www", index:
@@ -893,7 +913,6 @@ fn appRoute(a: Allocator, in: Value, arg: Value) !Value {
     var call_args: ?scbor.Value = null;
     const outcome: app.Outcome = blk: {
         if (!eql(u8, arg.getText("method") orelse "", "POST")) break :blk .{ .err = .{ .code = .@"bad-request", .message = "POST {fn, args}" } };
-        if (!app.admitted(try toSdk(a, in), caller, relay.app_name)) break :blk .{ .err = .{ .code = .@"not-admitted", .message = "the caller is not admitted to box amm" } };
         const raw = arg.getBytes("body") orelse "";
         const ct = arg.getText("contentType") orelse "";
         const body = (if (eql(u8, ct, "application/cbor")) scbor.decode(a, raw) else dagjson.decode(a, raw)) catch
@@ -958,11 +977,11 @@ fn resultRecord(a: Allocator, op: []const u8, fields: []const cbor.Entry) !Value
 fn answerSender(a: Allocator, sender: ?[]const u8, answer: Value) !bool {
     const s = sender orelse return false;
     if (!try reachable(a, s)) return false;
-    _ = try emit(a, s, relay.app_name, answer);
+    _ = try emit(a, s, names.own_box, answer);
     return true;
 }
 
-/// A message `{fn, args}` in box `amm`: the call, answered to the sender now
+/// A message `{fn, args}` in box `amm/amm-p2p`: the call, answered to the sender (in that box) now
 /// — or, for a submit that launched the relay, by the relay thread when the
 /// record settles.
 fn appMessage(a: Allocator, in: Value, args: Value, body: Value) !void {
