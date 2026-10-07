@@ -49,9 +49,9 @@ describe("inventory", () => {
   const deployScript = Mandala.deployValue(100_000n, { lock: ADDR, payload: { sym: "GOLD", dec: 2, icon: 1 } }).lock();
   deployTx.addOutput({ satoshis: 1, lockingScript: deployScript });
   deployTx.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(pngInscription()) });
-  // A Mandala token's id is the bare txid (David 2026-10-08); the SDK's Mandala.value takes `<txid>_0`.
-  const gold = deployTx.id("hex");
-  const goldSdk = `${gold}_0`;
+  // A Mandala token's id is `<txid>_0` (BRC-162 Token identification, David 2026-10-07), as the SDK's Mandala.value takes it.
+  const gold = `${deployTx.id("hex")}_0`;
+  const goldSdk = gold;
 
   // A binary deploy whose icon is an outpoint elsewhere, held in the ordinals basket.
   const silverIcon = `${T("5")}_3`;
@@ -96,11 +96,11 @@ describe("inventory", () => {
   });
 
   it("resolves an outpoint icon from the ordinals basket, else shows the outpoint", () => {
-    const s = byId.get(T("3"))!;
+    const s = byId.get(`${T("3")}_0`)!;
     expect(s).toMatchObject({ sym: "SILV", balance: 0n, authorities: 1 });
     expect(s.icon!.outpoint).toBe(silverIcon);
     expect(s.icon!.image?.via).toBe("inscription");
-    const iron = byId.get(T("4"))!;
+    const iron = byId.get(`${T("4")}_0`)!;
     expect(iron.icon).toEqual({ outpoint: ironIcon });
     expect(iron.dec).toBeUndefined();
   });
@@ -109,14 +109,15 @@ describe("inventory", () => {
     const o = byId.get(old)!;
     expect(o).toMatchObject({ sym: "OLD", dec: 1, balance: 542n, deployInWallet: true });
     expect(o.encodings.sort()).toEqual(["bsv21", "mandala"]);
-    // one token: its id the legacy deploy's `<txid>_0`, though its binary row alone reads as the bare txid
+    // one token, one id `<txid>_0`
+    expect(o.tokenId).toBe(`${T("2")}_0`);
     expect(byId.has(T("2"))).toBe(false);
   });
 
-  it("writes each token id by origin (David 2026-10-08): Mandala the bare txid, legacy BSV-21 `<txid>_<vout>`", () => {
-    // a Mandala deploy row: the bare txid
-    expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: T("3"), role: "deploy", encoding: "mandala" });
-    // a Mandala value row with a 32-byte id (the SDK prints `<txid>_0`): the bare txid
+  it("writes every token id `<txid>_<vout>` (David 2026-10-07, BRC-162 Token identification): Mandala and legacy BSV-21 alike, `_0` included", () => {
+    // a Mandala deploy row: `<txid>_0`
+    expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: `${T("3")}_0`, role: "deploy", encoding: "mandala" });
+    // a Mandala value row with a 32-byte id: `<txid>_0`
     const v32 = decodeTokenRow({ outpoint: `${T("a")}.0`, lockingScript: Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex() })!;
     expect(Mandala.decode(LockingScript.fromHex(Mandala.value(goldSdk, 1n, { lock: ADDR }).lock().toHex()))!.idBytes!.length).toBe(32);
     expect(v32).toMatchObject({ tokenId: gold, role: "value", encoding: "mandala" });
@@ -252,7 +253,7 @@ describe("deploy action", () => {
       },
     } as unknown as WalletInterface;
     const res = await deployToken(wallet, { ...base, icon: { kind: "upload", as: "ordinal", content: PNG, contentType: "image/png" } });
-    expect(res).toMatchObject({ txid: T("f"), tokenId: T("f") });
+    expect(res).toMatchObject({ txid: T("f"), tokenId: `${T("f")}_0` });
     expect(calls.getPublicKey).toHaveLength(2);
     expect(calls.getPublicKey[0]).toMatchObject({ protocolID: [0, "onesat"], counterparty: "self", forSelf: true });
     expect((calls.getPublicKey[0] as any).keyID).toMatch(/^bsv21-deploy-GOLD-[0-9a-f]{16}$/);

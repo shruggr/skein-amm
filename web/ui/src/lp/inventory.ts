@@ -32,7 +32,7 @@ export interface TokenMetadata {
 export interface TokenOutput {
   /** `txid_vout` */
   outpoint: string;
-  /** By origin (src/lib/tokenId.ts): a Mandala token's bare `<txid>`, a legacy BSV-21 token's `<txid>_<vout>`. */
+  /** `<txid>_<vout>` for every token, `_0` included (src/lib/tokenId.ts). */
   tokenId: string;
   role: TokenRole;
   /** Base units; 0n on an authority (or an authority deploy). */
@@ -87,9 +87,9 @@ export function decodeTokenRow(row: Pick<WalletOutput, "outpoint" | "lockingScri
     if (bin.role === "deploy") {
       const op = parseOutpoint(outpoint);
       if (!op) return undefined;
-      return { outpoint, tokenId: tokenIdText(op, "mandala"), role: "deploy", amount: bin.amount, encoding: "mandala", metadata: bin.metadata ?? {} };
+      return { outpoint, tokenId: tokenIdText(op), role: "deploy", amount: bin.amount, encoding: "mandala", metadata: bin.metadata ?? {} };
     }
-    // 1sat-sdk prints a 32-byte id `<txid>_0`: the token id is the bare txid (a 36-byte one `<txid>_<vout>`).
+    // A 32-byte id is `<txid>_0`, a 36-byte one `<txid>_<vout>`.
     return { outpoint, tokenId: tokenIdOfWire(bin.idBytes!), role: bin.role, amount: bin.amount, encoding: "mandala" };
   }
 
@@ -172,20 +172,9 @@ export function deployIcon(deploy: TokenOutput, sources: IconSources): IconRef |
   return parseOutpoint(icon) ? resolveIcon(icon, sources) : { outpoint: icon };
 }
 
-/**
- * How surely a row writes its token's id by origin: a deploy row knows it, a
- * legacy JSON row writes `<txid>_<vout>`, a Mandala value or authority row
- * with a 32-byte id cannot tell a Mandala token from a legacy one deployed at
- * output 0 and is written as Mandala (the bare txid).
- */
-function idRank(t: TokenOutput): number {
-  return t.role === "deploy" ? 2 : t.encoding === "bsv21" ? 1 : 0;
-}
-
-/** Group decoded `bsv21` rows by token (any id form of the same token is one), its id the surest row's. */
+/** Group decoded `bsv21` rows by token (any id form of the same token is one), its id `<txid>_<vout>`. */
 export function buildInventory(tokenRows: WalletOutput[], sources: IconSources = {}): Inventory {
   const byId = new Map<string, TokenSummary>();
-  const rankOf = new Map<string, number>();
   const unrecognized: string[] = [];
   const pools: string[] = [];
   for (const row of tokenRows) {
@@ -201,12 +190,8 @@ export function buildInventory(tokenRows: WalletOutput[], sources: IconSources =
     const key = parseTokenId(t.tokenId) ? sdkTokenId(t.tokenId) : t.tokenId; // a malformed legacy id groups as written
     let s = byId.get(key);
     if (!s) {
-      s = { tokenId: t.tokenId, balance: 0n, valueOutputs: 0, authorities: 0, encodings: [], deployInWallet: false };
+      s = { tokenId: key, balance: 0n, valueOutputs: 0, authorities: 0, encodings: [], deployInWallet: false };
       byId.set(key, s);
-      rankOf.set(key, idRank(t));
-    } else if (idRank(t) > rankOf.get(key)!) {
-      s.tokenId = t.tokenId;
-      rankOf.set(key, idRank(t));
     }
     if (!s.encodings.includes(t.encoding)) s.encodings.push(t.encoding);
     if (t.amount === 0n) s.authorities++;

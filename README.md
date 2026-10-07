@@ -3,15 +3,19 @@
 A non-custodial BSV ↔ token AMM over Mandala tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the Mandala components, the AMM's own programs
-and its pages. Version **0.7.0**: skein's routes, filters and roles
+and its pages. Version **0.7.1**: on skein-overlay 0.10.0 and
+skein-mandala 0.8.1, every token id is `<txid>_<vout>`, Mandala and legacy
+BSV-21 alike, `_0` included, as BRC-162 "Token identification" writes it
+(David, 2026-10-07, shruggr/skein#120; supersedes 0.6.3's bare txid).
+0.7.0: skein's routes, filters and roles
 (shruggr/skein#143), on skein-overlay 0.10.0 and skein-mandala 0.8.0 — the
 manifest's `dispatch` and `reads` are `routes` (no senders): the box
 `amm/register` is root's (`roles: {root: ["register", "market",
 "validator"]}`), the reads are read routes whose filters answer (the pages:
 the filter `page`, amm-p2p's `serve`), `/call` lists `kernel.brc104`, and
 the box `amm` is the engine's alone, so amm-p2p's message path moved to its
-own box `amm/amm-p2p` (docs/AMM.md "Routes"). 0.6.3: the pages write a Mandala token's id as the bare
-`<txid>` (a legacy BSV-21 token's `<txid>_<vout>`), show outpoints as
+own box `amm/amm-p2p` (docs/AMM.md "Routes"). 0.6.3: the pages wrote a Mandala token's id as the bare
+`<txid>` (superseded by 0.7.1), show outpoints as
 `<txid>.<vout>`, let every id shown be expanded and copied, and send
 `POST /submit` unsigned, with plain `fetch` (David, 2026-10-08). 0.6.2: market and validator are the owner's switch, both
 off in the manifest (David, 2026-10-07: "this shouldn't have been a config
@@ -37,8 +41,8 @@ request to its own validator program in-VM. Ported from amm-poc (b-open-io/amm-p
 | role | file | what |
 |---|---|---|
 | `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.10.0's build: serves the topics, keeps the registered set (`register` / `deregister`, only in `amm/register`, root's) and, by root's `market` / `validator` switch (0.9.2; the initial value `config.overlay.market` / `.validator`, absent here), asks liveness of and beacons each registered token's `tm_<txid>-live`, takes submissions by message (box `amm/submit`, answered to the sender's box) and by `POST /submit` (BRC-22: the STEAK) |
-| `mandala-topic` | `bin/mandala-topic.wasm` | skein-mandala 0.8.0's topic manager: one topic per token, `tm_<txid>`, judged by the BRC-162 rules alone; the discovery topic `tm_mandala` |
-| `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.8.0's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output), and the token list (the read route `/mandala/tokens`, its filter `tokens`) |
+| `mandala-topic` | `bin/mandala-topic.wasm` | skein-mandala 0.8.1's topic manager: one topic per token, `tm_<txid>`, judged by the BRC-162 rules alone; the discovery topic `tm_mandala` |
+| `mandala-lookup` | `bin/mandala-lookup.wasm` | skein-mandala 0.8.1's lookups `ls_mandala` (a token's value and authority outputs, one output) and `ls_mandala_deploys` (a token's deploy output), and the token list (the read route `/mandala/tokens`, its filter `tokens`) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools of every token topic the overlay serves, each query naming its token |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token when `config.overlay.validator` is set: checks a taker's or an LP's transaction against the pool, signs the pool input last, submits it to its own overlay by message and answers on the engine's answer (`swap`, `addLiquidity`, `deploy`, libp2p direct calls) |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1`, `amm.liquidity/1`: a transaction carried to the validator the caller names), and the pages (`www/`, served from the app's own tree) |
@@ -46,7 +50,7 @@ request to its own validator program in-VM. Ported from amm-poc (b-open-io/amm-p
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
 | | `web/ui`, `web/engine` | the pages (validator, LP, swap, tokens) and the matching engine, built into `www/` |
-| | `www/mandala/` | skein-mandala 0.8.0's pages: deploy a token, root's token topics |
+| | `www/mandala/` | skein-mandala 0.8.1's pages: deploy a token, root's token topics |
 
 docs/AMM.md has the pieces, the pool rule, the interfaces, the rows and
 what is not wired.
@@ -64,7 +68,7 @@ scripts/www.sh     # www/: the pages from web/ui, then the Mandala pages into ww
 ```
 
 **The overlay and Mandala artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.10.0 and skein-mandala v0.8.0 by tag
+`build.zig.zon` names skein-overlay v0.10.0 and skein-mandala v0.8.1 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/mandala-topic.wasm`, `bin/mandala-lookup.wasm`
 from the skein-mandala package, byte for byte. skein-mandala's pages are
@@ -210,9 +214,9 @@ POST <base>/lookup
 
 | | |
 |---|---|
-| this app | 0.7.0 |
+| this app | 0.7.1 |
 | skein-overlay | v0.10.0 (ccaee43) by tag URL and hash (`build.zig.zon`): the engine in `bin/`, the modules `topic`, `lookup`, `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-mandala | v0.8.0 (d5c018f) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
+| skein-mandala | v0.8.1 (632b5c4) by tag URL and hash: `bin/mandala-*.wasm`, the module `mandala`; its pages by the tag's tarball and sha256 (`scripts/mandala-pages.sh`) |
 | skein-sdk | v0.7.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain v0.3.2) |

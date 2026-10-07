@@ -1,15 +1,13 @@
 /**
- * Token ids and outpoints, written and read in one place (skein-amm 0.6.3).
+ * Token ids and outpoints, written and read in one place (skein-amm 0.6.3,
+ * 0.7.1).
  *
- * A token id is written by the token's ORIGIN (BRC-162 "Token
- * identification"; skein-mandala src/name.zig `tokenIdText`). David,
- * 2026-10-08: "The token ids for mandala tokens are supposed to be just the
- * txid. ... The only ones which will have _vout are the legacy bsv21 tokens.
- * all mandala are just the txid."
- *  - a token that originated as a Mandala (BRC-162 binary) deploy: the bare
- *    `<txid>` (64 lowercase hex, display order);
- *  - a legacy BSV-21 (BRC-161 JSON inscription) token: `<txid>_<vout>`,
- *    `_0` included.
+ * A token id is written `<txid>_<vout>` for every token, Mandala (BRC-162
+ * binary) and legacy BSV-21 (BRC-161 JSON) alike, `_0` included: BRC-162
+ * "Token identification" ("For display and APIs, the string form is
+ * `<txid>_<vout>` ... fixed for BSV-21 and Mandala ... for a 32-byte id,
+ * appends `_0`"). David, 2026-10-07 (shruggr/skein#120; supersedes 0.6.3's
+ * bare txid). The bare 32-byte txid is the wire form only.
  * On input every form names the same token: `<txid>`, `<txid>_<vout>`,
  * `<txid>.<vout>` (no vout = vout 0).
  *
@@ -17,11 +15,11 @@
  * always to be shown in the txid.vout format, not underscores. The ONLY
  * remnant of underscores is for legacy tokenIds".
  *
- * Boundaries keep the receiver's form: 1sat-sdk's wallet filings
- * (`bsv21:<id>` tags, the customInstructions `id`) and `Mandala`'s string id
- * take `<txid>_<vout>` (`sdkTokenId`); the token's basket is `mandala <txid>
- * <vout>`; the Zig programs' outpoint fields (amm-lookup's `{outpoint}`, the
- * relay's) and the LP key derivations keep `<txid>_<vout>` as before.
+ * 1sat-sdk's wallet filings (`bsv21:<id>` tags, the customInstructions `id`)
+ * and `Mandala`'s string id take the same `<txid>_<vout>` (`sdkTokenId`); the
+ * token's basket is `mandala <txid> <vout>`; the Zig programs' outpoint fields
+ * (amm-lookup's `{outpoint}`, the relay's) and the LP key derivations keep
+ * `<txid>_<vout>` as before.
  */
 
 export interface TokenRef {
@@ -29,8 +27,6 @@ export interface TokenRef {
   txid: string;
   vout: number;
 }
-
-export type TokenOrigin = "mandala" | "bsv21";
 
 const FORM = /^([0-9a-fA-F]{64})(?:[._](\d+))?$/;
 
@@ -52,17 +48,15 @@ export function parseOutpoint(text: string): TokenRef | null {
   return parse(text, true);
 }
 
-/** The token id by origin: a Mandala token deployed at output 0 is the bare txid, anything else `<txid>_<vout>`. */
-export function tokenIdText(ref: TokenRef, origin: TokenOrigin): string {
-  const txid = ref.txid.toLowerCase();
-  return origin === "mandala" && ref.vout === 0 ? txid : `${txid}_${ref.vout}`;
+/** The token id of a deploy outpoint: `<txid>_<vout>`, `_0` included (BRC-162 "Token identification"). */
+export function tokenIdText(ref: TokenRef): string {
+  return `${ref.txid.toLowerCase()}_${ref.vout}`;
 }
 
 /**
  * The token id a Mandala output names by its BRC-162 wire id (internal byte
- * order): 32 bytes is the bare txid, 36 bytes (a legacy BRC-161 token at
- * vout > 0) `<txid>_<vout>`. What 1sat-sdk's `MandalaToken.tokenId` prints as
- * `<txid>_0` for a 32-byte id is the bare txid here.
+ * order): 32 bytes is `<txid>_0`, 36 bytes (a legacy BRC-161 token at
+ * vout > 0) `<txid>_<vout>`; as 1sat-sdk's `MandalaToken.tokenId` prints it.
  */
 export function tokenIdOfWire(idBytes: Uint8Array | number[]): string {
   const b = Uint8Array.from(idBytes);
@@ -71,8 +65,8 @@ export function tokenIdOfWire(idBytes: Uint8Array | number[]): string {
     .reverse()
     .map((x) => x.toString(16).padStart(2, "0"))
     .join("");
-  if (b.length === 32) return txid;
-  return `${txid}_${new DataView(b.buffer, b.byteOffset + 32, 4).getUint32(0, true)}`;
+  const vout = b.length === 32 ? 0 : new DataView(b.buffer, b.byteOffset + 32, 4).getUint32(0, true);
+  return tokenIdText({ txid, vout });
 }
 
 function must(text: string): TokenRef {
@@ -81,10 +75,9 @@ function must(text: string): TokenRef {
   return r;
 }
 
-/** The form 1sat-sdk takes (wallet tags and customInstructions, `Mandala`'s string id): `<txid>_<vout>`, a bare id as `<txid>_0`. */
+/** Any token id form → the token id string, `<txid>_<vout>` (a `<txid>` as `<txid>_0`): the form shown and the form 1sat-sdk takes (wallet tags and customInstructions, `Mandala`'s string id). */
 export function sdkTokenId(text: string): string {
-  const { txid, vout } = must(text);
-  return `${txid}_${vout}`;
+  return tokenIdText(must(text));
 }
 
 /** Whether two token id strings, in any form, name the same token. */
@@ -108,7 +101,7 @@ export function shortOutpoint(op: string): string {
   return r ? `${shortTxid(r.txid)}.${r.vout}` : op;
 }
 
-/** A token id shortened for display, in the form it is written: `abcdef01…456789ab` (Mandala) or `abcdef01…456789ab_3` (legacy). */
+/** A token id shortened for display, in the form it is written: `abcdef01…456789ab_0`; a bare txid (not a token id) as `abcdef01…456789ab`. */
 export function shortTokenId(id: string): string {
   const m = FORM.exec(id);
   if (!m) return id;

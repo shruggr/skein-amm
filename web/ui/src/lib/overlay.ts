@@ -30,7 +30,7 @@
  * names its token (`tokenId`: `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`).
  */
 import type { PoolState } from "@amm-poc/matching-engine";
-import { outpointText, parseTokenId, sameToken } from "./tokenId";
+import { outpointText, tokenIdText } from "./tokenId";
 
 // ---------------------------------------------------------------------------
 // Names
@@ -44,11 +44,9 @@ export interface TokenTopic {
   vout: number;
   kind: "native" | "legacy";
   /**
-   * The token id by origin (src/lib/tokenId.ts): from the topic name alone,
-   * `tm_<txid>` → `<txid>` and `tm_<txid>_<vout>` → `<txid>_<vout>`;
-   * `listTokenTopics` takes it from the Mandala token list where that names
-   * the topic (a legacy BSV-21 token deployed at output 0 is `<txid>_0`).
-   * What an `ls_amm` query names (any form).
+   * The token id, `<txid>_<vout>` (src/lib/tokenId.ts, BRC-162 "Token
+   * identification"): `tm_<txid>` → `<txid>_0`, `tm_<txid>_<vout>` →
+   * `<txid>_<vout>`. What an `ls_amm` query names (any form).
    */
   tokenId: string;
 }
@@ -65,7 +63,7 @@ export function parseTokenTopic(name: string): TokenTopic | null {
   const txid = m[1]!;
   const legacy = m[2] !== undefined;
   const vout = legacy ? Number(m[2]) : 0;
-  return { topic: name, txid, vout, kind: legacy ? "legacy" : "native", tokenId: legacy ? `${txid}_${vout}` : txid };
+  return { topic: name, txid, vout, kind: legacy ? "legacy" : "native", tokenId: tokenIdText({ txid, vout }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,33 +235,10 @@ export async function listLookupServiceProviders(base: string): Promise<ServiceL
   return (await getJson(`${base}/listLookupServiceProviders`)) as ServiceListing;
 }
 
-/** One entry of the Mandala token list, `GET <base>/mandala/tokens` (mandala-lookup `tokens`): the token id written by origin. */
-export interface ListedToken {
-  tokenId: string;
-  topic: string;
-}
-
-/**
- * The token topics with each token id taken from the Mandala token list where
- * it names the topic (the id by origin: a topic name alone does not tell a
- * legacy BSV-21 deploy at output 0 from a Mandala one).
- */
-export function withListedIds(topics: TokenTopic[], listed: unknown): TokenTopic[] {
-  if (!Array.isArray(listed)) return topics;
-  const byTopic = new Map<string, string>();
-  for (const l of listed as Partial<ListedToken>[]) {
-    if (l && typeof l.topic === "string" && typeof l.tokenId === "string" && parseTokenId(l.tokenId)) byTopic.set(l.topic, l.tokenId);
-  }
-  return topics.map((t) => {
-    const id = byTopic.get(t.topic);
-    return id && sameToken(id, t.tokenId) ? { ...t, tokenId: id } : t;
-  });
-}
-
-/** The token topics the instance serves, in listing order (non-token topics skipped), ids by origin (`withListedIds`; without the list, `parseTokenTopic`'s). */
+/** The token topics the instance serves, in listing order (non-token topics skipped). */
 export async function listTokenTopics(base: string): Promise<TokenTopic[]> {
-  const [topics, listed] = await Promise.all([listTopicManagers(base), getJson(`${base}/mandala/tokens`).catch(() => undefined)]);
-  return withListedIds(Object.keys(topics).map(parseTokenTopic).filter((t): t is TokenTopic => t !== null), listed);
+  const topics = await listTopicManagers(base);
+  return Object.keys(topics).map(parseTokenTopic).filter((t): t is TokenTopic => t !== null);
 }
 
 /** `POST <base>/lookup {service, query}`, signed. */

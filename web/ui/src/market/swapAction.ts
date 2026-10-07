@@ -102,10 +102,10 @@ export interface TokenInput {
   counterparty: string;
 }
 
-/** The token's 32-byte wire id (internal byte order) for a token with a 32-byte id (the bare `<txid>`; `<txid>_0` reads the same). */
+/** The token's 32-byte wire id (internal byte order) for a token with a 32-byte id (`<txid>_0`; `<txid>` and `<txid>.0` read the same). */
 export function assetIdOf(tokenId: string): string {
   const r = parseTokenId(tokenId);
-  if (!r || r.vout !== 0) throw new Error(`pools exist only for 32-byte ids (the bare <txid>), not ${tokenId}`);
+  if (!r || r.vout !== 0) throw new Error(`pools exist only for 32-byte ids (<txid>_0), not ${tokenId}`);
   return toHex(Utils.toArray(r.txid, "hex").reverse());
 }
 
@@ -273,7 +273,7 @@ export function swapFunding(plan: CallPlan, tokenInputs: { satoshis: number }[],
 
 export interface PrepareSwapInput {
   wallet: WalletInterface;
-  /** The bare `<txid>` (src/lib/tokenId.ts). */
+  /** `<txid>_0` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   direction: Direction;

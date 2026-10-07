@@ -197,7 +197,7 @@ export async function deriveSelfKey(wallet: WalletInterface, keyIDPrefix: string
 
 export interface DeployResult {
   txid: string;
-  /** The bare `<txid>`: a Mandala token's id (src/lib/tokenId.ts). */
+  /** `<txid>_0`: the token's id (src/lib/tokenId.ts). */
   tokenId: string;
   args: CreateActionArgs;
 }
@@ -211,5 +211,5 @@ export async function deployToken(wallet: WalletInterface, req: DeployRequest): 
   const result = await runCreateActionPipeline(wallet, args, []);
   if (result.error) throw new Error(result.error);
   if (!result.txid) throw new Error("the wallet returned no txid");
-  return { txid: result.txid, tokenId: tokenIdText({ txid: result.txid, vout: DEPLOY_VOUT }, "mandala"), args };
+  return { txid: result.txid, tokenId: tokenIdText({ txid: result.txid, vout: DEPLOY_VOUT }), args };
 }

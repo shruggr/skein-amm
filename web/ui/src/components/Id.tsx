@@ -6,24 +6,27 @@
  * button." As skein-mandala 0.7.4's `<Id>` (its pages in www/mandala/): each
  * txid shortened to its first and last 8; "copied" for 1.5 s, on a refused
  * clipboard "not copied" and the id shown whole; no alert. Outpoints show and
- * copy as `<txid>.<vout>`, token ids as written (src/lib/tokenId.ts).
+ * copy as `<txid>.<vout>`, token ids as `<txid>_<vout>` (src/lib/tokenId.ts).
  */
 import { useState } from "react";
-import { outpointText, shortOutpoint, shortTokenId } from "../lib/tokenId";
+import { outpointText, parseTokenId, sdkTokenId, shortOutpoint, shortTokenId } from "../lib/tokenId";
 
 /** A topic is a name carrying a token's txid (`tm_<txid>`, `tm_<txid>_<vout>`). */
 export type IdKind = "txid" | "token" | "outpoint" | "topic";
 
 /** The whole value as shown and copied. */
 export function fullId(value: string, kind: IdKind): string {
-  return kind === "outpoint" ? outpointText(value) : value;
+  if (kind === "outpoint") return outpointText(value);
+  if (kind === "token") return parseTokenId(value) ? sdkTokenId(value) : value; // any form → `<txid>_<vout>`
+  return value;
 }
 
 /** The shortened value. */
 export function shortId(value: string, kind: IdKind): string {
   if (kind === "outpoint") return shortOutpoint(value);
   if (kind === "topic") return value.replace(/[0-9a-fA-F]{64}/g, (h) => shortTokenId(h));
-  return shortTokenId(value); // a txid is a bare token id's form
+  if (kind === "token") return shortTokenId(fullId(value, kind));
+  return shortTokenId(value); // a txid: its first and last 8
 }
 
 export function Id({ value, kind }: { value: string; kind: IdKind }) {

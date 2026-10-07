@@ -166,7 +166,7 @@ export interface BasketRow {
 }
 
 export interface PoolableToken {
-  /** The bare `<txid>`: a token with a 32-byte id (src/lib/tokenId.ts). */
+  /** `<txid>_0`: a token with a 32-byte id (src/lib/tokenId.ts). */
   tokenId: string;
   txid: string;
   sym?: string;
@@ -204,7 +204,7 @@ export function poolableTokens(rows: BasketRow[], meta: Map<string, { sym?: stri
         const j = BSV21.decode(Script.fromHex(r.lockingScript));
         const named = j?.tokenData.id;
         const ref = named ? parseTokenId(named) : j?.tokenData.op?.startsWith("deploy") ? op : null;
-        const id = ref ? tokenIdText(ref, "bsv21") : named;
+        const id = ref ? tokenIdText(ref) : named;
         if (id) hidden.set(id, { tokenId: id, reason: LEGACY_HIDDEN });
       } catch {
         /* not a token */
@@ -214,7 +214,7 @@ export function poolableTokens(rows: BasketRow[], meta: Map<string, { sym?: stri
     let tokenId: string;
     if (t.role === "deploy") {
       if (t.amount <= 0n) continue;
-      tokenId = tokenIdText(op, "mandala");
+      tokenId = tokenIdText(op);
       if (vout !== 0) {
         hidden.set(tokenId, { tokenId, reason: LEGACY_HIDDEN });
         continue;
@@ -322,10 +322,10 @@ export class PoolDeployError extends Error {
   }
 }
 
-/** A token with a 32-byte id (the bare `<txid>`; `<txid>_0` / `<txid>.0` read the same) → the wire id (internal byte order), hex. */
+/** A token with a 32-byte id (`<txid>_0`; `<txid>` / `<txid>.0` read the same) → the wire id (internal byte order), hex. */
 export function assetIdHex(tokenId: string): string {
   const r = parseTokenId(tokenId);
-  if (!r || r.vout !== 0) throw new PoolDeployError(`pools exist only for Mandala tokens with a 32-byte id (the bare <txid>), not ${tokenId}`);
+  if (!r || r.vout !== 0) throw new PoolDeployError(`pools exist only for Mandala tokens with a 32-byte id (<txid>_0), not ${tokenId}`);
   return toHex((Utils.toArray(r.txid, "hex") as number[]).reverse());
 }
 

@@ -70,9 +70,9 @@ const poolDeploy = Transaction.fromHex(v.pool_deploy);
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
 const swap2 = Transaction.fromHex(v.swap_tokens_in);
 const DEPLOY_TXID = tokenDeploy.id("hex");
-// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
-const TOKEN_ID = DEPLOY_TXID;
-const SDK_ID = `${DEPLOY_TXID}_0`;
+// The page's token id and the wallet's filings are the same `<txid>_0` (BRC-162 Token identification, David 2026-10-07).
+const TOKEN_ID = `${DEPLOY_TXID}_0`;
+const SDK_ID = TOKEN_ID;
 const P1SAT = P1SAT_PROTOCOL as unknown as [number, string];
 const walletRoot = key(50); // the fake wallet's root: identity key and honest BRC-29 derivations
 

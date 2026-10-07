@@ -87,7 +87,7 @@ export function selectAddTokenInputs(candidates: TokenInput[], amount: bigint): 
 
 export interface AddLiquidityInput {
   wallet: WalletInterface;
-  /** The bare `<txid>` (src/lib/tokenId.ts). */
+  /** `<txid>_0` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   /** The lookup's `{outpoint, beef: true}` answer for the pool. */

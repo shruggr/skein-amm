@@ -67,7 +67,7 @@ export class RemoveShapeError extends Error {
 
 export interface RemoveLiquidityInput {
   wallet: WalletInterface;
-  /** The bare `<txid>` (src/lib/tokenId.ts). */
+  /** `<txid>_0` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   poolOutput: LookupOutput;

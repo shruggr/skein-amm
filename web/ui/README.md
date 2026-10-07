@@ -31,15 +31,20 @@ picker lists the validators live on any served token, merged). The Validator
 page reads the peer's `.live` read of this instance's token topics. Where the
 text below says `/live`, `thresholdMs` or "heartbeat seen", read this.
 
-**skein-amm 0.6.3: ids** (David, 2026-10-08): a Mandala token's id is the
-bare `<txid>`, a legacy BSV-21 token's `<txid>_<vout>`; every outpoint is
+**skein-amm 0.6.3: ids** (David, 2026-10-08): every outpoint is
 shown `<txid>.<vout>`; every txid, token id, outpoint and topic shown is an
 `<Id>` (`src/components/Id.tsx`: shortened, whole on a click, a copy
-button). The wallet's filings (`bsv21:<id>` tags, customInstructions `id`)
-and the programs' outpoint fields keep `<txid>_<vout>`. Where the text below
-writes a token id `<txid>_0`, read the bare `<txid>`. The remove-liquidity
+button). The remove-liquidity
 submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
 using authfetch for the submit http method").
+
+**skein-amm 0.7.1: one token id form** (David, 2026-10-07, shruggr/skein#120;
+supersedes 0.6.3's bare txid): every token id, Mandala and legacy BSV-21
+alike, is `<txid>_<vout>`, `_0` included, as BRC-162 "Token identification"
+writes it; the bare 32-byte txid is the wire form only. The pages, the
+wallet's filings and `ls_amm` queries carry the same string
+(`src/lib/tokenId.ts`), so the pages no longer read `/mandala/tokens` to
+learn a token's origin.
 
 **skein-amm 0.7.0: root, not an owner** (shruggr/skein#143, skein's routes,
 filters and roles). The explorer (`/explore`) and the engine's
@@ -261,8 +266,8 @@ names like `tm_<64 hex>` before sending anything.
 
 Names (skein-mandala docs/MANDALA.md): a token deployed at output 0 is topic
 `tm_<txid>`, a BRC-161 token deployed at a non-zero output
-`tm_<txid>_<vout>`. The pages write a token id by its origin, a Mandala
-token's the bare `<txid>` and a legacy BSV-21 token's `<txid>_<vout>`, and
+`tm_<txid>_<vout>`. The pages write every token id `<txid>_<vout>`, `_0`
+included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and
 show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
 `src/lib/tokenId.ts`); `ls_amm` takes any form in `{tokenId}`. The topics listed are
 the ones the owner registered with the engine (`/listTopicManagers`).

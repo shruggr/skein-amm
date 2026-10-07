@@ -36,9 +36,9 @@ const fund = Transaction.fromHex(v.fund);
 const tokenDeploy = Transaction.fromHex(v.token_deploy);
 const poolDeploy = Transaction.fromHex(v.pool_deploy);
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
-// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
-const TOKEN_ID = tokenDeploy.id("hex");
-const SDK_ID = `${TOKEN_ID}_0`;
+// The page's token id and the wallet's filings are the same `<txid>_0` (BRC-162 Token identification, David 2026-10-07).
+const TOKEN_ID = `${tokenDeploy.id("hex")}_0`;
+const SDK_ID = TOKEN_ID;
 const POOL_ID = `${swap1.id("hex")}_0`;
 const NEXT_LP_ID = lpKeyId(POOL_ID);
 const VKEY = validatorKey(poolDeploy.id("hex"), 0);

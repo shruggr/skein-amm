@@ -48,9 +48,9 @@ import beefAnswer from "./fixtures/instance-v2/lookup-outpoint-beef.json";
 import v from "./fixtures/amm-topic-vectors.json";
 
 const TXID = "948b532f1de8f7bb148f77da824544fe47b02079e7514d5b6a42856651c5214c";
-// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
-const TOKEN_ID = TXID;
-const SDK_ID = `${TXID}_0`;
+// The page's token id and the wallet's filings are the same `<txid>_0` (BRC-162 Token identification, David 2026-10-07).
+const TOKEN_ID = `${TXID}_0`;
+const SDK_ID = TOKEN_ID;
 
 // ---------------------------------------------------------------------------
 // Market view
