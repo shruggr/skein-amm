@@ -115,12 +115,6 @@ function cmpPrice(a: PoolState, b: PoolState): number {
   return l < r ? -1 : l > r ? 1 : 0;
 }
 
-/** `abcdef01…89_0` */
-export function shortOutpoint(op: string): string {
-  const [txid, vout] = op.split(/[._]/);
-  return txid && txid.length === 64 ? `${txid.slice(0, 8)}…${txid.slice(-4)}_${vout}` : op;
-}
-
 export function shortKey(k: string): string {
   return k.length > 20 ? `${k.slice(0, 10)}…${k.slice(-6)}` : k;
 }

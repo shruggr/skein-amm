@@ -11,8 +11,8 @@ topic per token, registered by the owner at runtime.
 | role | source | what it does |
 |---|---|---|
 | `overlay` | skein-overlay 0.9.2 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic, and with it the market's liveness and the validator's beacon on `tm_<txid>-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.7.3 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.7.3 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read `/mandala/tokens` (0.6.0: the token list is a read of the components) |
+| `mandala-topic` | skein-mandala 0.7.5 (copied) | judges `tm_<txid>` by the BRC-162 rules; `tm_mandala` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.7.5 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read `/mandala/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls, for every registered token when the validator role is on (the owner's switch, else `config.overlay.validator`); submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the relay, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
@@ -74,6 +74,8 @@ state.
 | `GET /mandala/tokens` | mandala-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]`; a read (0.6.0) |
 | `POST /call` | amm-p2p: `{fn, args}` for the three interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
+
+A token id in a query is any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`); the pages write a Mandala token's as the bare `<txid>`, a legacy BSV-21 token's as `<txid>_<vout>`, and show outpoints as `<txid>.<vout>` (0.6.3, David 2026-10-08), while `ls_amm`'s `outpoint` and the relay's take `<txid>_<vout>`.
 
 Which of these is a read and which a message route is "Rows and reads",
 below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).

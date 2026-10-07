@@ -66,3 +66,9 @@ table.kv th { width: 9.5em; white-space: nowrap; vertical-align: top; }
 table.kv td code { word-break: break-all; }
 details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 nav a { align-self: center; }
+.id { white-space: nowrap; }
+.id code { white-space: normal; word-break: break-all; }
+.id code.toggle { cursor: pointer; border-bottom: 1px dotted var(--muted); }
+.id-copy { padding: 0 6px; margin: 0 0 0 4px; font-size: 0.75rem; line-height: 1.4; background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; }
+.ord-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ord-item .ord-cell { width: 100%; }

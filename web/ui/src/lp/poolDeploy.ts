@@ -107,6 +107,7 @@ import type { ValidatorChoice } from "./validators";
 import { BRC29_PROTOCOL, brc29KeyID } from "../wallet/brc29";
 import { tokenSourceBeef } from "./wallet";
 import { POOL_OP, POOL_TAG, isPoolRow } from "./poolRows";
+import { parseOutpoint, parseTokenId, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId";
 export { POOL_OP, POOL_TAG, isPoolRow };
 /** The keyID prefix of the pre-BRC-29 LP keys (`P1SAT_PROTOCOL`). */
 export const LP_KEY_PREFIX = "amm-lp-";
@@ -165,7 +166,7 @@ export interface BasketRow {
 }
 
 export interface PoolableToken {
-  /** `<txid>_0` */
+  /** The bare `<txid>`: a token with a 32-byte id (src/lib/tokenId.ts). */
   tokenId: string;
   txid: string;
   sym?: string;
@@ -192,15 +193,19 @@ export function poolableTokens(rows: BasketRow[], meta: Map<string, { sym?: stri
   const hidden = new Map<string, HiddenToken>();
   for (const r of rows) {
     if (!r.lockingScript || isPoolRow(r)) continue;
-    const [txid, vout] = r.outpoint.split(/[._]/) as [string, string];
+    const op = parseOutpoint(r.outpoint);
+    if (!op) continue;
+    const { txid, vout } = op;
     const bytes = Utils.toArray(r.lockingScript, "hex") as number[];
     const t = decodeMandala(bytes);
     if (!t) {
-      // Legacy JSON (BRC-161) token output.
+      // Legacy JSON (BRC-161) token output: its id is `<txid>_<vout>`.
       try {
         const j = BSV21.decode(Script.fromHex(r.lockingScript));
-        const id = j?.tokenData.id ?? (j?.tokenData.op?.startsWith("deploy") ? `${txid}_${vout}` : undefined);
-        if (id) hidden.set(id.replace(".", "_"), { tokenId: id.replace(".", "_"), reason: LEGACY_HIDDEN });
+        const named = j?.tokenData.id;
+        const ref = named ? parseTokenId(named) : j?.tokenData.op?.startsWith("deploy") ? op : null;
+        const id = ref ? tokenIdText(ref, "bsv21") : named;
+        if (id) hidden.set(id, { tokenId: id, reason: LEGACY_HIDDEN });
       } catch {
         /* not a token */
       }
@@ -209,18 +214,17 @@ export function poolableTokens(rows: BasketRow[], meta: Map<string, { sym?: stri
     let tokenId: string;
     if (t.role === "deploy") {
       if (t.amount <= 0n) continue;
-      tokenId = `${txid}_${vout}`;
-      if (vout !== "0") {
+      tokenId = tokenIdText(op, "mandala");
+      if (vout !== 0) {
         hidden.set(tokenId, { tokenId, reason: LEGACY_HIDDEN });
         continue;
       }
     } else if (t.role === "value" && t.idBytes) {
+      tokenId = tokenIdOfWire(t.idBytes);
       if (t.idBytes.length !== 32) {
-        const id = toHex(Array.from(t.idBytes.slice(0, 32)).reverse()) + "_" + new DataView(t.idBytes.buffer, t.idBytes.byteOffset + 32, 4).getUint32(0, true);
-        hidden.set(id, { tokenId: id, reason: LEGACY_HIDDEN });
+        hidden.set(tokenId, { tokenId, reason: LEGACY_HIDDEN });
         continue;
       }
-      tokenId = `${toHex(Array.from(t.idBytes).reverse())}_0`;
     } else continue;
 
     let ci: { protocolID?: unknown; keyID?: unknown; counterparty?: unknown } = {};
@@ -239,7 +243,7 @@ export function poolableTokens(rows: BasketRow[], meta: Map<string, { sym?: stri
     tok.inputs.push({
       outpoint: `${txid}.${vout}`,
       txid,
-      vout: Number(vout),
+      vout,
       satoshis: r.satoshis,
       lockingScript: r.lockingScript,
       amount: t.amount,
@@ -318,11 +322,11 @@ export class PoolDeployError extends Error {
   }
 }
 
-/** `<txid>_0` → the 32-byte wire id (internal byte order), hex. */
+/** A token with a 32-byte id (the bare `<txid>`; `<txid>_0` / `<txid>.0` read the same) → the wire id (internal byte order), hex. */
 export function assetIdHex(tokenId: string): string {
-  const [txid, vout] = tokenId.split(/[._]/);
-  if (!txid || !/^[0-9a-f]{64}$/i.test(txid) || vout !== "0") throw new PoolDeployError(`pools exist only for Mandala tokens with a 32-byte id (<txid>_0), not ${tokenId}`);
-  return toHex((Utils.toArray(txid.toLowerCase(), "hex") as number[]).reverse());
+  const r = parseTokenId(tokenId);
+  if (!r || r.vout !== 0) throw new PoolDeployError(`pools exist only for Mandala tokens with a 32-byte id (the bare <txid>), not ${tokenId}`);
+  return toHex((Utils.toArray(r.txid, "hex") as number[]).reverse());
 }
 
 export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
@@ -498,11 +502,13 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
   const plan = planPoolDeploy({ ...form, lpPubKey: lpKey.publicKey, dec: meta.dec });
   const sym = meta.sym ?? "token";
 
+  // The wallet's filings carry 1sat-sdk's id form, `<txid>_0` (src/lib/tokenId.ts).
+  const sdkId = sdkTokenId(plan.tokenId);
   const pool: BasketFiling = {
     outputIndex: 0,
     basket: BSV21_BASKET,
-    tags: [...bsv21FilterTags({ tokenId: plan.tokenId }), POOL_TAG],
-    customInstructions: poolCustomInstructions({ tokenId: plan.tokenId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity }),
+    tags: [...bsv21FilterTags({ tokenId: sdkId }), POOL_TAG],
+    customInstructions: poolCustomInstructions({ tokenId: sdkId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity }),
   };
   const outputs: { satoshis: number; script: string }[] = [{ satoshis: Number(plan.sats), script: plan.lockingScript }];
   let tokenChange: BasketFiling | null = null;
@@ -512,9 +518,9 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
     tokenChange = {
       outputIndex: 1,
       basket: BSV21_BASKET,
-      tags: bsv21FilterTags({ tokenId: plan.tokenId }),
+      tags: bsv21FilterTags({ tokenId: sdkId }),
       customInstructions: buildBsv21CustomInstructions({
-        token: { id: plan.tokenId, amt: String(plan.tokenChange), op: "transfer", sym: meta.sym, dec: meta.dec },
+        token: { id: sdkId, amt: String(plan.tokenChange), op: "transfer", sym: meta.sym, dec: meta.dec },
         protocolID,
         keyID,
         counterparty: "self",
@@ -523,7 +529,7 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
   }
 
   // The token inputs' source transactions: the token's own basket, and `bsv21` (a deploy output there is tagged `bsv21:deploy`, not by its id).
-  const tokenBeef = await tokenSourceBeef(wallet, plan.tokenId, { tags: [...bsv21FilterTags({ tokenId: plan.tokenId }), BSV21_DEPLOY_TAG], tagQueryMode: "any" });
+  const tokenBeef = await tokenSourceBeef(wallet, plan.tokenId, { tags: [...bsv21FilterTags({ tokenId: sdkId }), BSV21_DEPLOY_TAG], tagQueryMode: "any" });
   if (!tokenBeef) throw new DeployShapeError("the wallet returned no BEEF for the token inputs");
   for (const t of form.inputs) if (!tokenBeef.findTxid(t.txid)) throw new DeployShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
 
@@ -532,7 +538,7 @@ export async function preparePoolDeploy(i: PreparePoolDeployInput): Promise<Prep
   const f = await createFunding(wallet, {
     satoshis: amounts.satoshis,
     expires,
-    amm: { deploy: plan.tokenId },
+    amm: { deploy: sdkId },
     description: `AMM pool deploy funding: ${sym}`,
     labels: ["amm-pool-deploy"],
     outputDescription: `AMM pool deploy funding: ${sym}`,

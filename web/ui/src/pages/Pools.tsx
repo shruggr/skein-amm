@@ -17,7 +17,9 @@ import { fetchLiveByToken, listTokenTopics, mergeLive, type LiveAnswer } from ".
 import { loadWalletAssets, type WalletAssets } from "../lp/wallet";
 import { buildInventory } from "../lp/inventory";
 import { formatAmount, parseAmount } from "../lp/amounts";
-import { shortKey, shortOutpoint, marginalPrice } from "../market/view";
+import { shortKey, marginalPrice } from "../market/view";
+import { shortTokenId } from "../lib/tokenId";
+import { Id } from "../components/Id";
 import {
   ago,
   choiceFor,
@@ -284,7 +286,7 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
             <select value={tokenId} onChange={(e) => setTokenId(e.target.value)}>
               {tokens.map((t) => (
                 <option key={t.tokenId} value={t.tokenId}>
-                  {(t.sym ?? shortOutpoint(t.tokenId)) + ` — ${formatAmount(t.balance, t.dec ?? 0)} in ${t.inputs.length} output(s)`}
+                  {(t.sym ?? shortTokenId(t.tokenId)) + ` — ${formatAmount(t.balance, t.dec ?? 0)} in ${t.inputs.length} output(s)`}
                 </option>
               ))}
             </select>
@@ -311,6 +313,7 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
           </label>
         </div>
       )}
+      {token && <p><small>Token id <Id value={token.tokenId} kind="token" /></small></p>}
       {hidden.length > 0 && (
         <p><small>Hidden: {hidden.length} legacy token(s) (BRC-161 deploys, 36-byte id or JSON form). The Pool contract hard-codes a 32-byte asset id, so only Mandala-native tokens can be pooled.</small></p>
       )}
@@ -321,7 +324,10 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
       {token && "sel" in form && (
         <p>
           <small>
-            Token inputs: {form.sel.inputs.map((t) => `${shortOutpoint(t.outpoint)} (${formatAmount(t.amount, dec)})`).join(", ")}
+            Token inputs:{" "}
+            {form.sel.inputs.map((t, n) => (
+              <span key={t.outpoint}>{n > 0 && ", "}<Id value={t.outpoint} kind="outpoint" /> ({formatAmount(t.amount, dec)})</span>
+            ))}
             {form.sel.change > 0n ? ` · token change back to the wallet: ${formatAmount(form.sel.change, dec)}` : " · exact, no token change"}
           </small>
         </p>
@@ -344,7 +350,7 @@ function CreatePool(props: { assets: WalletAssets; live: LiveAnswer | null; onSi
               <tr><th>LP key</th><td><code>{plan.state.lpPubKey}</code><br /><small>BRC-29 wallet key, keyID <code>{plan.lpKeyId}</code></small></td></tr>
               <tr><th>Validator key</th><td><code>{plan.state.validatorPubKey}</code><br /><small>anyone-child of the identity for <code>1-amm pool-{plan.validatorKeyId}</code> (the first deposit input)</small></td></tr>
               <tr><th>Validator identity</th><td><code>{plan.state.validatorIdentity}</code></td></tr>
-              <tr><th>Pool script</th><td>{plan.lockingScript.length / 2} bytes, output 0, topic <code>{plan.topic}</code></td></tr>
+              <tr><th>Pool script</th><td>{plan.lockingScript.length / 2} bytes, output 0, topic <Id value={plan.topic} kind="topic" /></td></tr>
             </tbody>
           </table>
           <button type="button" onClick={() => void create()} disabled={!wallet || !authFetch || busy || (!!deploy && !finished)}>
@@ -371,8 +377,8 @@ function DeployStatus({ d, onCheckAgain, onAbandon }: { d: { prepared: PreparedP
     <div className="leg">
       <p>
         <small>
-          Funding <code>{p.funding.txid}</code>: {p.funding.satoshis} sats ({p.funding.outputs} to the deploy&apos;s outputs beyond the token inputs + {p.funding.fee} miner
-          fee for {p.funding.size} bytes) · deploy <code>{p.txid}</code>, {p.deploy.toBinary().length} bytes, {p.deploy.inputs.length} inputs,{" "}
+          Funding <Id value={p.funding.txid} kind="txid" />: {p.funding.satoshis} sats ({p.funding.outputs} to the deploy&apos;s outputs beyond the token inputs + {p.funding.fee} miner
+          fee for {p.funding.size} bytes) · deploy <Id value={p.txid} kind="txid" />, {p.deploy.toBinary().length} bytes, {p.deploy.inputs.length} inputs,{" "}
           {p.deploy.outputs.length} outputs{p.tokenChange && " (token change back to the wallet)"}
         </small>
       </p>
@@ -380,7 +386,7 @@ function DeployStatus({ d, onCheckAgain, onAbandon }: { d: { prepared: PreparedP
       {!o && <p>Waiting for the validator…</p>}
       {o?.status === "accepted" && (
         <p className={o.completed.errors.length ? "warn" : "ok"}>
-          Pool created: <code>{o.completed.pool}</code>
+          Pool created: <Id value={o.completed.pool} kind="outpoint" />
           {o.completed.internalized ? " · filed in your wallet" : " · not filed in the wallet yet"}
           {o.completed.errors.map((e) => (
             <span key={e}><br /><small>{e}</small></span>
@@ -422,7 +428,7 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
   /** Submit, then the wallet takes the withdrawals in; the pending payout record stays until it has. */
   async function submitAndComplete(s: PreparedRemoveLiquidity) {
     if (!wallet) return;
-    const r = await submitToOverlay(authFetch, AMM_OVERLAY, s.topic, s.beef);
+    const r = await submitToOverlay(AMM_OVERLAY, s.topic, s.beef);
     setSubmitted(`submitted: ${steakText(r)}`);
     const at = admittedOutput(s);
     if (at !== null) setSubmitted((await awaitAdmitted(authFetch, AMM_OVERLAY, s.txid, at)) ? `admitted (${steakText(r)})` : `submitted (${steakText(r)}), not admitted yet: the lookup does not show it`);
@@ -495,10 +501,10 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
         <>
           <p>
             <small>
-              Funding <code>{prepared.funding.txid}</code> (broadcast by the wallet): {prepared.funding.satoshis} sats ({prepared.funding.outputs} for Mandala outputs +{" "}
+              Funding <Id value={prepared.funding.txid} kind="txid" /> (broadcast by the wallet): {prepared.funding.satoshis} sats ({prepared.funding.outputs} for Mandala outputs +{" "}
               {prepared.funding.fee} miner fee for {prepared.funding.size} bytes)
               <br />
-              Remove <code>{prepared.txid}</code>: {prepared.size} bytes{prepared.plan.closing ? " · closes the pool" : ""}
+              Remove <Id value={prepared.txid} kind="txid" />: {prepared.size} bytes{prepared.plan.closing ? " · closes the pool" : ""}
             </small>
           </p>
           <CopyHex hex={prepared.hex} />
@@ -510,7 +516,7 @@ function RemoveForm({ p, meta, onDone }: { p: MyPool; meta?: { sym?: string; dec
           )}
         </>
       )}
-      {submitted && <p className="ok">Submitted ({prepared?.topic.slice(0, 14)}…): <code>{submitted}</code></p>}
+      {submitted && <p className="ok">Submitted ({prepared && <Id value={prepared.topic} kind="topic" />}): <code>{submitted}</code></p>}
       {completed && (
         <p className={completed.internalized && completed.errors.length === 0 ? "ok" : "warn"}>
           Withdrawals {completed.internalized ? "in your wallet" : "not internalized (a sats withdrawal stays under Pending payouts)"}
@@ -644,7 +650,15 @@ function AddForm({ p, meta, tokenRows, peerId, onDone }: { p: MyPool; meta?: { s
         <small>
           The contract does not fix the ratio (you own the pool): any amounts go in. Price now {marginalPrice(p.state, meta?.dec)}
           {after && <> · after {marginalPrice(after, meta?.dec)} ({after.bsvReserve.toString()} sats · {formatAmount(after.tokenReserve, dec)} {sym})</>}
-          {"inputs" in form && form.inputs.length > 0 && <> · token inputs {form.inputs.map((t) => shortOutpoint(t.outpoint)).join(", ")} (exact)</>}
+          {"inputs" in form && form.inputs.length > 0 && (
+            <>
+              {" "}· token inputs{" "}
+              {form.inputs.map((t, n) => (
+                <span key={t.outpoint}>{n > 0 && ", "}<Id value={t.outpoint} kind="outpoint" /></span>
+              ))}{" "}
+              (exact)
+            </>
+          )}
         </small>
       </p>
       {"error" in form && (bsv.trim() || tok.trim()) && <p><small>{form.error}</small></p>}
@@ -660,7 +674,7 @@ function AddForm({ p, meta, tokenRows, peerId, onDone }: { p: MyPool; meta?: { s
         <>
           <p>
             <small>
-              Funding <code>{add.prepared.funding.txid}</code>: {add.prepared.funding.satoshis} sats ({add.prepared.funding.outputs} beyond the token inputs&apos; sats +{" "}
+              Funding <Id value={add.prepared.funding.txid} kind="txid" />: {add.prepared.funding.satoshis} sats ({add.prepared.funding.outputs} beyond the token inputs&apos; sats +{" "}
               {add.prepared.funding.fee} miner fee for {add.prepared.funding.size} bytes) · add {add.prepared.tx.inputs.length} inputs, the pool continuation only · next LP key{" "}
               <code>{add.prepared.nextLpKey.keyID}</code>
             </small>
@@ -669,7 +683,7 @@ function AddForm({ p, meta, tokenRows, peerId, onDone }: { p: MyPool; meta?: { s
           {!o && <p>Waiting for the validator…</p>}
           {o?.status === "accepted" && (
             <p className={o.completed.errors.length ? "warn" : "ok"}>
-              Added: the pool is now <code>{o.completed.pool}</code>
+              Added: the pool is now <Id value={o.completed.pool} kind="outpoint" />
               {o.completed.internalized ? " · filed in your wallet" : " · not filed in the wallet yet"}
               {o.completed.errors.map((e) => (
                 <span key={e}><br /><small>{e}</small></span>
@@ -679,7 +693,7 @@ function AddForm({ p, meta, tokenRows, peerId, onDone }: { p: MyPool; meta?: { s
           {o?.status === "refused" && (
             <p className="bad">
               Refused: {o.reason}. The funding was released.
-              {o.pool && <> The pool is now <code>{shortOutpoint(o.pool.outpoint)}</code> ({o.pool.bsvReserve.toString()} sats · {formatAmount(o.pool.tokenReserve, dec)} {sym}); my pools is reloaded to plan again.</>}
+              {o.pool && <> The pool is now <Id value={o.pool.outpoint} kind="outpoint" /> ({o.pool.bsvReserve.toString()} sats · {formatAmount(o.pool.tokenReserve, dec)} {sym}); my pools is reloaded to plan again.</>}
             </p>
           )}
           {o?.status === "timeout" && <p className="bad">The validator did not answer in time. The funding was released.</p>}
@@ -747,7 +761,7 @@ function MyPools(props: { assets: WalletAssets; live: LiveAnswer | null; refresh
         return (
           <div key={p.state.outpoint} className="leg">
             <p>
-              <strong>{m?.sym ?? shortOutpoint(p.topic.tokenId)}</strong> · <code title={p.state.outpoint}>{shortOutpoint(p.state.outpoint)}</code>
+              <strong>{m?.sym ?? <Id value={p.topic.tokenId} kind="token" />}</strong> · <Id value={p.state.outpoint} kind="outpoint" />
               <br />
               <small>
                 {p.state.bsvReserve.toString()} sats · {formatAmount(p.state.tokenReserve, m?.dec ?? 0)} {m?.sym ?? "base units"} · price{" "}
@@ -790,7 +804,7 @@ export function PoolsSection() {
       const reads = await fetchLiveByToken(AMM_OVERLAY, await listTokenTopics(AMM_OVERLAY));
       setLive(mergeLive([...reads.values()].filter((r): r is LiveAnswer => !(r instanceof Error))));
       const failed = [...reads.entries()].filter(([, r]) => r instanceof Error);
-      if (failed.length) setError(`${AMM_OVERLAY}/.live: ${failed.map(([k, r]) => `${shortOutpoint(k)}: ${(r as Error).message}`).join("; ")}`);
+      if (failed.length) setError(`${AMM_OVERLAY}/.live: ${failed.map(([k, r]) => `${shortTokenId(k)}: ${(r as Error).message}`).join("; ")}`);
     } catch (e) {
       setError(`${AMM_OVERLAY}/.live: ${errText(e)}`);
     }

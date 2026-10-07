@@ -36,7 +36,9 @@ const fund = Transaction.fromHex(v.fund);
 const tokenDeploy = Transaction.fromHex(v.token_deploy);
 const poolDeploy = Transaction.fromHex(v.pool_deploy);
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
-const TOKEN_ID = `${tokenDeploy.id("hex")}_0`;
+// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
+const TOKEN_ID = tokenDeploy.id("hex");
+const SDK_ID = `${TOKEN_ID}_0`;
 const POOL_ID = `${swap1.id("hex")}_0`;
 const NEXT_LP_ID = lpKeyId(POOL_ID);
 const VKEY = validatorKey(poolDeploy.id("hex"), 0);
@@ -163,7 +165,7 @@ describe("add liquidity: funding and the add transaction", () => {
     expect(calls[1]!.args).toEqual({ protocolID: BRC29, keyID: NEXT_LP_ID, counterparty: "self", forSelf: true });
     expect(LP_KEY_PROTOCOL).toEqual(BRC29);
     expect(calls[2]!.args).toEqual({ basket: `mandala ${TOKEN_ID.slice(0, 64)} 0`, include: "entire transactions", limit: 10000 });
-    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${SDK_ID}`], include: "entire transactions", limit: 10000 });
     const keyID = (calls[4]!.args as { keyID: string }).keyID;
     expect(keyID).toMatch(/^amm-funding-[0-9a-f]{16}$/);
     const f = prepared.funding;
@@ -222,7 +224,7 @@ describe("add liquidity: funding and the add transaction", () => {
     expect(b.atomicTxid).toBe(prepared.txid);
     expect(b.findTxid(prepared.funding.txid)).toBeDefined();
     expect(b.findTxid(poolDeploy.id("hex"))).toBeDefined();
-    expect(prepared.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"] });
+    expect(prepared.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"] });
     expect(JSON.parse(prepared.continuation.customInstructions)).toMatchObject({ op: "amm-pool", protocolID: BRC29, keyID: NEXT_LP_ID, counterparty: "self" });
   });
 
@@ -310,7 +312,7 @@ describe("add liquidity: amm.liquidity.submit / amm.liquidity.status", () => {
     const ia = after[0]!.args as { tx: number[]; outputs: unknown[]; labels: string[]; description: string };
     expect(Beef.fromBinary(ia.tx).atomicTxid).toBe(txid);
     expect(ia.outputs).toEqual([
-      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"], customInstructions: prepared.continuation.customInstructions } },
+      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"], customInstructions: prepared.continuation.customInstructions } },
     ]);
     expect(ia.labels).toEqual(["amm-add-liquidity"]);
     expect(after[1]!.args).toEqual({ basket: "1sat-deposit", output: prepared.funding.outpoint });

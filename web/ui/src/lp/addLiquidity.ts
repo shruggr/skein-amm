@@ -59,6 +59,7 @@ import type { LookupOutput } from "../lib/overlay";
 import { LP_KEY_PROTOCOL, lpKeyId, poolCustomInstructions, POOL_TAG, type BasketFiling } from "./poolDeploy";
 import type { LpKeyRef } from "./myPools";
 import { tokenSourceBeef } from "./wallet";
+import { sdkTokenId } from "../lib/tokenId";
 
 export class AddShapeError extends Error {
   constructor(message: string) {
@@ -86,7 +87,7 @@ export function selectAddTokenInputs(candidates: TokenInput[], amount: bigint): 
 
 export interface AddLiquidityInput {
   wallet: WalletInterface;
-  /** `<txid>_0` */
+  /** The bare `<txid>` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   /** The lookup's `{outpoint, beef: true}` answer for the pool. */
@@ -146,9 +147,11 @@ export async function prepareAddLiquidity(i: AddLiquidityInput): Promise<Prepare
   const { publicKey: nextPub } = await wallet.getPublicKey({ protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, counterparty: "self", forSelf: true });
   const plan = PoolTemplate.planAddLiquidity({ pool: poolUtxo, addBsv: i.addBsv, addTokens: i.addTokens, nextLpPubKey: nextPub });
 
+  // The wallet's filings carry 1sat-sdk's id form, `<txid>_0` (src/lib/tokenId.ts).
+  const sdkId = sdkTokenId(i.tokenId);
   let tokenBeef: Beef | null = null;
   if (i.tokenInputs.length > 0) {
-    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: i.tokenId }) });
+    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: sdkId }) });
     if (!tokenBeef) throw new AddShapeError("the wallet returned no BEEF for the token inputs");
     for (const t of i.tokenInputs) if (!tokenBeef.findTxid(t.txid)) throw new AddShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
   }
@@ -156,8 +159,8 @@ export async function prepareAddLiquidity(i: AddLiquidityInput): Promise<Prepare
   const continuation: BasketFiling = {
     outputIndex: 0,
     basket: BSV21_BASKET,
-    tags: [...bsv21FilterTags({ tokenId: i.tokenId }), POOL_TAG],
-    customInstructions: poolCustomInstructions({ tokenId: i.tokenId, ...i.meta, protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, args: pool.args, validatorIdentity: pool.state.validatorIdentity }),
+    tags: [...bsv21FilterTags({ tokenId: sdkId }), POOL_TAG],
+    customInstructions: poolCustomInstructions({ tokenId: sdkId, ...i.meta, protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, args: pool.args, validatorIdentity: pool.state.validatorIdentity }),
   };
 
   // Step 3: the funding, nosend.

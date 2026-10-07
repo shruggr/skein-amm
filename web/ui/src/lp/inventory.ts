@@ -17,6 +17,7 @@ import { formatOrdinalOutpoint } from "@1sat/types";
 import { Script, type Transaction, type WalletOutput } from "@bsv/sdk";
 import { imageFromScript, type ImageContent } from "./images";
 import { isPoolRow } from "./poolRows";
+import { parseOutpoint, parseTokenId, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId";
 
 export type TokenRole = "deploy" | "value" | "authority";
 export type TokenEncoding = "mandala" | "bsv21";
@@ -31,6 +32,7 @@ export interface TokenMetadata {
 export interface TokenOutput {
   /** `txid_vout` */
   outpoint: string;
+  /** By origin (src/lib/tokenId.ts): a Mandala token's bare `<txid>`, a legacy BSV-21 token's `<txid>_<vout>`. */
   tokenId: string;
   role: TokenRole;
   /** Base units; 0n on an authority (or an authority deploy). */
@@ -69,13 +71,6 @@ export interface Inventory {
   pools: string[];
 }
 
-const OUTPOINT = /^([0-9a-fA-F]{64})[._](\d+)$/;
-
-function splitOutpoint(op: string): { txid: string; vout: number } | undefined {
-  const m = OUTPOINT.exec(op);
-  return m ? { txid: m[1]!.toLowerCase(), vout: Number(m[2]) } : undefined;
-}
-
 /** One `bsv21` basket row → its token output, or undefined. */
 export function decodeTokenRow(row: Pick<WalletOutput, "outpoint" | "lockingScript">): TokenOutput | undefined {
   if (!row.lockingScript) return undefined;
@@ -90,9 +85,12 @@ export function decodeTokenRow(row: Pick<WalletOutput, "outpoint" | "lockingScri
   const bin = Mandala.decode(script);
   if (bin) {
     if (bin.role === "deploy") {
-      return { outpoint, tokenId: outpoint, role: "deploy", amount: bin.amount, encoding: "mandala", metadata: bin.metadata ?? {} };
+      const op = parseOutpoint(outpoint);
+      if (!op) return undefined;
+      return { outpoint, tokenId: tokenIdText(op, "mandala"), role: "deploy", amount: bin.amount, encoding: "mandala", metadata: bin.metadata ?? {} };
     }
-    return { outpoint, tokenId: bin.tokenId!, role: bin.role, amount: bin.amount, encoding: "mandala" };
+    // 1sat-sdk prints a 32-byte id `<txid>_0`: the token id is the bare txid (a 36-byte one `<txid>_<vout>`).
+    return { outpoint, tokenId: tokenIdOfWire(bin.idBytes!), role: bin.role, amount: bin.amount, encoding: "mandala" };
   }
 
   let json: BSV21 | null = null;
@@ -146,7 +144,7 @@ export interface IconSources {
 
 /** Find the image at `outpoint` in what the wallet gave us. */
 export function resolveIcon(outpoint: string, sources: IconSources): IconRef {
-  const op = splitOutpoint(outpoint);
+  const op = parseOutpoint(outpoint);
   if (!op) return { outpoint };
   const norm = `${op.txid}_${op.vout}`;
   for (const row of sources.ordinalRows ?? []) {
@@ -168,15 +166,26 @@ export function deployIcon(deploy: TokenOutput, sources: IconSources): IconRef |
   const icon = deploy.metadata?.icon;
   if (icon === undefined) return undefined;
   if (typeof icon === "number") {
-    const d = splitOutpoint(deploy.outpoint)!;
+    const d = parseOutpoint(deploy.outpoint)!;
     return resolveIcon(`${d.txid}_${icon}`, sources);
   }
-  return splitOutpoint(icon) ? resolveIcon(icon, sources) : { outpoint: icon };
+  return parseOutpoint(icon) ? resolveIcon(icon, sources) : { outpoint: icon };
 }
 
-/** Group decoded `bsv21` rows by token id. */
+/**
+ * How surely a row writes its token's id by origin: a deploy row knows it, a
+ * legacy JSON row writes `<txid>_<vout>`, a Mandala value or authority row
+ * with a 32-byte id cannot tell a Mandala token from a legacy one deployed at
+ * output 0 and is written as Mandala (the bare txid).
+ */
+function idRank(t: TokenOutput): number {
+  return t.role === "deploy" ? 2 : t.encoding === "bsv21" ? 1 : 0;
+}
+
+/** Group decoded `bsv21` rows by token (any id form of the same token is one), its id the surest row's. */
 export function buildInventory(tokenRows: WalletOutput[], sources: IconSources = {}): Inventory {
   const byId = new Map<string, TokenSummary>();
+  const rankOf = new Map<string, number>();
   const unrecognized: string[] = [];
   const pools: string[] = [];
   for (const row of tokenRows) {
@@ -189,10 +198,15 @@ export function buildInventory(tokenRows: WalletOutput[], sources: IconSources =
       unrecognized.push(formatOrdinalOutpoint(row.outpoint));
       continue;
     }
-    let s = byId.get(t.tokenId);
+    const key = parseTokenId(t.tokenId) ? sdkTokenId(t.tokenId) : t.tokenId; // a malformed legacy id groups as written
+    let s = byId.get(key);
     if (!s) {
       s = { tokenId: t.tokenId, balance: 0n, valueOutputs: 0, authorities: 0, encodings: [], deployInWallet: false };
-      byId.set(t.tokenId, s);
+      byId.set(key, s);
+      rankOf.set(key, idRank(t));
+    } else if (idRank(t) > rankOf.get(key)!) {
+      s.tokenId = t.tokenId;
+      rankOf.set(key, idRank(t));
     }
     if (!s.encodings.includes(t.encoding)) s.encodings.push(t.encoding);
     if (t.amount === 0n) s.authorities++;

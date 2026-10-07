@@ -70,7 +70,9 @@ const poolDeploy = Transaction.fromHex(v.pool_deploy);
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
 const swap2 = Transaction.fromHex(v.swap_tokens_in);
 const DEPLOY_TXID = tokenDeploy.id("hex");
-const TOKEN_ID = `${DEPLOY_TXID}_0`;
+// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
+const TOKEN_ID = DEPLOY_TXID;
+const SDK_ID = `${DEPLOY_TXID}_0`;
 const P1SAT = P1SAT_PROTOCOL as unknown as [number, string];
 const walletRoot = key(50); // the fake wallet's root: identity key and honest BRC-29 derivations
 
@@ -226,8 +228,8 @@ describe("pool deploy: plan", () => {
       outpoint: `${poolDeploy.id("hex")}.0`,
       satoshis: 1_000_000,
       lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(),
-      tags: [`bsv21:${TOKEN_ID}`, POOL_TAG],
-      customInstructions: JSON.stringify({ id: TOKEN_ID, op: "amm-pool", protocolID: P1SAT, keyID: lpKeyId(`${DEPLOY_TXID}_0`), counterparty: "self" }),
+      tags: [`bsv21:${SDK_ID}`, POOL_TAG],
+      customInstructions: JSON.stringify({ id: SDK_ID, op: "amm-pool", protocolID: P1SAT, keyID: lpKeyId(`${DEPLOY_TXID}_0`), counterparty: "self" }),
     };
     const r = poolableTokens([deployRow, legacy, poolRow]);
     expect(r.tokens.map((t) => [t.tokenId, t.balance])).toEqual([[TOKEN_ID, 10_000_000n]]);
@@ -364,7 +366,7 @@ describe("pool deploy: funding and the deploy transaction", () => {
     expect(calls[1]!.args).toEqual({ protocolID: BRC29, keyID: CHANGE_KEY_ID, counterparty: "self", forSelf: true });
     // The token's own basket (1sat-sdk's filing), then the page's `bsv21` filings.
     expect(calls[2]!.args).toEqual({ basket: `mandala ${DEPLOY_TXID} 0`, include: "entire transactions", limit: 10000 });
-    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "bsv21:deploy"], tagQueryMode: "any", include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "bsv21:deploy"], tagQueryMode: "any", include: "entire transactions", limit: 10000 });
     const keyID = (calls[4]!.args as { keyID: string }).keyID;
     expect(keyID).toMatch(/^amm-funding-[0-9a-f]{16}$/);
     const fundingScript = new P2PKH().lock(side.privateKey({ protocolID: P1SAT as never, keyID }).toAddress()).toHex();
@@ -380,7 +382,7 @@ describe("pool deploy: funding and the deploy transaction", () => {
           outputDescription: "AMM pool deploy funding: TST",
           basket: "1sat-deposit",
           tags: [FUNDING_TAG, `hold:${expires}`],
-          customInstructions: JSON.stringify({ protocolID: P1SAT, keyID, counterparty: "self", amm: { deploy: TOKEN_ID, expires } }),
+          customInstructions: JSON.stringify({ protocolID: P1SAT, keyID, counterparty: "self", amm: { deploy: SDK_ID, expires } }),
         },
       ],
       options: { signAndProcess: false, randomizeOutputs: false, noSend: true },
@@ -424,10 +426,10 @@ describe("pool deploy: funding and the deploy transaction", () => {
     expect(b.findTxid(prepared.funding.txid)).toBeDefined();
     expect(b.findTxid(DEPLOY_TXID)).toBeDefined();
     // Filing of the pool output: bsv21, amm-pool, the LP key, no amt.
-    expect(prepared.pool).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"] });
+    expect(prepared.pool).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"] });
     const ci = JSON.parse(prepared.pool.customInstructions);
     expect(ci).toEqual({
-      id: TOKEN_ID,
+      id: SDK_ID,
       op: "amm-pool",
       sym: "TST",
       dec: "0",
@@ -437,7 +439,7 @@ describe("pool deploy: funding and the deploy transaction", () => {
       amm: { role: "lp", validatorIdentity: v.identity, lpFeeBps: "30", validatorFeeBps: "5", commissionBps: "10" },
     });
     expect(ci.amt).toBeUndefined();
-    expect(JSON.parse(changeFiling.customInstructions)).toMatchObject({ id: TOKEN_ID, amt: "5000000", op: "transfer" });
+    expect(JSON.parse(changeFiling.customInstructions)).toMatchObject({ id: SDK_ID, amt: "5000000", op: "transfer" });
   });
 
   it("the token change is locked to the key derived from input 0 (BRC-29, prefix amm-change), never a random one", async () => {
@@ -464,7 +466,7 @@ describe("pool deploy: funding and the deploy transaction", () => {
     expect(prepared.deploy.outputs).toHaveLength(1);
     expect(prepared.funding.outputs).toBe(999_999);
     // LP key, funding key, and one per signature: no change key.
-    expect(calls.filter((c) => c.method === "getPublicKey").map((c) => (c.args as { keyID: string }).keyID).some((k) => k.startsWith(`${TOKEN_ID}-`))).toBe(false);
+    expect(calls.filter((c) => c.method === "getPublicKey").map((c) => (c.args as { keyID: string }).keyID).some((k) => k.startsWith(`${SDK_ID}-`))).toBe(false);
     prepared.deploy.inputs.forEach((_, i) => expect(verify(prepared.deploy, i)).toBe(true));
     expect(deployFunding([{ satoshis: 10, script: "00" }], [{ satoshis: 1 }], 0).satoshis).toBe(9);
   });
@@ -531,8 +533,8 @@ describe("pool deploy: amm.pool.submit / amm.pool.status", () => {
     const ia = after[0]!.args as { tx: number[]; outputs: unknown[]; labels: string[] };
     expect(Beef.fromBinary(ia.tx).atomicTxid).toBe(prepared.txid);
     expect(ia.outputs).toEqual([
-      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"], customInstructions: prepared.pool.customInstructions } },
-      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], customInstructions: prepared.tokenChange!.customInstructions } },
+      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"], customInstructions: prepared.pool.customInstructions } },
+      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: prepared.tokenChange!.customInstructions } },
     ]);
     expect(ia.labels).toEqual(["amm-pool-deploy"]);
     expect(after[1]!.args).toEqual({ basket: "1sat-deposit", output: prepared.funding.outpoint });
@@ -724,7 +726,8 @@ describe("remove liquidity: funding and the remove transaction", () => {
       return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: q.query.outputIndex }] : [] }), { status: 200 });
     }) as unknown as SignedFetch["fetch"];
     const af: SignedFetch = { fetch: fetchFn };
-    const r = await submitToOverlay(af, "http://x/amm", s.topic, s.beef);
+    // Plain fetch, unsigned (0.6.3): the submit takes a fetch function, not the wallet's AuthFetch.
+    const r = await submitToOverlay("http://x/amm", s.topic, s.beef, fetchFn as never);
     expect(seen[0]!.url).toBe("http://x/amm/submit");
     expect(seen[0]!.init.headers).toEqual({ "content-type": "application/octet-stream", "x-topics": s.topic });
     expect(Array.from(seen[0]!.init.body as Uint8Array)).toEqual(s.beef);
@@ -732,7 +735,7 @@ describe("remove liquidity: funding and the remove transaction", () => {
     expect(steakText(r)).toBe(`admitted under ${s.topic} (outputs 0, 2)`);
     expect(steakText({})).toBe("not decided yet");
     const later = (async () => new Response('{"status":"error"}', { status: 503, headers: { "retry-after": "30" } })) as unknown as SignedFetch["fetch"];
-    expect(await submitToOverlay({ fetch: later }, "http://x/amm", s.topic, s.beef)).toEqual({});
+    expect(await submitToOverlay("http://x/amm", s.topic, s.beef, later as never)).toEqual({});
     // Not admitted on the first lookup, admitted on the second: the continuation (output 0).
     expect(admittedOutput(s)).toBe(0);
     expect(await awaitAdmitted(af, "http://x/amm", s.txid, 0, { intervalMs: 1 })).toBe(true);
@@ -740,11 +743,11 @@ describe("remove liquidity: funding and the remove transaction", () => {
     expect(await awaitAdmitted(af, "http://x/amm", "00".repeat(32), 0, { intervalMs: 1, timeoutMs: 0 })).toBe(false);
 
     // Where each output lands.
-    expect(s.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"] });
+    expect(s.continuation).toMatchObject({ outputIndex: 0, basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"] });
     expect(JSON.parse(s.continuation!.customInstructions)).toMatchObject({ op: "amm-pool", protocolID: BRC29, keyID: nextId });
     expect(s.payout).toEqual({ outputIndex: 1, satoshis: 10_000, lockingScript: tx.outputs[1]!.lockingScript.toHex(), remittance: { derivationPrefix: "Y3Vy", derivationSuffix: "cmVudA==", senderIdentityKey: side.identityKey } });
-    expect(s.tokens).toMatchObject({ outputIndex: 2, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`] });
-    expect(JSON.parse(s.tokens!.customInstructions)).toMatchObject({ id: TOKEN_ID, amt: "100000", op: "transfer", protocolID: BRC29, keyID: "Y3Vy cmVudA==" });
+    expect(s.tokens).toMatchObject({ outputIndex: 2, basket: "bsv21", tags: [`bsv21:${SDK_ID}`] });
+    expect(JSON.parse(s.tokens!.customInstructions)).toMatchObject({ id: SDK_ID, amt: "100000", op: "transfer", protocolID: BRC29, keyID: "Y3Vy cmVudA==" });
   });
 
   it("refuses a wallet key that is not the pool's LP key, before any funding", async () => {
@@ -809,9 +812,9 @@ describe("remove liquidity from a BRC-29-keyed pool: submit, internalize the wit
     expect(ia.tx).toEqual(s.beef);
     expect(ia.labels).toEqual(["amm-remove-liquidity"]);
     expect(ia.outputs).toEqual([
-      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`, "amm-pool"], customInstructions: s.continuation!.customInstructions } },
+      { outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`, "amm-pool"], customInstructions: s.continuation!.customInstructions } },
       { outputIndex: 1, protocol: "wallet payment", paymentRemittance: rec.remittance },
-      { outputIndex: 2, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], customInstructions: s.tokens!.customInstructions } },
+      { outputIndex: 2, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: s.tokens!.customInstructions } },
     ]);
     expect(after[1]!.args).toEqual({ basket: "1sat-deposit", output: s.funding.outpoint });
     expect(after[2]!.args).toEqual({ basket: "bsv21", output: `${poolTx.id("hex")}.0` });

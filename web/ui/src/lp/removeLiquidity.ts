@@ -56,6 +56,7 @@ import { LP_KEY_PROTOCOL, lpKeyId, poolCustomInstructions, POOL_TAG, type Basket
 import type { LpKeyRef } from "./myPools";
 import { WALLET_PAYMENT, identityKeyOf, isBrc29Protocol, splitBrc29KeyID, type Brc29Payout, type PaymentRemittance } from "../wallet/brc29";
 import { payoutId, type PendingPayout } from "../wallet/pendingPayouts";
+import { sdkTokenId } from "../lib/tokenId";
 
 export class RemoveShapeError extends Error {
   constructor(message: string) {
@@ -66,7 +67,7 @@ export class RemoveShapeError extends Error {
 
 export interface RemoveLiquidityInput {
   wallet: WalletInterface;
-  /** `<txid>_0` */
+  /** The bare `<txid>` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   poolOutput: LookupOutput;
@@ -141,15 +142,16 @@ export async function prepareRemoveLiquidity(i: RemoveLiquidityInput): Promise<P
   const nextLpKey = closing ? null : { protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, publicKey: nextPub };
   const plan = PoolTemplate.planRemoveLiquidity({ pool: poolUtxo, removeBsv: i.removeBsv, removeTokens: i.removeTokens, nextLpPubKey: nextPub });
 
-  // Where each output lands in the wallet afterwards.
+  // Where each output lands in the wallet afterwards; the filings carry 1sat-sdk's id form, `<txid>_0` (src/lib/tokenId.ts).
+  const sdkId = sdkTokenId(i.tokenId);
   let at = 0;
   const continuation: BasketFiling | null = closing
     ? null
     : {
         outputIndex: at++,
         basket: BSV21_BASKET,
-        tags: [...bsv21FilterTags({ tokenId: i.tokenId }), POOL_TAG],
-        customInstructions: poolCustomInstructions({ tokenId: i.tokenId, ...i.meta, protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, args: plan.pool.args, validatorIdentity: plan.pool.state.validatorIdentity }),
+        tags: [...bsv21FilterTags({ tokenId: sdkId }), POOL_TAG],
+        customInstructions: poolCustomInstructions({ tokenId: sdkId, ...i.meta, protocolID: LP_KEY_PROTOCOL, keyID: nextKeyID, args: plan.pool.args, validatorIdentity: plan.pool.state.validatorIdentity }),
       };
   const payout: Brc29Payout | null =
     i.removeBsv > 0n ? { outputIndex: at, satoshis: Number(plan.outputs[at]!.satoshis), lockingScript: plan.outputs[at++]!.script, remittance: remittance! } : null;
@@ -158,9 +160,9 @@ export async function prepareRemoveLiquidity(i: RemoveLiquidityInput): Promise<P
       ? {
           outputIndex: at++,
           basket: BSV21_BASKET,
-          tags: bsv21FilterTags({ tokenId: i.tokenId }),
+          tags: bsv21FilterTags({ tokenId: sdkId }),
           customInstructions: buildBsv21CustomInstructions({
-            token: { id: i.tokenId, amt: String(i.removeTokens), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
+            token: { id: sdkId, amt: String(i.removeTokens), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
             protocolID: i.lpKey.protocolID,
             keyID: i.lpKey.keyID,
             counterparty: i.lpKey.counterparty,
@@ -282,11 +284,18 @@ export type Steak = Record<string, { outputsToAdmit: number[]; coinsToRetain: nu
  * Submit to the instance (BRC-22; skein-overlay 0.9.1, docs/OVERLAY.md "Submitting"): `POST
  * <base>/submit` (`x-topics` the token topic, the body the BEEF) waits on the submission and
  * answers the STEAK; 503 with Retry-After when nothing is decided within the host's bound (the
- * submission stands: `steak` absent). A POST, so it goes through the connected wallet's
- * `AuthFetch`.
+ * submission stands: `steak` absent). Plain `fetch`, unsigned (0.6.3; David 2026-10-08: "We
+ * shouldn't be using authfetch for the submit http method."): the front door (shruggr/skein#135)
+ * admits an unsigned POST at the overlay's `submit` row (sender `*`, filter `beef`), and
+ * `@bsv/sdk`'s AuthFetch refuses the `x-topics` header client-side.
  */
-export async function submitToOverlay(af: SignedFetch | null, base: string, topic: string, beef: number[]): Promise<{ steak?: Steak }> {
-  const res = await needSigned(af).fetch(`${base}/submit`, {
+export async function submitToOverlay(
+  base: string,
+  topic: string,
+  beef: number[],
+  fetchFn: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetch(url, init),
+): Promise<{ steak?: Steak }> {
+  const res = await fetchFn(`${base}/submit`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": topic },
     body: new Uint8Array(beef),

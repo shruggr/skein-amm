@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { useWallet } from "../wallet/AppWalletProvider";
 import { useAuthFetch } from "../wallet/authFetch";
 import { AMM_OVERLAY } from "../lib/config";
+import { Id } from "../components/Id";
 import { internalizeNow, onPendingPayoutsChange, PendingPayoutStore, type PendingPayout } from "../wallet/pendingPayouts";
 
 const store = new PendingPayoutStore();
@@ -20,7 +21,7 @@ export function PendingPayouts() {
   const authFetch = useAuthFetch();
   const [items, setItems] = useState<PendingPayout[]>(() => store.list());
   const [busy, setBusy] = useState<string | null>(null);
-  const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string; txid?: string }>>({});
 
   useEffect(() => onPendingPayoutsChange(() => setItems(store.list())), []);
 
@@ -32,7 +33,7 @@ export function PendingPayouts() {
     setBusy(p.id);
     try {
       const r = await internalizeNow(wallet, store, authFetch, AMM_OVERLAY, p);
-      setNotes((n) => ({ ...n, [p.id]: { ok: r.accepted, text: r.accepted ? `internalized (txid ${r.txid.slice(0, 16)}…)` : "the wallet did not accept it" } }));
+      setNotes((n) => ({ ...n, [p.id]: r.accepted ? { ok: true, text: "internalized, txid", txid: r.txid } : { ok: false, text: "the wallet did not accept it" } }));
     } catch (e) {
       setNotes((n) => ({ ...n, [p.id]: { ok: false, text: errText(e) } }));
     } finally {
@@ -64,14 +65,15 @@ export function PendingPayouts() {
             <tr key={p.id}>
               <td>{p.kind === "swap" ? "Swap payout" : "Liquidity withdrawal"}</td>
               <td>
-                <code title={p.id}>
-                  {p.txid.slice(0, 12)}…:{p.vout}
-                </code>
+                <Id value={`${p.txid}.${p.vout}`} kind="outpoint" />
                 {!p.final && <small> (provisional txid: the swap is not signed yet)</small>}
                 {notes[p.id] && (
                   <>
                     <br />
-                    <small className={notes[p.id]!.ok ? "ok" : "bad"}>{notes[p.id]!.text}</small>
+                    <small className={notes[p.id]!.ok ? "ok" : "bad"}>
+                      {notes[p.id]!.text}
+                      {notes[p.id]!.txid && <> <Id value={notes[p.id]!.txid!} kind="txid" /></>}
+                    </small>
                   </>
                 )}
               </td>

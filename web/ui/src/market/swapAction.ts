@@ -54,6 +54,7 @@ import { PoolTemplate, decodeMandala, type CallPlan, type PoolUtxo } from "../po
 import type { LookupOutput } from "../lib/overlay";
 import { isPoolRow } from "../lp/poolRows";
 import { tokenSourceBeef } from "../lp/wallet";
+import { outpointText, parseOutpoint, parseTokenId, sdkTokenId } from "../lib/tokenId";
 import { payoutId, type PendingPayout } from "../wallet/pendingPayouts";
 import { WALLET_PAYMENT, identityKeyOf, newBrc29Payout, type Brc29Payout } from "../wallet/brc29";
 
@@ -101,11 +102,11 @@ export interface TokenInput {
   counterparty: string;
 }
 
-/** The token's 32-byte wire id (internal byte order) for a `<txid>_0` token id. */
+/** The token's 32-byte wire id (internal byte order) for a token with a 32-byte id (the bare `<txid>`; `<txid>_0` reads the same). */
 export function assetIdOf(tokenId: string): string {
-  const [txid, vout] = tokenId.split(/[._]/);
-  if (!txid || txid.length !== 64 || vout !== "0") throw new Error(`pools exist only for 32-byte ids (<txid>_0), not ${tokenId}`);
-  return toHex(Utils.toArray(txid, "hex").reverse());
+  const r = parseTokenId(tokenId);
+  if (!r || r.vout !== 0) throw new Error(`pools exist only for 32-byte ids (the bare <txid>), not ${tokenId}`);
+  return toHex(Utils.toArray(r.txid, "hex").reverse());
 }
 
 /**
@@ -131,11 +132,12 @@ export function tokenInputsOf(
       continue;
     }
     if (!Array.isArray(ci.protocolID) || typeof ci.keyID !== "string") continue;
-    const [txid, vout] = r.outpoint.split(/[._]/);
+    const op = parseOutpoint(r.outpoint);
+    if (!op) continue;
     out.push({
-      outpoint: `${txid}.${vout}`,
-      txid: txid!,
-      vout: Number(vout),
+      outpoint: `${op.txid}.${op.vout}`,
+      txid: op.txid,
+      vout: op.vout,
       satoshis: r.satoshis,
       lockingScript: r.lockingScript,
       amount: t.amount,
@@ -271,7 +273,7 @@ export function swapFunding(plan: CallPlan, tokenInputs: { satoshis: number }[],
 
 export interface PrepareSwapInput {
   wallet: WalletInterface;
-  /** `<txid>_0` */
+  /** The bare `<txid>` (src/lib/tokenId.ts). */
   tokenId: string;
   meta?: { sym?: string; dec?: number };
   direction: Direction;
@@ -442,7 +444,7 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
   const bsvIn = i.direction === "bsvToToken";
   const poolUtxo = poolUtxoFrom(i.poolOutput);
   if (`${poolUtxo.txid}_${poolUtxo.vout}` !== leg.outpoint) {
-    throw new LegShapeError(`the pool moved: the lookup's tip is ${poolUtxo.txid}_${poolUtxo.vout}, the plan priced ${leg.outpoint}`);
+    throw new LegShapeError(`the pool moved: the lookup's tip is ${poolUtxo.txid}.${poolUtxo.vout}, the plan priced ${outpointText(leg.outpoint)}`);
   }
   const tokenInputs = i.tokenInputs ?? [];
   const tokensIn = tokenInputs.reduce((a, t) => a + t.amount, 0n);
@@ -452,21 +454,23 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
 
   // The payout key: tokens under 1sat-sdk's conventions, sats as a BRC-29 payment to self.
   const poolArgs = PoolTemplate.decode(poolUtxo.script)?.args;
-  if (!poolArgs) throw new LegShapeError(`${leg.outpoint} is not a pool output`);
+  if (!poolArgs) throw new LegShapeError(`${outpointText(leg.outpoint)} is not a pool output`);
   const commissionAmount = (leg.amountIn * poolArgs.commissionBps + 9999n) / 10000n;
   const commissionTo: SwapCommission["to"] = commissionAmount === 0n ? "none" : i.commissionPkh ? "relay" : "own";
 
   // The payout key: tokens under 1sat-sdk's conventions, sats as a BRC-29 payment to self.
   // The taker's own commission (in the input asset) is keyed the same way, the other way round.
   const identity = !bsvIn || commissionTo === "own" ? await identityKeyOf(wallet) : "";
-  const payoutKeyID = `${i.tokenId}-${randomHex()}`;
+  // The wallet's filings (keyIDs, tags, customInstructions) carry 1sat-sdk's id form, `<txid>_0`.
+  const sdkId = sdkTokenId(i.tokenId);
+  const payoutKeyID = `${sdkId}-${randomHex()}`;
   const brc29 = bsvIn ? null : await newBrc29Payout(wallet, identity);
   const payoutKey = brc29 ? brc29.publicKey : (await wallet.getPublicKey({ protocolID: P1SAT, keyID: payoutKeyID, counterparty: "self", forSelf: true })).publicKey;
   const userPkh = toHex(PublicKey.fromString(payoutKey).toHash() as number[]);
 
   let ownCommission: { brc29: Awaited<ReturnType<typeof newBrc29Payout>> | null; keyID: string; pkh: string } | null = null;
   if (commissionTo === "own") {
-    const keyID = `${i.tokenId}-${randomHex()}`;
+    const keyID = `${sdkId}-${randomHex()}`;
     const own = bsvIn ? await newBrc29Payout(wallet, identity) : null;
     const key = own ? own.publicKey : (await wallet.getPublicKey({ protocolID: P1SAT, keyID, counterparty: "self", forSelf: true })).publicKey;
     ownCommission = { brc29: own, keyID, pkh: toHex(PublicKey.fromString(key).toHash() as number[]) };
@@ -501,9 +505,9 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
         kind: "bsv21",
         outputIndex: 1,
         basket: BSV21_BASKET,
-        tags: bsv21FilterTags({ tokenId: i.tokenId }),
+        tags: bsv21FilterTags({ tokenId: sdkId }),
         customInstructions: buildBsv21CustomInstructions({
-          token: { id: i.tokenId, amt: String(leg.amountOut), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
+          token: { id: sdkId, amt: String(leg.amountOut), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
           protocolID: P1SAT,
           keyID: payoutKeyID,
           counterparty: "self",
@@ -521,9 +525,9 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
           kind: "bsv21",
           outputIndex: at,
           basket: BSV21_BASKET,
-          tags: bsv21FilterTags({ tokenId: i.tokenId }),
+          tags: bsv21FilterTags({ tokenId: sdkId }),
           customInstructions: buildBsv21CustomInstructions({
-            token: { id: i.tokenId, amt: String(commissionAmount), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
+            token: { id: sdkId, amt: String(commissionAmount), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
             protocolID: P1SAT,
             keyID: ownCommission.keyID,
             counterparty: "self",
@@ -534,7 +538,7 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
   // Token inputs: their source transactions, for the final swap's BEEF.
   let tokenBeef: Beef | null = null;
   if (tokenInputs.length > 0) {
-    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: i.tokenId }) });
+    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: sdkId }) });
     if (!tokenBeef) throw new LegShapeError("the wallet returned no BEEF for the token inputs");
     for (const t of tokenInputs) if (!tokenBeef.findTxid(t.txid)) throw new LegShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
   }

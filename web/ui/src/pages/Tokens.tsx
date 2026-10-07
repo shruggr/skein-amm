@@ -11,18 +11,15 @@ import { imageOrdinals, type OrdinalImage } from "../lp/ordinals";
 import { imageDataUrl } from "../lp/images";
 import { formatAmount, parseAmount } from "../lp/amounts";
 import { deployToken, type DeployRequest, type DeployResult, type IconChoice } from "../lp/deploy";
-
-function short(id: string): string {
-  const [txid, vout] = id.split("_");
-  return txid && txid.length === 64 ? `${txid.slice(0, 8)}…${txid.slice(-6)}_${vout}` : id;
-}
+import { outpointText } from "../lib/tokenId";
+import { Id } from "../components/Id";
 
 export function Icon({ icon }: { icon?: IconRef }) {
   const src = useMemo(() => (icon?.image ? imageDataUrl(icon.image) : undefined), [icon]);
   if (!icon) return <span className="icon icon-empty" />;
-  if (src) return <img className="icon" src={src} alt="" title={icon.outpoint} />;
+  if (src) return <img className="icon" src={src} alt="" title={outpointText(icon.outpoint)} />;
   return (
-    <span className="icon icon-empty" title={`icon at ${icon.outpoint} (not held by this wallet)`}>
+    <span className="icon icon-empty" title={`icon at ${outpointText(icon.outpoint)} (not held by this wallet)`}>
       ?
     </span>
   );
@@ -47,9 +44,9 @@ function TokenTable({ tokens }: { tokens: TokenSummary[] }) {
             <td><Icon icon={t.icon} /></td>
             <td>{t.sym ?? <small>—</small>}</td>
             <td>
-              <code title={t.tokenId}>{short(t.tokenId)}</code>
+              <Id value={t.tokenId} kind="token" />
               {t.icon && !t.icon.image && (
-                <div><small>icon: <code title={t.icon.outpoint}>{short(t.icon.outpoint)}</code></small></div>
+                <div><small>icon: <Id value={t.icon.outpoint} kind="outpoint" /></small></div>
               )}
             </td>
             <td className="num">
@@ -74,17 +71,18 @@ function OrdinalGrid(props: { items: OrdinalImage[]; selected?: string; onSelect
   return (
     <div className="ord-grid">
       {props.items.map((o) => (
-        <button
-          type="button"
-          key={o.outpoint}
-          className="ord-cell"
-          data-selected={props.selected === o.iconOutpoint}
-          onClick={() => props.onSelect(o)}
-          title={`${o.contentType}\nicon → ${o.iconOutpoint}`}
-        >
-          {o.image ? <img src={imageDataUrl(o.image)} alt="" /> : <span className="ord-noimg">{o.contentType}</span>}
-          <small>{short(o.outpoint)}</small>
-        </button>
+        <div className="ord-item" key={o.outpoint}>
+          <button
+            type="button"
+            className="ord-cell"
+            data-selected={props.selected === o.iconOutpoint}
+            onClick={() => props.onSelect(o)}
+            title={`${o.contentType}\nicon → ${outpointText(o.iconOutpoint)}`}
+          >
+            {o.image ? <img src={imageDataUrl(o.image)} alt="" /> : <span className="ord-noimg">{o.contentType}</span>}
+          </button>
+          <small><Id value={o.outpoint} kind="outpoint" /></small>
+        </div>
       ))}
     </div>
   );
@@ -232,7 +230,7 @@ function DeployForm(props: { ordinals: OrdinalImage[]; onDeployed: (r: DeployRes
       {error && <p className="bad" role="alert">{error}</p>}
       {result && (
         <p className="ok">
-          Deployed. txid <code>{result.txid}</code>, token id <code>{result.tokenId}</code>
+          Deployed. txid <Id value={result.txid} kind="txid" />, token id <Id value={result.tokenId} kind="token" />
         </p>
       )}
     </section>

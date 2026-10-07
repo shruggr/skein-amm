@@ -43,6 +43,7 @@ import {
   type WalletInterface,
   type WalletProtocol,
 } from "@bsv/sdk";
+import { tokenIdText } from "../lib/tokenId";
 
 export type SupplyModel = { kind: "fixed"; amount: bigint } | { kind: "authority" };
 
@@ -196,7 +197,7 @@ export async function deriveSelfKey(wallet: WalletInterface, keyIDPrefix: string
 
 export interface DeployResult {
   txid: string;
-  /** `txid_0` */
+  /** The bare `<txid>`: a Mandala token's id (src/lib/tokenId.ts). */
   tokenId: string;
   args: CreateActionArgs;
 }
@@ -210,5 +211,5 @@ export async function deployToken(wallet: WalletInterface, req: DeployRequest): 
   const result = await runCreateActionPipeline(wallet, args, []);
   if (result.error) throw new Error(result.error);
   if (!result.txid) throw new Error("the wallet returned no txid");
-  return { txid: result.txid, tokenId: `${result.txid}_${DEPLOY_VOUT}`, args };
+  return { txid: result.txid, tokenId: tokenIdText({ txid: result.txid, vout: DEPLOY_VOUT }, "mandala"), args };
 }

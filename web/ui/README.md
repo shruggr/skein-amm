@@ -31,6 +31,16 @@ picker lists the validators live on any served token, merged). The Validator
 page reads the peer's `.live` read of this instance's token topics. Where the
 text below says `/live`, `thresholdMs` or "heartbeat seen", read this.
 
+**skein-amm 0.6.3: ids** (David, 2026-10-08): a Mandala token's id is the
+bare `<txid>`, a legacy BSV-21 token's `<txid>_<vout>`; every outpoint is
+shown `<txid>.<vout>`; every txid, token id, outpoint and topic shown is an
+`<Id>` (`src/components/Id.tsx`: shortened, whole on a click, a copy
+button). The wallet's filings (`bsv21:<id>` tags, customInstructions `id`)
+and the programs' outpoint fields keep `<txid>_<vout>`. Where the text below
+writes a token id `<txid>_0`, read the bare `<txid>`. The remove-liquidity
+submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
+using authfetch for the submit http method").
+
 **skein-amm 0.6.2: the roles are the owner's switch** (skein-overlay 0.9.2;
 David, 2026-10-07: "this shouldn't have been a config in the manifest. This
 should be a setting that the user is configuring"). The manifest sets
@@ -244,8 +254,10 @@ names like `tm_<64 hex>` before sending anything.
 
 Names (skein-mandala docs/MANDALA.md): a token deployed at output 0 is topic
 `tm_<txid>`, a BRC-161 token deployed at a non-zero output
-`tm_<txid>_<vout>`. The pages write a token id `<txid>_<vout>` (the wallet's
-form); `ls_amm` takes it, or `<txid>`, in `{tokenId}`. The topics listed are
+`tm_<txid>_<vout>`. The pages write a token id by its origin, a Mandala
+token's the bare `<txid>` and a legacy BSV-21 token's `<txid>_<vout>`, and
+show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
+`src/lib/tokenId.ts`); `ls_amm` takes any form in `{tokenId}`. The topics listed are
 the ones the owner registered with the engine (`/listTopicManagers`).
 
 ## Swap page
@@ -755,7 +767,9 @@ it, so the funding is broadcast at once (no nosend):
    contract's. Both inputs checked with `Spend`. The sats withdrawal is
    recorded under Pending payouts before submitting.
 5. `POST <base>/submit`, body the remove's AtomicBEEF (the funding as its
-   unproven parent, the pool's ancestry), `x-topics: tm_<txid>`.
+   unproven parent, the pool's ancestry), `x-topics: tm_<txid>`; plain
+   `fetch`, unsigned (0.6.3: AuthFetch refuses `x-topics`; the front door
+   takes the submit unsigned).
 6. `internalizeAction({tx: that BEEF, outputs: [continuation (basket
    insertion, bsv21, amm-pool, next LP key)?, sats withdrawal (wallet
    payment, the LP key's remittance)?, token withdrawal (basket insertion,

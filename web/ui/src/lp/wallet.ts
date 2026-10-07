@@ -12,6 +12,7 @@
  */
 import { BSV21_BASKET, BSV21_DEPLOY_TAG, ORDINALS_BASKET } from "@1sat/types";
 import { Beef, type ListOutputsArgs, type Transaction, type WalletInterface, type WalletOutput } from "@bsv/sdk";
+import { parseTokenId } from "../lib/tokenId";
 
 /** BRC-100's largest `limit`. */
 const LIMIT = 10000;
@@ -20,11 +21,11 @@ const LIMIT = 10000;
 export const MANDALA_LABEL = "mandala";
 const MANDALA_NAME = /^mandala ([0-9a-f]{64}) (0|[1-9]\d*)$/;
 
-/** A Mandala token's basket `mandala <txid> <vout>` (1sat-sdk `mandalaTokenBasket`), from `txid_vout` or `txid.vout`. */
+/** A Mandala token's basket `mandala <txid> <vout>` (1sat-sdk `mandalaTokenBasket`), from any token id form (`<txid>` is vout 0). */
 export function mandalaBasket(tokenId: string): string {
-  const m = /^([0-9a-fA-F]{64})[._](\d+)$/.exec(tokenId);
-  if (!m) throw new Error(`not a token outpoint (txid_vout or txid.vout): ${tokenId}`);
-  return `mandala ${m[1]!.toLowerCase()} ${Number(m[2])}`;
+  const r = parseTokenId(tokenId);
+  if (!r) throw new Error(`not a token id (<txid>, <txid>_<vout> or <txid>.<vout>): ${tokenId}`);
+  return `mandala ${r.txid} ${r.vout}`;
 }
 
 /** The Mandala token baskets the wallet tracks, from its `mandala`-labelled actions' per-token labels. */

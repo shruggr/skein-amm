@@ -14,7 +14,8 @@ import { useAuthFetch } from "../wallet/authFetch";
 import { AMM_OVERLAY, AMM_PEER_OVERLAY, appName } from "../lib/config";
 import { fetchLiveByToken, listTokenTopics, mergeLive, queryPools, type LiveAnswer } from "../lib/overlay";
 import { ago } from "../lp/validators";
-import { marginalPrice, shortKey, shortOutpoint } from "../market/view";
+import { marginalPrice, shortKey } from "../market/view";
+import { Id } from "../components/Id";
 import { livenessLine, loadThisInstance, poolsServedBy, type ServedPool, type ThisInstance } from "../validator/instance";
 import { readAppPolicy, readGenesis, type GenesisRead } from "../validator/control";
 import { LiveTable } from "./LiveTable";
@@ -143,7 +144,7 @@ function RegisteredSection({ refreshKey }: { refreshKey: number }) {
           <tbody>
             {topics.map((topic) => (
               <tr key={topic}>
-                <td><code title={topic}>{shortKey(topic)}</code></td>
+                <td><Id value={topic} kind="topic" /></td>
               </tr>
             ))}
           </tbody>
@@ -294,8 +295,8 @@ function PoolsServedSection(props: { identityKey: string | undefined; peerLive: 
             <tbody>
               {served.map(({ topic, pool }) => (
                 <tr key={pool.outpoint}>
-                  <td><code title={pool.outpoint}>{shortOutpoint(pool.outpoint)}</code></td>
-                  <td><code title={topic.tokenId}>{shortOutpoint(topic.tokenId)}</code></td>
+                  <td><Id value={pool.outpoint} kind="outpoint" /></td>
+                  <td><Id value={topic.tokenId} kind="token" /></td>
                   <td className="num">{pool.bsvReserve.toString()}</td>
                   <td className="num">{pool.tokenReserve.toString()}</td>
                   <td className="num">{marginalPrice(pool)}</td>

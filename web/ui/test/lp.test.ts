@@ -49,7 +49,9 @@ describe("inventory", () => {
   const deployScript = Mandala.deployValue(100_000n, { lock: ADDR, payload: { sym: "GOLD", dec: 2, icon: 1 } }).lock();
   deployTx.addOutput({ satoshis: 1, lockingScript: deployScript });
   deployTx.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(pngInscription()) });
-  const gold = `${deployTx.id("hex")}_0`;
+  // A Mandala token's id is the bare txid (David 2026-10-08); the SDK's Mandala.value takes `<txid>_0`.
+  const gold = deployTx.id("hex");
+  const goldSdk = `${gold}_0`;
 
   // A binary deploy whose icon is an outpoint elsewhere, held in the ordinals basket.
   const silverIcon = `${T("5")}_3`;
@@ -63,8 +65,8 @@ describe("inventory", () => {
 
   const rows: WalletOutput[] = [
     row(`${deployTx.id("hex")}.0`, deployScript.toHex(), { tags: ["bsv21:deploy"] }),
-    row(`${T("a")}.0`, Mandala.value(gold, 250n, { lock: ADDR }).lock().toHex()),
-    row(`${T("a")}.1`, Mandala.value(gold, 17n, { lock: ADDR }).lock().toHex()),
+    row(`${T("a")}.0`, Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex()),
+    row(`${T("a")}.1`, Mandala.value(goldSdk, 17n, { lock: ADDR }).lock().toHex()),
     row(`${T("3")}.0`, silverDeploy.toHex()),
     row(`${T("4")}.0`, ironDeploy.toHex()),
     row(`${T("2")}.0`, legacyDeploy.toHex()),
@@ -94,11 +96,11 @@ describe("inventory", () => {
   });
 
   it("resolves an outpoint icon from the ordinals basket, else shows the outpoint", () => {
-    const s = byId.get(`${T("3")}_0`)!;
+    const s = byId.get(T("3"))!;
     expect(s).toMatchObject({ sym: "SILV", balance: 0n, authorities: 1 });
     expect(s.icon!.outpoint).toBe(silverIcon);
     expect(s.icon!.image?.via).toBe("inscription");
-    const iron = byId.get(`${T("4")}_0`)!;
+    const iron = byId.get(T("4"))!;
     expect(iron.icon).toEqual({ outpoint: ironIcon });
     expect(iron.dec).toBeUndefined();
   });
@@ -107,6 +109,24 @@ describe("inventory", () => {
     const o = byId.get(old)!;
     expect(o).toMatchObject({ sym: "OLD", dec: 1, balance: 542n, deployInWallet: true });
     expect(o.encodings.sort()).toEqual(["bsv21", "mandala"]);
+    // one token: its id the legacy deploy's `<txid>_0`, though its binary row alone reads as the bare txid
+    expect(byId.has(T("2"))).toBe(false);
+  });
+
+  it("writes each token id by origin (David 2026-10-08): Mandala the bare txid, legacy BSV-21 `<txid>_<vout>`", () => {
+    // a Mandala deploy row: the bare txid
+    expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: T("3"), role: "deploy", encoding: "mandala" });
+    // a Mandala value row with a 32-byte id (the SDK prints `<txid>_0`): the bare txid
+    const v32 = decodeTokenRow({ outpoint: `${T("a")}.0`, lockingScript: Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex() })!;
+    expect(Mandala.decode(LockingScript.fromHex(Mandala.value(goldSdk, 1n, { lock: ADDR }).lock().toHex()))!.idBytes!.length).toBe(32);
+    expect(v32).toMatchObject({ tokenId: gold, role: "value", encoding: "mandala" });
+    // a Mandala value row with a 36-byte (legacy, vout > 0) id: `<txid>_<vout>`
+    const legacy36 = `${T("7")}_2`;
+    expect(decodeTokenRow({ outpoint: `${T("e")}.0`, lockingScript: Mandala.value(legacy36, 3n, { lock: ADDR }).lock().toHex() })).toMatchObject({ tokenId: legacy36, encoding: "mandala" });
+    // a BSV-21 JSON row: `<txid>_<vout>`, `_0` included
+    expect(decodeTokenRow({ outpoint: `${T("2")}.0`, lockingScript: legacyDeploy.toHex() })).toMatchObject({ tokenId: `${T("2")}_0`, encoding: "bsv21" });
+    expect(decodeTokenRow({ outpoint: `${T("b")}.1`, lockingScript: BSV21.transfer(old, 40n).lock(P2).toHex() })).toMatchObject({ tokenId: old, encoding: "bsv21" });
+    expect(byId.get(gold)!.tokenId).toBe(gold);
   });
 
   it("shows a token without its deploy as id and balance only", () => {
@@ -232,7 +252,7 @@ describe("deploy action", () => {
       },
     } as unknown as WalletInterface;
     const res = await deployToken(wallet, { ...base, icon: { kind: "upload", as: "ordinal", content: PNG, contentType: "image/png" } });
-    expect(res).toMatchObject({ txid: T("f"), tokenId: `${T("f")}_0` });
+    expect(res).toMatchObject({ txid: T("f"), tokenId: T("f") });
     expect(calls.getPublicKey).toHaveLength(2);
     expect(calls.getPublicKey[0]).toMatchObject({ protocolID: [0, "onesat"], counterparty: "self", forSelf: true });
     expect((calls.getPublicKey[0] as any).keyID).toMatch(/^bsv21-deploy-GOLD-[0-9a-f]{16}$/);

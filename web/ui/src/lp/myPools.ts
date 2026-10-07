@@ -20,6 +20,7 @@ import type { PoolState } from "@amm-poc/matching-engine";
 import { PoolTemplate, type Pool } from "../pool";
 import { lookupPoolOutput, queryPools, type LookupOutput, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { LP_KEY_PROTOCOL, isPoolRow, legacyLpKeyId, lpKeyId, type BasketRow } from "./poolDeploy";
+import { outpointText } from "../lib/tokenId";
 
 export interface LpKeyRef {
   protocolID: WalletProtocol;
@@ -134,7 +135,7 @@ export async function findMyPools(
         }
         if (m) pools.push({ topic, state, pool, output, lpKey: m.lpKey, via: m.via });
       } catch (err) {
-        warnings.push(`${state.outpoint}: ${err instanceof Error ? err.message : String(err)}`);
+        warnings.push(`${outpointText(state.outpoint)}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }

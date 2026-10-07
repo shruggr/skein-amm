@@ -33,7 +33,9 @@ import {
 import { loadWalletAssets, type WalletAssets } from "../lp/wallet";
 import { buildInventory } from "../lp/inventory";
 import { formatAmount } from "../lp/amounts";
-import { buildMarketView, shortKey, shortOutpoint, validatorStatus, type MarketToken, type TokenMeta, type ValidatorStatus } from "../market/view";
+import { shortOutpoint, shortTokenId } from "../lib/tokenId";
+import { Id } from "../components/Id";
+import { buildMarketView, shortKey, validatorStatus, type MarketToken, type TokenMeta, type ValidatorStatus } from "../market/view";
 import { ago } from "../lp/validators";
 import { buildPlanRequest, goneFromLookup, quote, type PlanView } from "../market/plan";
 import {
@@ -375,7 +377,7 @@ export function SwapPage() {
         {market.map((t) => (
           <div key={t.topic.topic} className="market-token">
             <h3>
-              <Icon icon={t.meta?.icon} /> {t.meta?.sym ?? "Token"} <code title={t.topic.tokenId}>{shortOutpoint(t.topic.tokenId)}</code>
+              <Icon icon={t.meta?.icon} /> {t.meta?.sym ?? "Token"} <Id value={t.topic.tokenId} kind="token" />
               {t.topic.kind === "legacy" && <small> (legacy BSV-21)</small>}
             </h3>
             {!t.meta && (
@@ -407,7 +409,7 @@ export function SwapPage() {
                   <tbody>
                     {t.pools.map((r) => (
                       <tr key={r.pool.outpoint}>
-                        <td><code title={r.pool.outpoint}>{shortOutpoint(r.pool.outpoint)}</code></td>
+                        <td><Id value={r.pool.outpoint} kind="outpoint" /></td>
                         <td className="num">{r.pool.bsvReserve.toString()}</td>
                         <td className="num">{formatAmount(r.pool.tokenReserve, t.meta?.dec ?? 0)}</td>
                         <td className="num">
@@ -435,7 +437,7 @@ export function SwapPage() {
             <select value={selected} onChange={(e) => setSelected(e.target.value)}>
               {market.map((t) => (
                 <option key={t.topic.tokenId} value={t.topic.tokenId}>
-                  {(t.meta?.sym ? `${t.meta.sym} · ` : "") + shortOutpoint(t.topic.tokenId)}
+                  {(t.meta?.sym ? `${t.meta.sym} · ` : "") + shortTokenId(t.topic.tokenId)}
                 </option>
               ))}
             </select>
@@ -500,7 +502,7 @@ export function SwapPage() {
                   <tbody>
                     {view.legs.map((l) => (
                       <tr key={l.outpoint}>
-                        <td><code title={l.outpoint}>{shortOutpoint(l.outpoint)}</code></td>
+                        <td><Id value={l.outpoint} kind="outpoint" /></td>
                         <td className="num">{fmtIn(l.amountIn)}</td>
                         <td className="num">{fmtOut(l.amountOut)}</td>
                         <td className="num">{fmtIn(l.lpFee)}</td>
@@ -556,7 +558,7 @@ export function SwapPage() {
           {legs.map((l) => (
             <div key={l.outpoint} className="leg">
               <h3>
-                Pool <code title={l.outpoint}>{shortOutpoint(l.outpoint)}</code>
+                Pool <Id value={l.outpoint} kind="outpoint" />
               </h3>
               <ValidatorLine v={l.validator} />
               {"prepared" in l ? (
@@ -617,7 +619,7 @@ function LegStatus({ l, onRetry, onAbandon }: { l: Extract<LegResult, { prepared
     <>
       <p>
         <small>
-          Funding <code>{p.funding.txid}</code>: {p.funding.satoshis} sats ({p.funding.outputs} to the swap&apos;s outputs + {p.funding.fee} miner fee for{" "}
+          Funding <Id value={p.funding.txid} kind="txid" />: {p.funding.satoshis} sats ({p.funding.outputs} to the swap&apos;s outputs + {p.funding.fee} miner fee for{" "}
           {p.funding.size} bytes) · swap {p.swap.toBinary().length} bytes before the validator&apos;s signature
           {p.payout.kind === "brc29" && ` · payout ${p.payout.satoshis} sats as a BRC-29 payment (also under Pending payouts)`}
           {p.commission.to === "relay" && ` · commission ${p.commission.amount} to the relay (${p.commission.pkh})`}
@@ -627,7 +629,7 @@ function LegStatus({ l, onRetry, onAbandon }: { l: Extract<LegResult, { prepared
       {!o && <p>Waiting for the validator…</p>}
       {o?.status === "accepted" && (
         <p className={o.completed.errors.length ? "warn" : "ok"}>
-          Accepted: <code>{o.txid}</code>
+          Accepted: <Id value={o.txid} kind="txid" />
           {o.completed.internalized ? ` · payout${p.commission.payout ? " and commission" : ""} in your wallet` : " · payout not internalized yet"}
           {o.completed.errors.map((e) => (
             <span key={e}><br /><small>{e}</small></span>

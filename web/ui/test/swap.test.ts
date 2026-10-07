@@ -48,7 +48,9 @@ import beefAnswer from "./fixtures/instance-v2/lookup-outpoint-beef.json";
 import v from "./fixtures/amm-topic-vectors.json";
 
 const TXID = "948b532f1de8f7bb148f77da824544fe47b02079e7514d5b6a42856651c5214c";
-const TOKEN_ID = `${TXID}_0`;
+// The page's token id is the bare txid (a Mandala token, David 2026-10-08); the wallet's filings carry 1sat-sdk's `<txid>_0`.
+const TOKEN_ID = TXID;
+const SDK_ID = `${TXID}_0`;
 
 // ---------------------------------------------------------------------------
 // Market view
@@ -448,14 +450,14 @@ describe("the swap transaction", () => {
     expect(spendValid(s, 0)).toBe(false); // the validator's slot is OP_0
     const final = await validatorSigns(prepared, s.toBinary(), vkey);
     for (const i of [0, 1]) expect(spendValid(final, i)).toBe(true);
-    expect(prepared.payout).toMatchObject({ kind: "bsv21", outputIndex: 1, basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`] });
+    expect(prepared.payout).toMatchObject({ kind: "bsv21", outputIndex: 1, basket: "bsv21", tags: [`bsv21:${SDK_ID}`] });
   });
 
   it("tokens in: [pool, funding, token] with the token input's BEEF from the wallet; funding = 1 sat per Mandala fee or commission output − the token input's sat + fee; all valid", async () => {
     const { prepared, calls, vkey, side } = await tokensIn();
     expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "listOutputs", "listOutputs", "getPublicKey", "createAction", "signAction", "createSignature", "getPublicKey", "createSignature", "getPublicKey"]);
     expect(calls[2]!.args).toEqual({ basket: `mandala ${TOKEN_ID.slice(0, 64)} 0`, include: "entire transactions", limit: 10000 });
-    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], include: "entire transactions", limit: 10000 });
+    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${SDK_ID}`], include: "entire transactions", limit: 10000 });
     expect(prepared.funding.outputs).toBe(2); // LP fee, validator fee, commission: 3 sats − the token input's 1
     expect(prepared.commission).toEqual({ amount: 50n, pkh: v.commissionPkh, to: "relay" });
     const s = prepared.swap;
@@ -549,9 +551,9 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     const ia = after[0]!.args as { tx: number[]; outputs: unknown[]; labels: string[]; description: string };
     expect(Beef.fromBinary(ia.tx).atomicTxid).toBe(final!.id("hex"));
     expect(ia.outputs).toEqual([
-      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], customInstructions: (prepared.payout as { customInstructions: string }).customInstructions } },
+      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: (prepared.payout as { customInstructions: string }).customInstructions } },
     ]);
-    expect(JSON.parse((prepared.payout as { customInstructions: string }).customInstructions)).toMatchObject({ id: TOKEN_ID, op: "transfer", sym: "TST", counterparty: "self" });
+    expect(JSON.parse((prepared.payout as { customInstructions: string }).customInstructions)).toMatchObject({ id: SDK_ID, op: "transfer", sym: "TST", counterparty: "self" });
     expect(ia.labels).toEqual(["amm-swap"]);
     expect(after[1]!.args).toEqual({ basket: "1sat-deposit", output: prepared.funding.outpoint });
     expect(calls.some((c) => c.method === "abortAction")).toBe(false);
@@ -759,7 +761,7 @@ describe("the commission", () => {
     expect(c).toMatchObject({ amount: 50n, to: "own" });
     if (c.payout?.kind !== "bsv21") throw new Error("expected a bsv21 commission");
     const ci = JSON.parse(c.payout.customInstructions) as { keyID: string; amt: string };
-    expect(ci).toMatchObject({ id: TOKEN_ID, amt: "50", op: "transfer", protocolID: [0, "onesat"], counterparty: "self" });
+    expect(ci).toMatchObject({ id: SDK_ID, amt: "50", op: "transfer", protocolID: [0, "onesat"], counterparty: "self" });
     const own = side.privateKey({ protocolID: [0, "onesat"], keyID: ci.keyID });
     expect(c.payout.outputIndex).toBe(4);
     expect(prepared.swap.outputs[4]!.satoshis).toBe(1);
@@ -781,7 +783,7 @@ describe("the commission", () => {
     const ia = calls.find((x) => x.method === "internalizeAction")!.args as { outputs: unknown[] };
     expect(ia.outputs).toEqual([
       { outputIndex: 1, protocol: "wallet payment", paymentRemittance: prepared.payout.remittance },
-      { outputIndex: 4, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${TOKEN_ID}`], customInstructions: c.payout.customInstructions } },
+      { outputIndex: 4, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: c.payout.customInstructions } },
     ]);
   });
 
