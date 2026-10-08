@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { outpointText, parseTokenId, sdkTokenId, shortOutpoint, shortTokenId } from "../lib/tokenId";
 
-/** A topic is a name carrying a token's txid (`tm_<txid>`, `tm_<txid>_<vout>`). */
+/** A topic is a name carrying a token's id (`tm_<txid>_<vout>`, `tm_<txid>_0` included). */
 export type IdKind = "txid" | "token" | "outpoint" | "topic";
 
 /** The whole value as shown and copied. */

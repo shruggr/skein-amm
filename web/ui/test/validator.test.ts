@@ -125,7 +125,7 @@ describe("this instance", () => {
   });
 
   /** The router (manifest, resolve) as recorded 2026-10-01, and the peer's liveness read of one token topic (skein #138). */
-  const TOPIC = `tm_${"ab".repeat(32)}`;
+  const TOPIC = `tm_${"ab".repeat(32)}_0`;
   const READ = `http://amm3.localhost:8400/amm/.live/${TOPIC}-live`;
   function fakeFetch(amm3Read: unknown, status = 200): { fetchFn: FetchLike; urls: string[] } {
     const urls: string[] = [];
@@ -194,7 +194,7 @@ describe("pools served", () => {
   });
 
   it("filters by validator identity across topics, skipping failed lookups", () => {
-    const t2 = parseTokenTopic(`tm_${"ab".repeat(32)}`)!;
+    const t2 = parseTokenTopic(`tm_${"ab".repeat(32)}_0`)!;
     const t3 = parseTokenTopic(`tm_${"cd".repeat(32)}_1`)!;
     const mine = { ...pools[0]!, outpoint: `${"11".repeat(32)}_0`, validatorIdentityKey: AMM2 };
     const theirs = { ...pools[0]!, outpoint: `${"22".repeat(32)}_0`, validatorIdentityKey: AMM3 };

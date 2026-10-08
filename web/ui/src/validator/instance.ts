@@ -8,7 +8,7 @@
  * - identity key: the router's BRC-169 answer for that handle
  *   (src/lp/validators.ts `resolveHandle`: `/manifest.json` → resolve);
  * - peer ID and liveness: what the OTHER node's liveness read reports for
- *   that identity (`GET <peer>/.live/tm_<txid>-live`, for each token topic
+ *   that identity (`GET <peer>/.live/tm_<txid>_0-live`, for each token topic
  *   this instance serves, merged: the peer keeps it when it is a market for
  *   the token).
  *
@@ -78,7 +78,7 @@ export interface ThisInstance {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The peer's liveness read (`GET <base>/.live/tm_<txid>-live`) for each token topic, merged; 404 is none kept. */
+/** The peer's liveness read (`GET <base>/.live/tm_<txid>_0-live`) for each token topic, merged; 404 is none kept. */
 async function getLive(base: string, topics: string[], fetchFn: FetchLike, now: number): Promise<LiveAnswer> {
   const answers = await Promise.all(
     topics.map(async (topic) => {

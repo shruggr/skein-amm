@@ -65,8 +65,9 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(() => assetIdOf(`${TX}_1`)).toThrow(/32-byte id/);
   });
 
-  it("a topic name gives tm_<txid> → <txid>_0, tm_<txid>_<vout> → <txid>_<vout>", () => {
-    expect(parseTokenTopic(`tm_${TX}`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
+  it("a topic name gives tm_<txid>_0 → <txid>_0, tm_<txid>_<vout> → <txid>_<vout>; the bare tm_<txid> is no topic (David 2026-10-08)", () => {
+    expect(parseTokenTopic(`tm_${TX}_0`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
+    expect(parseTokenTopic(`tm_${TX}`)).toBeNull();
     expect(parseTokenTopic(`tm_${TX}_4`)).toMatchObject({ kind: "legacy", tokenId: `${TX}_4` });
   });
 });
@@ -96,6 +97,6 @@ describe("outpoints are shown <txid>.<vout> (David 2026-10-08)", () => {
     expect(fullId(TX, "txid")).toBe(TX);
     expect(shortId(TX, "txid")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}`);
     expect(shortId(`tm_${TX}_1`, "topic")).toBe(`tm_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
-    expect(fullId(`tm_${TX}`, "topic")).toBe(`tm_${TX}`);
+    expect(fullId(`tm_${TX}_0`, "topic")).toBe(`tm_${TX}_0`);
   });
 });

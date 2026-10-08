@@ -4,7 +4,7 @@
 //! service over every Mandala token topic the overlay serves (`config.overlay`
 //! names it with no `topics` list, so it listens to every topic, declared or
 //! registered with the engine; shruggr/skein#120: "AMM keeps only its lookup"):
-//! the topic (`tm_<txid>`, skein-mandala's topic manager) is the token's and
+//! the topic (`tm_<txid>_<vout>`, skein-mandala's topic manager) is the token's and
 //! admits any output the BSV-21 rules allow; which of those outputs are pools
 //! worth indexing is this service's judgement (decided 2026-10-01): `admitted`
 //! runs `pool.check` and indexes only the pools that pass. Every map key
@@ -40,8 +40,8 @@ fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
 }
 
 /// The topic a query's token id names (skein-mandala's name.zig `tokenIdOfString`: `<txid>`,
-/// `<txid>_<vout>` or `<txid>.<vout>`; `tm_<txid>` for output 0 in any form, `tm_<txid>_<vout>`
-/// otherwise).
+/// `<txid>_<vout>` or `<txid>.<vout>`; the topic `tm_<txid>_<vout>`, `tm_<txid>_0` for output 0
+/// in any form).
 pub fn topicOf(a: Allocator, token_id: []const u8) ![]const u8 {
     const id = names.tokenIdOfString(token_id) orelse return error.BadQuery;
     var buf: [names.max_topic_len]u8 = undefined;

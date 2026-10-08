@@ -11,7 +11,7 @@
 //! engine's, not this program's: "a skein runs as a market and/or a validator by two settings in
 //! the engine's configuration (`config.overlay.market: {window}`, `config.overlay.validator:
 //! {every}`), and registering a token's topic is the one act that drives both" — the engine emits
-//! `liveness` / `beacon` on `tm_<txid>-live` at `register` (skein-overlay 0.9.0). The page reads
+//! `liveness` / `beacon` on `tm_<txid>_0-live` at `register` (skein-overlay 0.9.0). The page reads
 //! `GET /<app>/.live/<topic>` and names the validator (its identity key and peer ID) in the swap;
 //! the relay dials the peer it is given. This program keeps no validated set, no beacons, no
 //! liveness, and takes no start or stop.
@@ -58,7 +58,7 @@
 //! Config: the installed app record's `config.amm` (`ammP2p`: the catch-up's `topics`, `peers`,
 //! `window`, `batch`, `replyTimeoutMs`, all optional; `commission`), else genesis
 //! `defaults.ammP2p` and `defaults.ammCommission`, JSON objects in strings; the topics
-//! (`ammP2p.topics`, else every `tm_<txid>` the overlay serves, declared or registered with the
+//! (`ammP2p.topics`, else every `tm_<txid>_0` the overlay serves, declared or registered with the
 //! engine, as the engine reads its configuration: skein-overlay `engine_vm.configured`); the
 //! functions' declarations: the app record's `provides`, else genesis `defaults.ammProvides`
 //! (JSON) (README.md).
@@ -191,7 +191,7 @@ fn config(a: Allocator, in: Value) !Config {
         if (o.get("peers")) |v| cfg.peers = try strings(a, v);
     }
     if (cfg.topics.len == 0) {
-        // Every token topic `tm_<txid>` the overlay serves now: the ones registered with the
+        // Every token topic `tm_<txid>_0` the overlay serves now: the ones registered with the
         // engine (its head `<app>/topics`) and any `config.overlay.topics` names.
         const cin = overlay_in orelse in;
         var out: std.ArrayList([]const u8) = .empty;
@@ -214,7 +214,7 @@ const state_head = relay.p2p_head;
 
 const State = struct {
     s: w.store.Store,
-    /// The catch-up cursor: served topic `tm_<txid>` → the last block height settled.
+    /// The catch-up cursor: served topic `tm_<txid>_0` → the last block height settled.
     cursor: Map,
 
     fn load(a: Allocator, s: w.store.Store) !State {

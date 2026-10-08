@@ -20,7 +20,7 @@
  *   swap       bytes: the raw swap, the validator's slot `OP_0`
  *   pool       text `<txid>_<vout>`; validator bytes(33); expires unix ms
  *   peerId     text: the validator's libp2p peer ID, from the token's liveness
- *              read (`GET <base>/.live/tm_<txid>-live`, the beat's body): the
+ *              read (`GET <base>/.live/tm_<txid>_0-live`, the beat's body): the
  *              relay dials it (or, when it is the relay's own node, hands the
  *              swap to its own validator program); it looks at no liveness
  *

@@ -81,7 +81,7 @@ function ThisInstanceSection({ t, error }: { t: ThisInstance | null; error: stri
               <br />
               <small>
                 Read from the peer&apos;s liveness read of this instance&apos;s token topics,{" "}
-                <code>{AMM_PEER_OVERLAY ? `${AMM_PEER_OVERLAY}/.live/tm_<txid>-live` : "(no peer)"}</code> (kept where the peer is a market for the token).
+                <code>{AMM_PEER_OVERLAY ? `${AMM_PEER_OVERLAY}/.live/tm_<txid>_0-live` : "(no peer)"}</code> (kept where the peer is a market for the token).
               </small>
             </Row>
           </tbody>
@@ -122,8 +122,8 @@ function RegisteredSection({ refreshKey }: { refreshKey: number }) {
         <small>
           The token topics registered with this instance&apos;s engine (the Token topics page registers them). Registering a
           token&apos;s topic is the one act that drives both roles: with the market on the engine asks for the
-          topic&apos;s liveness (<code>tm_&lt;txid&gt;-live</code>, read at <code>/amm/.live/…</code>); with the validator on
-          it beacons <code>tm_&lt;txid&gt;-live</code> and this instance signs the token&apos;s swaps and takes on its new
+          topic&apos;s liveness (<code>tm_&lt;txid&gt;_0-live</code>, read at <code>/amm/.live/…</code>); with the validator on
+          it beacons <code>tm_&lt;txid&gt;_0-live</code> and this instance signs the token&apos;s swaps and takes on its new
           liquidity (addLiquidity, pool deploys). Deregistering reverses both. Both roles are off until you turn one on:
           the Market and Validator switches on the Token topics page (<a href="mandala/tokens/">mandala/tokens/</a>; or <code>--config</code> at install). They are shown under
           Policy.
@@ -321,7 +321,7 @@ function PeersSection({ live, error }: { live: LiveAnswer | null; error: string 
       <h2>Peers</h2>
       <p>
         <small>
-          The validators live in this node&apos;s liveness read (<code>{AMM_OVERLAY}/.live/tm_&lt;txid&gt;-live</code>, each token it
+          The validators live in this node&apos;s liveness read (<code>{AMM_OVERLAY}/.live/tm_&lt;txid&gt;_0-live</code>, each token it
           serves, merged; kept when this node is a market, <code>config.overlay.market</code>).
         </small>
       </p>

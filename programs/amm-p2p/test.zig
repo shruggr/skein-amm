@@ -129,7 +129,7 @@ test "proofs by block: the direct call's request and reply; one BUMP per block" 
     }));
 
     // Restricted to the topic: only t1.
-    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_" ++ "ab" ** 32 })))).?;
+    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_" ++ "ab" ** 32 ++ "_0" })))).?;
     const pt = try w.merkle.MerklePath.parse(a, rt);
     try testing.expect(w.beef.bumpHas(pt, t[1]));
     try testing.expect(!w.beef.bumpHas(pt, t[3]));
@@ -158,8 +158,8 @@ test "catch-up plan" {
 
 }
 
-test "names: tm_<txid> and tm_<txid>-live, parsed here" {
-    const o = "tm_" ++ "ab" ** 32;
+test "names: tm_<txid>_0 and tm_<txid>_0-live, parsed here" {
+    const o = "tm_" ++ "ab" ** 32 ++ "_0";
     const t = names.parse(o).?;
     try testing.expectEqual(names.Kind.overlay, t.kind);
     try testing.expectEqualSlices(u8, &([_]u8{0xab} ** 32), &t.id);
@@ -174,8 +174,11 @@ test "names: tm_<txid> and tm_<txid>-live, parsed here" {
     try testing.expect(names.parse(o ++ "-admit") == null);
     try testing.expect(names.parse("tm_amm_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse(o ++ "_live") == null);
-    try testing.expect(names.parse("tm_" ++ "AB" ** 32) == null);
+    try testing.expect(names.parse("tm_" ++ "AB" ** 32 ++ "_0") == null);
     try testing.expect(names.parse(o ++ "_0") == null);
+    // The bare `tm_<txid>` is no topic (skein-mandala 0.8.2), nor its `-live`.
+    try testing.expect(names.parse("tm_" ++ "ab" ** 32) == null);
+    try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "-live") == null);
     try testing.expect(names.parse("tm_abcd-live") == null);
     try testing.expectEqualStrings("/amm/proofs/1.0.0", names.proofs_protocol);
 }

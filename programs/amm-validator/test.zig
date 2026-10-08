@@ -691,7 +691,7 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitte
     try testing.expectEqual(@as(usize, 1), f.oracle.calls); // one signature, nothing else
     // Not submitted here (spend never routes): what the submission needs.
     try testing.expectEqualStrings(try validator.topicOf(a, f.id), r.ok.submission.?.topic);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_{s}", .{&w.header.toHex(f.id)}), r.ok.submission.?.topic);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_{s}_0", .{&w.header.toHex(f.id)}), r.ok.submission.?.topic);
     try testing.expect(r.ok.submission.?.pool.eql(op));
 
     // The same request as the direct call's step makes it, on a real node
@@ -978,7 +978,7 @@ test "the validated topics (0.3.2; 0.6.0: the registered set when config.overlay
     var none = f.cfg;
     none.validated = &.{};
     var other = f.cfg;
-    other.validated = &.{"tm_" ++ "00" ** 32};
+    other.validated = &.{"tm_" ++ "00" ** 32 ++ "_0"};
     for ([_]validator.Config{ none, other }) |cfg| {
         const r = try validator.spend(a, .swap, .{ .tx = req, .pool = op }, cfg, f.mem.view(), f.oracle.oracle());
         try expectRefused(r, .not_validating);

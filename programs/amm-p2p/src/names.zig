@@ -1,10 +1,11 @@
 //! Topic, protocol, box and schedule names. One overlay topic per token,
-//! `tm_<txid>` (the deploy txid, 64 lowercase hex characters in display
-//! order, no suffix); skein's overlay engine runs `<topic>`, `<topic>-admit`
-//! and `<topic>-proof` (skein#74). This program adds, in the same suffix
-//! style:
+//! `tm_<tokenId>`: a Mandala token's `tm_<txid>_0` (the deploy txid, 64
+//! lowercase hex characters in display order, then `_0`; David 2026-10-08:
+//! the token id is `<txid>_<vout>` for every token, `_0` included, and so is
+//! the topic); skein's overlay engine runs `<topic>`, `<topic>-admit` and
+//! `<topic>-proof` (skein#74). This program adds, in the same suffix style:
 //!
-//!   tm_<txid>-live         GossipSub: validator heartbeats (the overlay engine's beacon, skein-overlay 0.9.0)
+//!   tm_<txid>_0-live       GossipSub: validator heartbeats (the overlay engine's beacon, skein-overlay 0.9.0)
 //!   /amm/proofs/1.0.0      a direct call (a libp2p stream): proofs by block hash (a utility since
 //!                          0.2.0: no row routes it)
 //!
@@ -23,10 +24,11 @@ pub const Kind = enum { overlay, live };
 /// A topic name of ours: the overlay topic it belongs to and what it is.
 pub const Topic = struct { overlay: []const u8, id: [32]u8, kind: Kind };
 
-/// The deploy txid (display order) of an overlay topic `tm_<txid>`, or null.
+/// The deploy txid (display order) of a Mandala token's overlay topic `tm_<txid>_0`, or null
+/// (the bare `tm_<txid>` included: no topic since skein-mandala 0.8.2).
 pub fn txidOf(name: []const u8) ?[32]u8 {
-    if (name.len != 3 + 64 or !std.mem.startsWith(u8, name, "tm_")) return null;
-    const hex = name[3..];
+    if (name.len != 3 + 64 + 2 or !std.mem.startsWith(u8, name, "tm_") or !std.mem.endsWith(u8, name, "_0")) return null;
+    const hex = name[3 .. 3 + 64];
     for (hex) |c| if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))) return null;
     var id: [32]u8 = undefined;
     _ = std.fmt.hexToBytes(&id, hex) catch return null;

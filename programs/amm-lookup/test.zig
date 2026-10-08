@@ -97,7 +97,7 @@ fn ltx(a: Allocator, txid: [32]u8, t: bsvz.transaction.Transaction) !lookup.Tx {
 
 fn serviceAndTopic(a: Allocator, id: [32]u8) !struct { service: []const u8, topic: []const u8, token: []const u8 } {
     const token = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(id)});
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_{s}", .{&w.header.toHex(id)}), try idx.topicOf(a, token));
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_{s}_0", .{&w.header.toHex(id)}), try idx.topicOf(a, token));
     return .{ .service = idx.service_name, .topic = try idx.topicOf(a, token), .token = token };
 }
 
@@ -196,24 +196,25 @@ const Env = struct {
     }
 };
 
-test "names: a query's tokenId <txid>, <txid>_0 or <txid>.0 is the topic tm_<txid>, <txid>_<vout> is tm_<txid>_<vout>; other ids are refused" {
+test "names: a query's tokenId <txid>, <txid>_0 or <txid>.0 is the topic tm_<txid>_0, <txid>_<vout> is tm_<txid>_<vout>; other ids are refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const hex = "0102030405060708091011121314151617181920212223242526272829303132";
     // skein-mandala 0.4.0 token ids: a Mandala-originated token prints the bare <txid>, a
     // BSV-21-originated one <txid>_<vout>; every form names the same token and topic.
-    try testing.expectEqualStrings("tm_" ++ hex, try idx.topicOf(a, hex));
-    try testing.expectEqualStrings("tm_" ++ hex, try idx.topicOf(a, hex ++ "_0"));
-    try testing.expectEqualStrings("tm_" ++ hex, try idx.topicOf(a, hex ++ ".0"));
+    // The topic is `tm_<tokenId>`, `_0` included (skein-mandala 0.8.2, David 2026-10-08).
+    try testing.expectEqualStrings("tm_" ++ hex ++ "_0", try idx.topicOf(a, hex));
+    try testing.expectEqualStrings("tm_" ++ hex ++ "_0", try idx.topicOf(a, hex ++ "_0"));
+    try testing.expectEqualStrings("tm_" ++ hex ++ "_0", try idx.topicOf(a, hex ++ ".0"));
     try testing.expectEqualStrings("tm_" ++ hex ++ "_17", try idx.topicOf(a, hex ++ "_17"));
     try testing.expectEqualStrings("tm_" ++ hex ++ "_17", try idx.topicOf(a, hex ++ ".17"));
     try testing.expectError(error.BadQuery, idx.topicOf(a, hex ++ "_017"));
     try testing.expectError(error.BadQuery, idx.topicOf(a, "abcd_0"));
     try testing.expectEqual(pool.bsv21.Kind.legacy, idx.tokenIdOf("tm_" ++ hex ++ "_17").?.kind);
-    try testing.expectEqual(pool.bsv21.Kind.native, idx.tokenIdOf("tm_" ++ hex).?.kind);
+    try testing.expectEqual(pool.bsv21.Kind.native, idx.tokenIdOf("tm_" ++ hex ++ "_0").?.kind);
     try testing.expect(idx.tokenIdOf("tm_mandala") == null);
-    try testing.expect(idx.tokenIdOf("tm_" ++ hex ++ "_0") == null); // tm_<txid>_0 is never a topic
+    try testing.expect(idx.tokenIdOf("tm_" ++ hex) == null); // the bare tm_<txid> is no topic
 }
 
 test "queries: one service over every token, each query naming its token; a query without one is refused" {

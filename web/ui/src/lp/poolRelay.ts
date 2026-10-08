@@ -15,7 +15,7 @@
  *              token inputs, which no overlay may hold yet)
  *   validator  bytes(33): the identity named in the pool (ValidatorIdentity)
  *   peerId     text: the validator's libp2p peer ID, from the liveness read
- *              (`GET <base>/.live/tm_<txid>-live`): what the relay dials
+ *              (`GET <base>/.live/tm_<txid>_0-live`): what the relay dials
  *   expires    unix ms after which the relay gives up (the funding's hold lapses)
  *
  * The relay checks the pair (the deploy spends the funding output; output 0

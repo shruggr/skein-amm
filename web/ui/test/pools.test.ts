@@ -191,7 +191,7 @@ describe("pool deploy: plan", () => {
     expect(plan.lpKeyId).toBe(`YW1tLWxw ${Utils.toBase64(Utils.toArray(`${DEPLOY_TXID}_0`, "utf8"))}`);
     expect(legacyLpKeyId(`${DEPLOY_TXID}.0`)).toBe(`amm-lp-${DEPLOY_TXID}_0`);
     expect(plan.args.assetId).toBe(Utils.toHex(tokenDeploy.hash() as number[]));
-    expect(plan.topic).toBe(`tm_${DEPLOY_TXID}`);
+    expect(plan.topic).toBe(`tm_${DEPLOY_TXID}_0`);
     expect(plan.price).toBe("0.2");
     expect(PoolTemplate.decode(plan.lockingScript)!.state).toEqual(plan.state);
   });
@@ -639,14 +639,14 @@ describe("my pools", () => {
     const af = { fetch: fetchMock } as unknown as SignedFetch;
     // The wallet's LP key is the deposit's pre-BRC-29 one (amm-lp-<deploy:0>); every other keyID is some other key.
     const { wallet } = fakeWallet(0, honest((a) => (a.keyID === legacyLpKeyId(`${DEPLOY_TXID}_0`) ? lpKey : key(99))));
-    const r = await findMyPools(af, "http://x/amm", wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
+    const r = await findMyPools(af, "http://x/amm", wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}_0`)!], []);
     expect(r.warnings).toEqual([]);
     expect(r.pools).toHaveLength(1);
     expect(r.pools[0]!.state.outpoint).toBe(swapOp);
     expect(r.pools[0]!.lpKey).toEqual({ protocolID: P1SAT, keyID: legacyLpKeyId(`${DEPLOY_TXID}_0`), counterparty: "self" });
     expect(r.pools[0]!.via).toBe("history");
 
-    const none = await findMyPools(af, "http://x/amm", fakeWallet(0, honest()).wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}`)!], []);
+    const none = await findMyPools(af, "http://x/amm", fakeWallet(0, honest()).wallet, [parseTokenTopic(`tm_${DEPLOY_TXID}_0`)!], []);
     expect(none.pools).toEqual([]);
   });
 });
@@ -714,7 +714,7 @@ describe("remove liquidity: funding and the remove transaction", () => {
     expect(b.atomicTxid).toBe(s.txid);
     expect(b.findTxid(f.txid)).toBeDefined();
     expect(b.findTxid(swap2.id("hex"))).toBeDefined();
-    expect(s.topic).toBe(`tm_${DEPLOY_TXID}`);
+    expect(s.topic).toBe(`tm_${DEPLOY_TXID}_0`);
     const STEAK = { [s.topic]: { outputsToAdmit: [0, 2], coinsToRetain: [], coinsRemoved: [0] } };
     const seen: { url: string; init: RequestInit }[] = [];
     const fetchFn = (async (url: string, init: RequestInit) => {

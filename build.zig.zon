@@ -1,6 +1,6 @@
 .{
     .name = .skein_amm,
-    .version = "0.7.1",
+    .version = "0.7.2",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
@@ -15,8 +15,8 @@
         // into bin/. (Its pages, www/, are outside the package's paths: scripts/mandala-pages.sh
         // copies them from the same tag's tarball by URL and sha256.)
         .skein_mandala = .{
-            .url = "https://github.com/shruggr/skein-mandala/archive/refs/tags/v0.8.1.tar.gz",
-            .hash = "skein_mandala-0.8.1-_DlbUrKOGwA0wPkeXoPrfA6j5yvFryzAKrb5RqYa4p0p",
+            .url = "https://github.com/shruggr/skein-mandala/archive/refs/tags/v0.8.2.tar.gz",
+            .hash = "skein_mandala-0.8.2-_DlbUvqPGwC3h2IKbUCdi9vdD5W4s6X3mxy0cyWpWhEk",
         },
     },
     .paths = .{

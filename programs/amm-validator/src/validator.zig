@@ -24,7 +24,7 @@
 //!      as previous coins, and the inputs' sources where the topic's own
 //!      call reads them: held, else the request's BEEF — the same judgement
 //!      `submit.route` asks the topic for, after signing); the pool checks
-//!      pass (`pool.check`: the topic `tm_<txid>` no longer runs
+//!      pass (`pool.check`: the topic `tm_<txid>_0` no longer runs
 //!      them, decided 2026-10-01, so a malformed continuation would be a
 //!      valid token output — the validator refuses to sign it, `bad_pool`;
 //!      `pool.check` does not look at the ValidatorPubKey, which is ours to
@@ -229,7 +229,7 @@ pub fn tokenId(id: [32]u8) bsv21.TokenId {
     return .{ .txid = id };
 }
 
-/// The token's topic, `tm_<txid>` (skein-mandala name.zig; a native token's name carries no index).
+/// The token's topic, `tm_<txid>_0` (skein-mandala name.zig: `tm_<tokenId>`, `_0` included since 0.8.2).
 pub fn topicOf(a: std.mem.Allocator, id: [32]u8) ![]u8 {
     const buf = try a.create([mandala.name.max_topic_len]u8);
     return a.dupe(u8, mandala.name.topicName(buf, .{ .txid = id }));

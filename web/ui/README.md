@@ -19,7 +19,7 @@ deploy.
 
 **skein-amm 0.4.0: liveness is the runtime's read** (shruggr/skein#120,
 #138). Every page that showed `GET <base>/live` now reads, per token topic,
-`GET <base>/.live/tm_<txid>-live` → `[{sender, at, body, from}]` newest first
+`GET <base>/.live/tm_<txid>_0-live` → `[{sender, at, body, from}]` newest first
 (404: the instance keeps no liveness for it), decodes each `body` (dag-cbor
 `{identityKey, peerId}`, the beacon's) and keeps the validators within the
 window (`LIVE_WINDOW_MS`, 40 s; `src/lib/overlay.ts` `fetchLive`,
@@ -37,6 +37,14 @@ shown `<txid>.<vout>`; every txid, token id, outpoint and topic shown is an
 button). The remove-liquidity
 submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
 using authfetch for the submit http method").
+
+**skein-amm 0.7.2: topic names** (David, 2026-10-08: "that was the decision
+all along"; skein-mandala 0.8.2): a token's topic is `tm_<tokenId>`,
+`_<vout>` always, so a Mandala token's is `tm_<txid>_0` and its liveness
+topic `tm_<txid>_0-live`; the bare `tm_<txid>` is no topic. The pool deploy
+and the remove-liquidity submit name the token's topic from its full id
+(`src/lp/poolDeploy.ts`, `src/lp/removeLiquidity.ts`), and `parseTokenTopic`
+(`src/lib/overlay.ts`) takes `tm_<txid>_<vout>` only.
 
 **skein-amm 0.7.1: one token id form** (David, 2026-10-07, shruggr/skein#120;
 supersedes 0.6.3's bare txid): every token id, Mandala and legacy BSV-21
@@ -73,7 +81,7 @@ market on".
 David 2026-10-06 evening). Registering a token's topic (the Tokens page) is
 the one act: with `config.overlay.market {window}` the engine asks for the
 topic's liveness, with `config.overlay.validator {every}` it beacons
-`tm_<txid>-live`, and amm-validator signs for every registered token. The
+`tm_<txid>_0-live`, and amm-validator signs for every registered token. The
 beat has no body: `parseLiveBeats` takes the validator's identity from each
 entry's `sender` and its peer ID from `from`. The Validator page has no
 buttons any more — no "Start / Stop heartbeat" (amm-p2p takes no start or
@@ -137,7 +145,7 @@ untracked, or the environment):
 | variable | default | what |
 |---|---|---|
 | `VITE_AMM_OVERLAY` | the page's own directory (`appBaseOf`) | the AMM app's base URL (every page); its origin is the instance (messagebox, `/.well-known/auth`, `/explore`). Set it for a dev server on another origin |
-| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_<txid>-live` reads (0.4.0); unset disables |
+| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_<txid>_0-live` reads (0.4.0); unset disables |
 | `VITE_AMM_REFRESH_MS` | `10000` | the Swap page's refresh |
 | `VITE_FEE_RATE` | `100` | the swap's miner fee rate, sats per 1000 bytes: the funding output carries `ceil(size × rate / 1000)` for the final swap (below, "Funding") |
 
@@ -264,10 +272,13 @@ server on another origin calls it cross-origin. Plain
 `LookupResolver` drops freeform answers and `TopicBroadcaster` refuses topic
 names like `tm_<64 hex>` before sending anything.
 
-Names (skein-mandala docs/MANDALA.md): a token deployed at output 0 is topic
-`tm_<txid>`, a BRC-161 token deployed at a non-zero output
-`tm_<txid>_<vout>`. The pages write every token id `<txid>_<vout>`, `_0`
-included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and
+Names (skein-mandala docs/MANDALA.md): a token's topic is `tm_<tokenId>`,
+`_<vout>` always (0.7.2, skein-mandala 0.8.2; David 2026-10-08: "that was
+the decision all along"): a token deployed at output 0 is topic
+`tm_<txid>_0`, a BRC-161 token deployed at a non-zero output
+`tm_<txid>_<vout>`; the bare `tm_<txid>` is no topic. The pages write
+every token id `<txid>_<vout>`, `_0` included (BRC-162 "Token
+identification"; 0.7.1, David 2026-10-07), and
 show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
 `src/lib/tokenId.ts`); `ls_amm` takes any form in `{tokenId}`. The topics listed are
 the ones the owner registered with the engine (`/listTopicManagers`).
@@ -779,7 +790,7 @@ it, so the funding is broadcast at once (no nosend):
    contract's. Both inputs checked with `Spend`. The sats withdrawal is
    recorded under Pending payouts before submitting.
 5. `POST <base>/submit`, body the remove's AtomicBEEF (the funding as its
-   unproven parent, the pool's ancestry), `x-topics: tm_<txid>`; plain
+   unproven parent, the pool's ancestry), `x-topics: tm_<txid>_0`; plain
    `fetch`, unsigned (0.6.3: AuthFetch refuses `x-topics`; the front door
    takes the submit unsigned).
 6. `internalizeAction({tx: that BEEF, outputs: [continuation (basket

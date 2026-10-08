@@ -2,7 +2,7 @@
 //! validator only adds its signature; the submission is the overlay engine's
 //! (skein-overlay 0.7.5 docs/OVERLAY.md "Submitting", shruggr/skein#112). A
 //! submission is a message: the validator sends `{fn: "submit", args: {beef,
-//! topics: [tm_<txid>]}}` from this instance to itself, in the submissions
+//! topics: [tm_<txid>_0]}}` from this instance to itself, in the submissions
 //! box `<app>/submit` (the manifest's row `submit` from `*` takes it to the
 //! engine; shruggr/skein#128: one box per function class), with the
 //! signed BEEF — the request's BEEF (the taker's ancestry and BUMPs) with its

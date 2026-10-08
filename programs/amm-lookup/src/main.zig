@@ -21,7 +21,7 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     \\# AMM pools (ls_amm)
     \\
     \\The live pools of the AMM's Pool contract, over every Mandala token topic this
-    \\overlay serves (`tm_<txid>`). A pool is a BRC-162 value output at output 0 whose
+    \\overlay serves (`tm_<txid>_<vout>`). A pool is a BRC-162 value output at output 0 whose
     \\lock is the compiled Pool code followed by its state; it is listed when its
     \\prefix agrees with the asset id and the TokenReserve its code and state carry.
     \\
