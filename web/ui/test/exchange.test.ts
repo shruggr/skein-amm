@@ -10,7 +10,6 @@ import {
   deregisterToken,
   discoveryTokens,
   hostedTokens,
-  idKindOf,
   listingRequests,
   lookupOf,
   myPositions,
@@ -26,24 +25,23 @@ import {
 import { compactSats, fmtAmount, fmtChange, fmtPrice, parseInput } from "../src/ox/format";
 import { parseRoute, routeHref } from "../src/ox/route";
 
-const TXID = /^[0-9a-f]{64}$/;
+const ASSET_ID = /^[0-9a-f]{64}_\d+$/;
 const OUTPOINT = /^[0-9a-f]{64}\.\d+$/;
 
 beforeEach(() => resetFixtures());
 
 describe("exchange.ts shapes", () => {
-  it("hosted tokens: bare-txid ids, a marginal price from the summed reserves, depth below the sats", async () => {
+  it("hosted tokens: assetId ids (`<txid>_0`), a marginal price from the summed reserves, depth below the sats", async () => {
     const ts = await hostedTokens();
     expect(ts.length).toBeGreaterThan(1);
     for (const t of ts) {
-      expect(t.tokenId).toMatch(TXID);
-      expect(idKindOf(t.tokenId)).toBe("txid");
+      expect(t.tokenId).toMatch(ASSET_ID);
+      expect(t.tokenId.endsWith("_0")).toBe(true);
       expect(t.pools).toBeGreaterThan(0);
       expect(t.marginalPrice).toBeCloseTo(Number(t.reserves.sats) / (Number(t.reserves.tokens) / 10 ** t.dec), 6);
       expect(t.depth!.sats).toBeGreaterThan(0n);
       expect(t.depth!.sats).toBeLessThan(t.reserves.sats);
     }
-    expect(idKindOf(`${"ab".repeat(32)}_1`)).toBe("token");
   });
 
   it("a buy quote routes over the pools: legs sum to the amount, effective price above marginal, impact in bps", async () => {
@@ -99,11 +97,15 @@ describe("exchange.ts shapes", () => {
     expect((await registeredTokens()).map((t) => t.tokenId)).not.toContain(fern.tokenId);
   });
 
-  it("topic and lookup names are derived from the token id (BRC-207: `_0` for a bare txid)", () => {
+  it("topic and lookup names are derived from the assetId (BRC-207: tm_mandala_<txid>_<vout>, `_0` included)", async () => {
     const t = "cd".repeat(32);
-    expect(topicOf(t)).toBe(`tm_mandala_${t}_0`);
-    expect(lookupOf(t)).toBe(`ls_mandala_${t}_0`);
+    expect(topicOf(`${t}_0`)).toBe(`tm_mandala_${t}_0`);
+    expect(lookupOf(`${t}_0`)).toBe(`ls_mandala_${t}_0`);
     expect(topicOf(`${t}_2`)).toBe(`tm_mandala_${t}_2`);
+    for (const r of await registeredTokens()) {
+      expect(topicOf(r.tokenId)).toBe(`tm_mandala_${r.tokenId}`);
+      expect(lookupOf(r.tokenId)).toBe(`ls_mandala_${r.tokenId}`);
+    }
   });
 });
 
@@ -124,7 +126,7 @@ describe("formats and routes", () => {
   });
 
   it("hash routes round-trip", () => {
-    const id = "ef".repeat(32);
+    const id = `${"ef".repeat(32)}_0`;
     expect(parseRoute(routeHref({ page: "swap", tokenId: id }))).toEqual({ page: "swap", tokenId: id });
     expect(parseRoute("#/liquidity")).toEqual({ page: "liquidity" });
     expect(parseRoute("")).toEqual({ page: "landing" });

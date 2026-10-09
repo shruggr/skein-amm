@@ -6,9 +6,9 @@
  */
 import { useState } from "react";
 import { Id } from "../components/Id";
+import { shortTokenId } from "../lib/tokenId";
 import {
   deregisterToken,
-  idKindOf,
   lookupOf,
   registerToken,
   topicOf,
@@ -70,7 +70,7 @@ function Register() {
             <select id="reg-pick" className="mono grow" value={t?.tokenId ?? ""} onChange={(e) => setPick(e.target.value)}>
               {list.map((d) => (
                 <option key={d.tokenId} value={d.tokenId}>
-                  {d.sym} · {d.tokenId.slice(0, 8)}…{d.tokenId.slice(-8)}
+                  {d.sym} · {shortTokenId(d.tokenId)}
                   {d.seenAt ? ` · in discovery ${ago(d.seenAt)}` : ""}
                 </option>
               ))}
@@ -83,7 +83,7 @@ function Register() {
             <dl className="kv kv-left small">
               <dt>Token id</dt>
               <dd>
-                <Id value={t.tokenId} kind={idKindOf(t.tokenId)} label={`${t.sym} token id`} />
+                <Id value={t.tokenId} kind="token" label={`${t.sym} token id`} />
               </dd>
               <dt>Topic</dt>
               <dd>

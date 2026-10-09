@@ -9,7 +9,6 @@ import { Id } from "../components/Id";
 import {
   closePosition,
   deployPosition,
-  idKindOf,
   useMyPositions,
   useMyTokens,
   useValidatorTerms,
@@ -180,7 +179,7 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
         </select>
         {token && (
           <span className="help">
-            <Id value={token.tokenId} kind={idKindOf(token.tokenId)} label={`${token.sym} token id`} />
+            <Id value={token.tokenId} kind="token" label={`${token.sym} token id`} />
           </span>
         )}
       </div>

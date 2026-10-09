@@ -16,7 +16,6 @@ import { outpointText, parseTokenId, sdkTokenId, shortOutpoint, shortTokenId } f
 /**
  * A topic is a name carrying a token's id (`tm_mandala_<txid>_<vout>`, `tm_mandala_<txid>_0` included).
  * A key is an identity or validator key (66 hex), shortened to its first and last 8.
- * A Mandala token id is a bare txid (Open Exchange, David 2026-10-09): show it as `txid`.
  */
 export type IdKind = "txid" | "token" | "outpoint" | "topic" | "key";
 

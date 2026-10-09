@@ -11,9 +11,10 @@
  * pools at their fees, a swap, deploy or close changes them, and the price
  * subscription pushes the change.
  *
- * Ids (David, 2026-10-08/09): a Mandala token id is the bare txid; an outpoint
- * is `<txid>.<vout>`; an underscore appears only in a legacy standard id
- * (`<txid>_<vout>`). `idKindOf` picks how `<Id>` shows a token id.
+ * Ids (David, 2026-10-09): every token id is the BRC-207 assetId
+ * `<txid>_<vout>`, `_0` included for a Mandala token (src/lib/tokenId.ts;
+ * the bare txid is only the on-chain wire form), shown with
+ * `<Id kind="token">`. An outpoint is `<txid>.<vout>`.
  *
  * Amounts are bigints in base units (sats; a token's base units, `dec`
  * places). Prices are numbers: sats per whole token.
@@ -24,19 +25,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
-import type { IdKind } from "../components/Id";
+import { sdkTokenId, tokenIdText } from "../lib/tokenId";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** A Mandala token id (bare txid) or a legacy standard id (`<txid>_<vout>`). */
+/** A token id: the BRC-207 assetId `<txid>_<vout>`, `_0` included (src/lib/tokenId.ts). */
 export type TokenId = string;
-
-/** How `<Id>` shows a token id: a bare txid as a txid, a legacy `<txid>_<vout>` as a token id. */
-export function idKindOf(tokenId: TokenId): IdKind {
-  return tokenId.includes("_") ? "token" : "txid";
-}
 
 /** What a swap of 2% of the price costs: the sats a buy needs to move the marginal price up by `bps`. */
 export interface Depth {
@@ -300,13 +296,13 @@ interface FixtureState {
 }
 
 const T = {
-  GOLD: hex64("GOLD"),
-  KNOT: hex64("KNOT"),
-  WOOL: hex64("WOOL"),
-  TEA: hex64("TEA"),
-  MOSS: hex64("MOSS"),
-  FERN: hex64("FERN"),
-  REED: hex64("REED"),
+  GOLD: tokenIdText({ txid: hex64("GOLD"), vout: 0 }),
+  KNOT: tokenIdText({ txid: hex64("KNOT"), vout: 0 }),
+  WOOL: tokenIdText({ txid: hex64("WOOL"), vout: 0 }),
+  TEA: tokenIdText({ txid: hex64("TEA"), vout: 0 }),
+  MOSS: tokenIdText({ txid: hex64("MOSS"), vout: 0 }),
+  FERN: tokenIdText({ txid: hex64("FERN"), vout: 0 }),
+  REED: tokenIdText({ txid: hex64("REED"), vout: 0 }),
 };
 
 function fixtureState(now = Date.now()): FixtureState {
@@ -842,12 +838,12 @@ export async function registeredTokens(): Promise<RegisteredToken[]> {
 
 /** The topic a token's pools are admitted under (BRC-207; skein-amm 0.8.0): derived, never typed. */
 export function topicOf(tokenId: TokenId): string {
-  return `tm_mandala_${tokenId.includes("_") ? tokenId : `${tokenId}_0`}`;
+  return `tm_mandala_${sdkTokenId(tokenId)}`;
 }
 
 /** The lookup service of a token (BRC-207): derived, never typed. */
 export function lookupOf(tokenId: TokenId): string {
-  return `ls_mandala_${tokenId.includes("_") ? tokenId : `${tokenId}_0`}`;
+  return `ls_mandala_${sdkTokenId(tokenId)}`;
 }
 
 /**

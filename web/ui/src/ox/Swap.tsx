@@ -1,6 +1,7 @@
 /** Swap one token: you pay / you receive, the quote routed across the token's pools, and the Route panel. */
 import { useEffect, useState } from "react";
 import { Id } from "../components/Id";
+import { sameToken } from "../lib/tokenId";
 import {
   executeSwap,
   quoteSwap,
@@ -54,7 +55,7 @@ function PickToken({ tokens }: { tokens: HostedToken[] | null }) {
 }
 
 export function SwapPage({ session, tokenId, tokens }: { session: Session; tokenId?: string; tokens: HostedToken[] | null }) {
-  const token = tokenId ? tokens?.find((t) => t.tokenId === tokenId) : undefined;
+  const token = tokenId ? tokens?.find((t) => sameToken(t.tokenId, tokenId)) : undefined;
   if (!tokenId) return <PickToken tokens={tokens} />;
   if (!token) {
     return (

@@ -1,7 +1,7 @@
 /** Small shared pieces of the Open Exchange pages. */
 import type { ReactNode } from "react";
 import { Id } from "../components/Id";
-import { idKindOf, type Session, type TokenId } from "../data/exchange";
+import { type Session, type TokenId } from "../data/exchange";
 
 const MARKS = ["#7A6A2E", "#5A66B0", "#3E6B5A", "#3F4F99", "#6B4E7A", "#4F6B7A"];
 
@@ -27,7 +27,7 @@ export function TokenName({ tokenId, sym, icon, size }: { tokenId: TokenId; sym:
       <TokenMark tokenId={tokenId} sym={sym} {...(icon ? { icon } : {})} {...(size ? { size } : {})} />
       <span className="token-name-text">
         <span className="sym">{sym}</span>
-        <Id value={tokenId} kind={idKindOf(tokenId)} label={`${sym} token id`} />
+        <Id value={tokenId} kind="token" label={`${sym} token id`} />
       </span>
     </span>
   );
