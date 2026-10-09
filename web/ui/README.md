@@ -1,5 +1,16 @@
 # @amm-poc/market-ui
 
+**Open Exchange (branch `design/open-exchange`, shruggr/skein#147).** The
+shell (`src/App.tsx`) is now Open Exchange: a landing open to all (the
+hosted tokens, live prices, symbol search) and, with a wallet, Swap,
+Liquidity, Your tokens and root's Settings, hash-routed (`#/`,
+`#/swap/<tokenId>`, `#/liquidity`, `#/tokens`, `#/settings`), pages in
+`src/ox/`. Every read and action goes through `src/data/exchange.ts`, which
+returns fixtures for now; each function names the logic to call. Preview
+states: `?fixture=wallet` / `?fixture=root`. The tab pages described below
+(`src/pages/*`) are no longer in the shell; their files and the logic under
+`lp/`, `market/`, `lib/`, `pool/` are unchanged.
+
 Four pages — **Tokens** (the wallet's tokens, Mandala deploy), **Pools**
 (create a pool, my pools, add and remove liquidity), **Swap**, **Validator** (your
 own instance as a validator) — for the AMM. The header shows the

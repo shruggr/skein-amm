@@ -1,15 +1,15 @@
 {
-  "name": "AMM PoC Market",
-  "short_name": "AMM Market",
-  "description": "Swap tokens against AMM pools, run pools as an LP, and run your instance as a validator.",
+  "name": "Open Exchange",
+  "short_name": "Open Exchange",
+  "description": "Swap Mandala tokens against the pools on this exchange, and deploy and close liquidity positions.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "background_color": "#0E1526",
+  "theme_color": "#0E1526",
   "metanet": {
     "groupPermissions": {
-      "description": "AMM PoC Market reads your tokens, builds swaps and pools with your wallet, and receives the sats pools pay you.",
+      "description": "Open Exchange reads your tokens, builds swaps and pools with your wallet, and receives the sats pools pay you.",
       "spendingAuthorization": {
         "amount": 10000000,
         "description": "Up to 0.1 BSV a month for swap inputs, pool deposits and network fees."
