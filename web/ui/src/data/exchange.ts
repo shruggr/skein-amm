@@ -1,31 +1,66 @@
 /**
  * Open Exchange: every read and every action the pages make, in one typed
- * module (shruggr/skein#147). The pages import from here and nowhere else in
- * the data layer (they still use `components/Id`, `lp/amounts`, the wallet
- * provider and `ox/*`).
+ * module (shruggr/skein#147; wired in skein-amm 0.9.0). The pages import from
+ * here and nowhere else in the data layer.
  *
- * EVERY FUNCTION HERE RETURNS FIXTURE DATA. Each doc comment names the existing
- * logic the overlay session should call to make it real, or the new contract
- * piece it needs ("NEW:"). The fixtures are consistent with each other: the
- * hosted tokens' prices come from their pools, a quote routes over those
- * pools at their fees, a swap, deploy or close changes them, and the price
- * subscription pushes the change.
+ * Where each comes from:
+ *
+ * - **Prices** (`hostedTokens`, `subscribePrices`): the AMM lookup's beats
+ *   (skein-overlay 0.12.0, David Case 2026-10-09: "Pricing lives in the AMM
+ *   LOOKUP's own beacon"): `GET <base>/.live/ls_amm-live`, each live skin's
+ *   per-token, per-validator totals of its listed pools, combined here over
+ *   the live validators (src/market/prices.ts); a token no beat reports
+ *   falls back to this skein's own listing (`ls_amm`) and liveness. Polled
+ *   every `REFRESH_MS` (the beats live in the host's liveness, not in the
+ *   log: no event stream carries them).
+ * - **Swap** (`quoteSwap`, `executeSwap`): the matching engine's plan over
+ *   this skein's listed pools whose validator is live (src/market/plan.ts),
+ *   each leg built, relayed and settled as before (src/market/swapAction.ts,
+ *   swapFlow.ts; `amm.swap.submit` on `/call`).
+ * - **Liquidity**: `myPositions` from the wallet's pool rows and the chain
+ *   state by outpoint (src/lp/positions.ts: the pool followed to its current
+ *   output, the claim spent = rescinded); `deployPosition` delivers the
+ *   deploy to this skein's validator (src/lp/poolDeploy.ts, deployFlow.ts;
+ *   `amm.pool.terms`, `amm.pool.submit`); `closePosition` closes it
+ *   (src/lp/close.ts, `POST /submit`).
+ * - **Your tokens**: the wallet's token rows (src/lp/wallet.ts,
+ *   inventory.ts); `requestListing` a message to the box `<app>/requests`.
+ * - **Settings** (root): the token list (`/mandala/tokens`) and the
+ *   registered topics; root's messages to `<app>/register`; the holders'
+ *   requests (`GET <base>/requests`). `isRoot` is a stub (no grants read).
  *
  * Ids (David, 2026-10-09): every token id is the BRC-207 assetId
- * `<txid>_<vout>`, `_0` included for a Mandala token (src/lib/tokenId.ts;
- * the bare txid is only the on-chain wire form), shown with
- * `<Id kind="token">`. An outpoint is `<txid>.<vout>`.
+ * `<txid>_<vout>`, `_0` included for a Mandala token (src/lib/tokenId.ts);
+ * an outpoint is `<txid>.<vout>`. Amounts are bigints in base units; prices
+ * are numbers: sats per whole token.
  *
- * Amounts are bigints in base units (sats; a token's base units, `dec`
- * places). Prices are numbers: sats per whole token.
- *
- * Fixture-only switch for previews and screenshots: `?fixture=wallet` (a
- * connected wallet) or `?fixture=root` (connected as root) in the page URL.
- * Remove it with the fixtures.
+ * The connected wallet (and its BRC-104 client) reach these functions
+ * through `useSession` (`setExchangeContext`); tests set the context
+ * themselves.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AuthFetch, Utils, type WalletInterface } from "@bsv/sdk";
+import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
-import { sdkTokenId, tokenIdText } from "../lib/tokenId";
+import { outpointText, parseOutpoint, sameToken, sdkTokenId, tokenIdText } from "../lib/tokenId";
+import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName } from "../lib/config";
+import { fetchLive, listTokenTopics, lookupPoolOutput, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
+import { readBeats, readRequests, readTokenList, sendMessage, type Beat, type ListedToken } from "../lib/skein";
+import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
+import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
+import { validatorStatus } from "../market/view";
+import { callApp, readBytes, swapTerms, type AuthFetchLike } from "../market/relay";
+import { pendingSwapPayouts, prepareSwap, selectExactTokenInputs, tokenInputsOf, type TokenInput } from "../market/swapAction";
+import { relaySwap, type SwapOutcome } from "../market/swapFlow";
+import { PendingPayoutStore } from "../wallet/pendingPayouts";
+import { formatAmount } from "../lp/amounts";
+import { loadWalletAssets } from "../lp/wallet";
+import { buildInventory } from "../lp/inventory";
+import { imageDataUrl } from "../lp/images";
+import { poolableTokens, preparePoolDeploy, selectDepositInputs } from "../lp/poolDeploy";
+import { relayPoolDeploy } from "../lp/deployFlow";
+import { positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
+import { completeClose, prepareClose, submitToOverlay } from "../lp/close";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -140,6 +175,8 @@ export interface SwapResult {
 export interface Fees {
   lpBps: number;
   validatorBps: number;
+  /** The relay's commission (the pool's CommissionBps); 0: none. */
+  commissionBps: number;
 }
 
 /** The validator a new position is deployed with, and its fees (read-only on the page). */
@@ -163,6 +200,8 @@ export interface Position {
   /** Fees the pool has earned the LP, when it can be told. */
   feesEarnedSats?: bigint;
   validator: ValidatorRef;
+  /** The claim spent: the validator withdrew the listing (the pool no longer trades; close it). */
+  rescinded: boolean;
 }
 
 export interface DeployRequest {
@@ -250,113 +289,32 @@ export const MANDALA_DEPLOY_HREF = "mandala/deploy/";
 export const SITE_HREF = "/site/";
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// The context: the instance and the connected wallet
 // ---------------------------------------------------------------------------
 
-/** A deterministic 64-hex string from a seed (fixture ids only). */
-function hex64(seed: string): string {
-  let h = 2166136261 >>> 0; // FNV-1a over the whole seed
-  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-  let out = "";
-  for (let k = 0; k < 8; k++) {
-    let x = (h ^ Math.imul(k + 1, 0x9e3779b9)) >>> 0; // murmur3 fmix32 per 8-hex chunk
-    x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
-    x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
-    x = (x ^ (x >>> 16)) >>> 0;
-    out += x.toString(16).padStart(8, "0");
-  }
-  return out;
+type Signed = SignedFetch & AuthFetchLike;
+
+interface ExchangeContext {
+  /** The AMM app's base URL (src/lib/config.ts). */
+  base: string;
+  wallet: WalletInterface | null;
+  /** The wallet's BRC-104 client. */
+  af: Signed | null;
+  identityKey: string | null;
+  /** The pending payouts' store (localStorage). */
+  payouts: PendingPayoutStore;
 }
 
-const ROOT_KEY = "02" + hex64("root");
-const USER_KEY = "03" + hex64("user");
-const THIS_VALIDATOR = "03" + hex64("validator-this");
-const OTHER_VALIDATOR = "02" + hex64("validator-other");
-const REQUESTER = "02" + hex64("requester");
+const context: ExchangeContext = { base: AMM_OVERLAY, wallet: null, af: null, identityKey: null, payouts: new PendingPayoutStore() };
 
-const FEES: Fees = { lpBps: 30, validatorBps: 5 };
-const HOUR = 3_600_000;
-
-interface FixtureToken {
-  tokenId: TokenId;
-  sym: string;
-  dec: number;
-  icon?: string;
-  change24h?: number;
-  registered: boolean;
-  discoveredAt: number;
+/** Set what the functions below reach (the wallet and its client: `useSession`; a test: anything). */
+export function setExchangeContext(c: Partial<ExchangeContext>): void {
+  Object.assign(context, c);
 }
 
-interface FixtureState {
-  tokens: FixtureToken[];
-  pools: (PoolView & { mine: boolean; feesEarnedSats?: bigint })[];
-  wallet: { sats: bigint; tokens: Map<TokenId, { balance: bigint; outputs: number }> };
-  requests: ListingRequest[];
-  nextTx: number;
-}
-
-const T = {
-  GOLD: tokenIdText({ txid: hex64("GOLD"), vout: 0 }),
-  KNOT: tokenIdText({ txid: hex64("KNOT"), vout: 0 }),
-  WOOL: tokenIdText({ txid: hex64("WOOL"), vout: 0 }),
-  TEA: tokenIdText({ txid: hex64("TEA"), vout: 0 }),
-  MOSS: tokenIdText({ txid: hex64("MOSS"), vout: 0 }),
-  FERN: tokenIdText({ txid: hex64("FERN"), vout: 0 }),
-  REED: tokenIdText({ txid: hex64("REED"), vout: 0 }),
-};
-
-function fixtureState(now = Date.now()): FixtureState {
-  const pool = (seed: string, tokenId: TokenId, sats: number, tokens: bigint, validator: string, mine: boolean, feesEarnedSats?: bigint) => ({
-    outpoint: `${hex64(seed)}.0`,
-    tokenId,
-    sats: BigInt(sats),
-    tokens,
-    validator: { identityKey: validator, live: true },
-    mine,
-    ...(feesEarnedSats !== undefined ? { feesEarnedSats } : {}),
-  });
-  return {
-    tokens: [
-      { tokenId: T.GOLD, sym: "GOLD", dec: 2, change24h: 0.018, registered: true, discoveredAt: now - 40 * 24 * HOUR },
-      { tokenId: T.KNOT, sym: "KNOT", dec: 0, change24h: -0.004, registered: true, discoveredAt: now - 30 * 24 * HOUR },
-      { tokenId: T.WOOL, sym: "WOOL", dec: 0, change24h: 0, registered: true, discoveredAt: now - 12 * 24 * HOUR },
-      { tokenId: T.TEA, sym: "TEA", dec: 0, change24h: 0.061, registered: true, discoveredAt: now - 6 * 24 * HOUR },
-      { tokenId: T.MOSS, sym: "MOSS", dec: 0, registered: false, discoveredAt: now - 2 * 24 * HOUR },
-      { tokenId: T.FERN, sym: "FERN", dec: 1, registered: false, discoveredAt: now - 9 * HOUR },
-      { tokenId: T.REED, sym: "REED", dec: 0, registered: false, discoveredAt: now - 40 * 60_000 },
-    ],
-    pools: [
-      // GOLD (dec 2): three pools near 412 sats per GOLD.
-      pool("pool-gold-1", T.GOLD, 1_240_000, 301_000n, THIS_VALIDATOR, true, 4_120n),
-      pool("pool-gold-2", T.GOLD, 480_000, 116_500n, THIS_VALIDATOR, false),
-      pool("pool-gold-3", T.GOLD, 205_000, 49_760n, OTHER_VALIDATOR, false),
-      // KNOT: two pools at 1,250.
-      pool("pool-knot-1", T.KNOT, 12_500_000, 10_000n, THIS_VALIDATOR, true, 38_400n),
-      pool("pool-knot-2", T.KNOT, 2_500_000, 2_000n, OTHER_VALIDATOR, false),
-      // WOOL, TEA: one each.
-      pool("pool-wool-1", T.WOOL, 80_000, 2_162n, THIS_VALIDATOR, false),
-      pool("pool-tea-1", T.TEA, 22_000, 250n, THIS_VALIDATOR, false),
-    ],
-    wallet: {
-      sats: 1_820_400n,
-      tokens: new Map([
-        [T.GOLD, { balance: 120_450n, outputs: 3 }],
-        [T.TEA, { balance: 300n, outputs: 1 }],
-        [T.MOSS, { balance: 5_000n, outputs: 1 }],
-        [T.FERN, { balance: 900n, outputs: 2 }],
-      ]),
-    },
-    requests: [{ tokenId: T.MOSS, sym: "MOSS", from: REQUESTER, at: now - 5 * HOUR }],
-    nextTx: 1,
-  };
-}
-
-let state = fixtureState();
-
-/** Reset the fixtures (tests). */
-export function resetFixtures(): void {
-  state = fixtureState();
-  emit();
+function needWallet(): { wallet: WalletInterface; af: Signed } {
+  if (!context.wallet || !context.af) throw new Error("Connect a wallet first");
+  return { wallet: context.wallet, af: context.af };
 }
 
 const listeners = new Set<() => void>();
@@ -369,159 +327,147 @@ export function onDataChange(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
-const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const LATENCY = 120;
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function newTxid(): string {
-  return hex64(`tx-${state.nextTx++}`);
+/** The app's name (its boxes are `<app>/<box>`). */
+function app(): string {
+  return appName(context.base) ?? "amm";
 }
 
-function tokenOf(id: TokenId): FixtureToken {
-  const t = state.tokens.find((x) => x.tokenId === id);
-  if (!t) throw new Error(`unknown token ${id}`);
-  return t;
+/** The token list's metadata by token id (`/mandala/tokens`); empty when the read fails. */
+async function tokenMeta(): Promise<Map<string, ListedToken>> {
+  const m = new Map<string, ListedToken>();
+  try {
+    for (const t of await readTokenList(context.base)) {
+      const id = parseOutpoint(t.tokenId.replace("_", "."));
+      m.set(id ? tokenIdText(id) : t.tokenId, t);
+    }
+  } catch {
+    /* no metadata: ids only */
+  }
+  return m;
 }
 
-function poolsOf(id: TokenId): FixtureState["pools"] {
-  return state.pools.filter((p) => p.tokenId === id);
-}
-
-const pow10 = (dec: number) => 10 ** dec;
-
-/** Sats per whole token of reserves. */
-function priceOf(sats: bigint, tokens: bigint, dec: number): number | null {
-  if (tokens === 0n) return null;
-  return Number(sats) / (Number(tokens) / pow10(dec));
-}
-
-/** The sats a buy needs to move the price of a constant-product pool up by `bps`: x·(√(1+bps/10⁴) − 1). */
-function depthOf(sats: bigint, bps = 200): Depth | null {
-  if (sats === 0n) return null;
-  return { bps, sats: BigInt(Math.round(Number(sats) * (Math.sqrt(1 + bps / 10_000) - 1))) };
-}
-
-function summary(id: TokenId): Omit<PriceUpdate, "at"> {
-  const t = tokenOf(id);
-  const ps = poolsOf(id);
-  const sats = ps.reduce((a, p) => a + p.sats, 0n);
-  const tokens = ps.reduce((a, p) => a + p.tokens, 0n);
-  return { tokenId: id, marginalPrice: priceOf(sats, tokens, t.dec), depth: depthOf(sats), pools: ps.length, reserves: { sats, tokens } };
-}
-
-function hostedOf(t: FixtureToken): HostedToken {
-  const s = summary(t.tokenId);
-  return {
-    tokenId: t.tokenId,
-    sym: t.sym,
-    dec: t.dec,
-    ...(t.icon ? { icon: t.icon } : {}),
-    marginalPrice: s.marginalPrice,
-    depth: s.depth,
-    pools: s.pools,
-    reserves: s.reserves,
-    ...(t.change24h !== undefined ? { change24h: t.change24h } : {}),
-  };
+function symOf(meta: Map<string, ListedToken>, tokenId: string): string {
+  return meta.get(tokenId)?.sym ?? tokenId.slice(0, 8);
 }
 
 // ---------------------------------------------------------------------------
 // Session and root
 // ---------------------------------------------------------------------------
 
-function fixtureMode(): "wallet" | "root" | null {
-  try {
-    const v = new URLSearchParams(location.search).get("fixture");
-    return v === "wallet" || v === "root" ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The connected wallet. Real: `useWallet()` (status, identityKey) and
- * `useConnectDialog()` from wallet/AppWalletProvider (@1sat/react), which this
- * already uses; only the `?fixture=` override is fixture.
- */
+/** The connected wallet (@1sat/react `useWallet`, `useConnectDialog`); it also sets the context. */
 export function useSession(): Session {
   const w = useWallet();
   const { openConnectDialog } = useConnectDialog();
-  const [fixtureOff, setFixtureOff] = useState(false);
-  const fx = fixtureMode();
-  if (fx && !fixtureOff) {
-    return { status: "connected", identityKey: fx === "root" ? ROOT_KEY : USER_KEY, connect: () => setFixtureOff(false), disconnect: () => setFixtureOff(true) };
-  }
   const status = w.status === "connected" && w.identityKey ? "connected" : w.status === "disconnected" ? "disconnected" : "connecting";
-  return { status, identityKey: status === "connected" ? w.identityKey : null, connect: openConnectDialog, disconnect: w.disconnect };
+  const wallet = (w.wallet as WalletInterface | null | undefined) ?? null;
+  const afRef = useRef<{ wallet: WalletInterface | null; af: Signed | null }>({ wallet: null, af: null });
+  if (afRef.current.wallet !== wallet) afRef.current = { wallet, af: wallet ? (new AuthFetch(wallet) as unknown as Signed) : null };
+  const connected = status === "connected";
+  setExchangeContext({ wallet: connected ? wallet : null, af: connected ? afRef.current.af : null, identityKey: connected ? w.identityKey : null });
+  return { status, identityKey: connected ? w.identityKey : null, connect: openConnectDialog, disconnect: w.disconnect };
 }
 
 /**
- * Whether this identity holds the role `root` on this skein (it may register
- * and deregister tokens; Settings shows).
+ * Whether this identity holds the role `root` on this skein.
  *
- * NEW (skein#143 grants): the skein has no read that tells a page a key's
- * roles. Needed: a read of the roles granted to the requesting key (signed,
- * so the skein knows who asks), or of the grants list. Fixture: root under
- * `?fixture=root` only.
+ * STUB (skein-amm 0.9.0): the skein has no read of a key's grants
+ * (shruggr/skein#143), so every connected wallet is shown Settings; the
+ * skein refuses a non-root's register messages (the role gate).
  */
 export async function isRoot(identityKey: string | null): Promise<boolean> {
-  await delay(LATENCY / 2);
-  return identityKey !== null && identityKey === ROOT_KEY && fixtureMode() === "root";
+  return identityKey !== null;
 }
 
 // ---------------------------------------------------------------------------
 // Landing: hosted tokens and live prices
 // ---------------------------------------------------------------------------
 
-/**
- * The tokens this overlay hosts, each with its pools summed, its marginal
- * price and depth. No wallet needed.
- *
- * Real: lib/overlay.ts `listTokenTopics(base)` (the registered topics,
- * `tm_mandala_<txid>_0` by `parseTokenTopic`), then per token
- * `queryPools(null, base, tokenId)` (ls_amm, unsigned) and
- * `fetchLiveByToken(base, topics)` for each pool's validator liveness;
- * market/view.ts `buildMarketView` / `marginalPrice` for the prices. Depth is
- * new arithmetic over the reserves (x·(√1.02 − 1) for ±2%, as here).
- * NEW: sym, dec and icon for a token the wallet does not hold (today the
- * pages read metadata only from the connected wallet's deploy output, README
- * "Not built"): from the token's deploy output through its lookup
- * `ls_mandala_<txid>_0` or the discovery topic. NEW: change24h needs a price
- * history; leave it out until the host keeps one.
- */
-export async function hostedTokens(): Promise<HostedToken[]> {
-  await delay(LATENCY);
-  return state.tokens.filter((t) => t.registered).map(hostedOf);
+/** The live validators of the topics `topics` and the `ls_amm` beats: their senders. */
+async function liveFor(topics: TokenTopic[]): Promise<{ beats: Beat[]; live: Set<string> }> {
+  const [beats, ...tokenBeats] = await Promise.all([
+    readBeats(context.base, "ls_amm-live").catch(() => [] as Beat[]),
+    ...topics.map((t) => readBeats(context.base, `${t.topic}-live`).catch(() => [] as Beat[])),
+  ]);
+  return { beats, live: liveSenders(beats, ...tokenBeats) };
 }
 
-/**
- * Live prices: calls `onUpdate` with a token's new summary whenever a trade,
- * deploy or close lands in one of its pools. Returns the unsubscribe.
- *
- * NEW (skein#148): a host subscription on the token topics' admitted outputs
- * (pool continuations), pushed to the page (SSE or a socket from the host);
- * each push re-summed as `hostedTokens` sums. Until it lands, polling
- * `queryPools` every lib/config.ts `REFRESH_MS` (as pages/Swap.tsx does) is
- * the stand-in. Fixture: actions here push, and a small simulated trade
- * lands every 6 s.
- */
-export function subscribePrices(onUpdate: (u: PriceUpdate) => void): () => void {
-  const push = () => {
-    for (const t of state.tokens) if (t.registered) onUpdate({ ...summary(t.tokenId), at: Date.now() });
+/** This skein's own listing of a token, its live pools summed: the fallback when no beat reports the token. */
+async function localPrice(t: TokenTopic, dec: number): Promise<TokenPrice> {
+  const [pools, live] = await Promise.all([queryPools(context.af, context.base, t.tokenId), fetchLive(context.base, t.topic)]);
+  const usable = pools.filter((p) => validatorStatus(p.validatorIdentityKey, live).live);
+  const sats = usable.reduce((a, p) => a + p.bsvReserve, 0n);
+  const tokens = usable.reduce((a, p) => a + p.tokenReserve, 0n);
+  return {
+    tokenId: t.tokenId,
+    marginalPrice: tokens > 0n ? Number(sats) / (Number(tokens) / 10 ** dec) : null,
+    depth: depthOf(sats),
+    pools: usable.length,
+    reserves: { sats, tokens },
+    validators: [...new Set(usable.map((p) => p.validatorIdentityKey))],
   };
-  const off = onDataChange(push);
-  const tick = setInterval(() => {
-    // A small trade in a random pool: ±0.1% of its sats, constant product.
-    const live = state.pools.filter((p) => tokenOf(p.tokenId).registered);
-    const p = live[Math.floor(Math.random() * live.length)];
-    if (!p) return;
-    const k = p.sats * p.tokens;
-    const d = (p.sats * BigInt(Math.random() < 0.5 ? -10 : 10)) / 10_000n;
-    p.sats += d;
-    p.tokens = k / p.sats;
-    onUpdate({ ...summary(p.tokenId), at: Date.now() });
-  }, 6_000);
+}
+
+/** Every registered token's price: the beats first, this skein's listing for a token no beat reports. */
+async function pricesNow(topics: TokenTopic[], meta: Map<string, ListedToken>): Promise<Map<string, TokenPrice>> {
+  const { beats, live } = await liveFor(topics);
+  const fromBeats = pricesFromBeats(beats, live, (id) => meta.get(id)?.dec ?? 0);
+  const out = new Map<string, TokenPrice>();
+  await Promise.all(
+    topics.map(async (t) => {
+      const b = fromBeats.get(t.tokenId);
+      if (b && b.validators.length > 0) return out.set(t.tokenId, b);
+      try {
+        out.set(t.tokenId, await localPrice(t, meta.get(t.tokenId)?.dec ?? 0));
+      } catch {
+        out.set(t.tokenId, { tokenId: t.tokenId, marginalPrice: null, depth: null, pools: 0, reserves: { sats: 0n, tokens: 0n }, validators: [] });
+      }
+    }),
+  );
+  return out;
+}
+
+/** The tokens this overlay hosts (registered here: Mandala tokens at output 0), each priced. No wallet needed. */
+export async function hostedTokens(): Promise<HostedToken[]> {
+  const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
+  const native = topics.filter((t) => t.kind === "native");
+  const prices = await pricesNow(native, meta);
+  return native.map((t) => {
+    const m = meta.get(t.tokenId);
+    const p = prices.get(t.tokenId)!;
+    return {
+      tokenId: t.tokenId,
+      sym: m?.sym ?? t.tokenId.slice(0, 8),
+      dec: m?.dec ?? 0,
+      ...(m?.icon ? { icon: m.icon } : {}),
+      marginalPrice: p.marginalPrice,
+      depth: p.depth,
+      pools: p.pools,
+      reserves: p.reserves,
+    };
+  });
+}
+
+/** Live prices: polls the beats every `REFRESH_MS` and calls `onUpdate` per registered token. Returns the unsubscribe. */
+export function subscribePrices(onUpdate: (u: PriceUpdate) => void): () => void {
+  let stopped = false;
+  const tick = async () => {
+    try {
+      const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
+      const prices = await pricesNow(topics.filter((t) => t.kind === "native"), meta);
+      if (stopped) return;
+      for (const p of prices.values()) onUpdate({ tokenId: p.tokenId, marginalPrice: p.marginalPrice, depth: p.depth, pools: p.pools, reserves: p.reserves, at: Date.now() });
+    } catch {
+      /* the next tick */
+    }
+  };
+  const timer = setInterval(() => void tick(), REFRESH_MS);
+  const off = onDataChange(() => void tick());
   return () => {
+    stopped = true;
+    clearInterval(timer);
     off();
-    clearInterval(tick);
   };
 }
 
@@ -545,269 +491,341 @@ export function useHostedTokens(): { tokens: HostedToken[] | null; error: string
   return { tokens, error: r.error, live, reload: r.reload };
 }
 
-/**
- * A token's open pools (the Route panel's reserves and validators).
- *
- * Real: lib/overlay.ts `queryPools(null, base, tokenId)` and `fetchLive`;
- * market/plan.ts `livePools` keeps the pools whose validator is live.
- */
+/** A token's listed pools on this skein, each with its validator's liveness. */
 export async function tokenPools(tokenId: TokenId): Promise<PoolView[]> {
-  await delay(LATENCY / 2);
-  return poolsOf(tokenId).map(({ mine: _m, feesEarnedSats: _f, ...p }) => p);
+  const topic = `tm_mandala_${sdkTokenId(tokenId)}`;
+  const [pools, live] = await Promise.all([queryPools(context.af, context.base, tokenId), fetchLive(context.base, topic)]);
+  return pools.map((p) => ({
+    outpoint: outpointText(p.outpoint),
+    tokenId,
+    sats: p.bsvReserve,
+    tokens: p.tokenReserve,
+    validator: { identityKey: p.validatorIdentityKey, live: validatorStatus(p.validatorIdentityKey, live).live },
+  }));
 }
 
 // ---------------------------------------------------------------------------
 // Swap
 // ---------------------------------------------------------------------------
 
-/**
- * A quote for one token, routed across its pools: legs, amount out,
- * effective and marginal price, price impact against marginal.
- *
- * Real: market/plan.ts `buildPlanRequest` + `quote(request, live, dec)` (the
- * matching engine's plan over `livePools`; `planView` gives the legs), with
- * the pools from `queryPools`. `minAmountOut` from `maxSlippageBps`, and
- * `allowPartial`, go into the plan request (the engine's slippage and
- * partial-fill options). Fixture: the amount is split across the pools in
- * proportion to their input-side reserves and each leg is constant product
- * after the validator's fees.
- */
+/** What a quote was planned from: kept for its execution. */
+interface Planned {
+  plan: Plan;
+  pools: PoolState[];
+  live: LiveAnswer;
+  dec: number;
+  sym: string;
+}
+const planned = new WeakMap<Quote, Planned>();
+
+/** A quote for one token: the matching engine's plan over this skein's listed pools whose validator is live. */
 export async function quoteSwap(req: QuoteRequest): Promise<Quote> {
-  await delay(LATENCY);
-  const t = tokenOf(req.tokenId);
-  const ps = poolsOf(req.tokenId).filter((p) => p.validator.live);
-  if (ps.length === 0) throw new Error(`${t.sym} has no open pool`);
   if (req.amountIn <= 0n) throw new Error("Enter an amount");
+  const topic = `tm_mandala_${sdkTokenId(req.tokenId)}`;
+  const [pools, live, meta] = await Promise.all([queryPools(context.af, context.base, req.tokenId), fetchLive(context.base, topic), tokenMeta()]);
+  const dec = meta.get(req.tokenId)?.dec ?? 0;
   const buy = req.side === "buy";
-  const reserveIn = (p: PoolView) => (buy ? p.sats : p.tokens);
-  const reserveOut = (p: PoolView) => (buy ? p.tokens : p.sats);
-  const total = ps.reduce((a, p) => a + reserveIn(p), 0n);
-  const feeBps = BigInt(FEES.lpBps + FEES.validatorBps);
-  let left = req.amountIn;
-  const legs: QuoteLeg[] = ps.map((p, i) => {
-    const amountIn = i === ps.length - 1 ? left : (req.amountIn * reserveIn(p)) / total;
-    left -= amountIn;
-    const inAfterFee = (amountIn * (10_000n - feeBps)) / 10_000n;
-    const amountOut = (reserveOut(p) * inAfterFee) / (reserveIn(p) + inAfterFee);
-    return {
-      poolOutpoint: p.outpoint,
-      amountIn,
-      amountOut,
-      shareBps: Number((amountIn * 10_000n) / req.amountIn),
-      reserves: { sats: p.sats, tokens: p.tokens },
-      validator: p.validator,
-    };
-  });
-  const used = legs.filter((l) => l.amountIn > 0n);
-  const amountOut = used.reduce((a, l) => a + l.amountOut, 0n);
-  if (amountOut === 0n) throw new Error("The amount is too small to receive anything");
-  const s = summary(req.tokenId);
-  const marginal = s.marginalPrice ?? 0;
-  const sats = buy ? req.amountIn : amountOut;
-  const tokens = buy ? amountOut : req.amountIn;
-  const effective = Number(sats) / (Number(tokens) / pow10(t.dec));
-  return {
+  const r = buildPlanRequest(
+    req.tokenId,
+    { direction: buy ? "bsvToToken" : "tokenToBsv", amount: formatAmount(req.amountIn, buy ? 0 : dec), slippageBps: String(req.maxSlippageBps), allowPartial: req.allowPartial },
+    pools,
+    live,
+    dec,
+  );
+  if (!r.ok) throw new Error(r.error);
+  const { plan, view } = planQuote(r.request, live, dec);
+  const used = view.legs.filter((l) => l.amountIn > 0n);
+  if (used.length === 0 || view.totalOut === 0n) throw new Error("The amount is too small to receive anything");
+  const usable = pools.filter((p) => validatorStatus(p.validatorIdentityKey, live).live);
+  const sumSats = usable.reduce((a, p) => a + p.bsvReserve, 0n);
+  const sumTokens = usable.reduce((a, p) => a + p.tokenReserve, 0n);
+  const marginal = sumTokens > 0n ? Number(sumSats) / (Number(sumTokens) / 10 ** dec) : 0;
+  const totalIn = used.reduce((a, l) => a + l.amountIn, 0n);
+  const sats = buy ? totalIn : view.totalOut;
+  const tokens = buy ? view.totalOut : totalIn;
+  const effective = Number(sats) / (Number(tokens) / 10 ** dec);
+  const first = used[0]!.pool;
+  const q: Quote = {
     request: req,
-    legs: used,
-    amountOut,
-    minAmountOut: (amountOut * BigInt(10_000 - req.maxSlippageBps)) / 10_000n,
+    legs: used.map((l) => ({
+      poolOutpoint: outpointText(l.outpoint),
+      amountIn: l.amountIn,
+      amountOut: l.amountOut,
+      shareBps: Number((l.amountIn * 10_000n) / req.amountIn),
+      reserves: { sats: l.pool.bsvReserve, tokens: l.pool.tokenReserve },
+      validator: { identityKey: l.pool.validatorIdentityKey, live: l.validator.live },
+    })),
+    amountOut: view.totalOut,
+    minAmountOut: view.minAmountOut,
     effectivePrice: effective,
     marginalPrice: marginal,
     impactBps: marginal ? Math.round((Math.abs(effective - marginal) / marginal) * 10_000) : 0,
-    fees: FEES,
+    fees: { lpBps: Number(first.liquidityFeeBps), validatorBps: Number(first.validationFeeBps), commissionBps: Number(first.commissionBps ?? 0n) },
   };
+  planned.set(q, { plan, pools, live, dec, sym: meta.get(req.tokenId)?.sym ?? "token" });
+  return q;
 }
 
 /**
  * Runs a quoted swap with the connected wallet: one transaction per leg,
- * relayed to the leg's validator.
- *
- * Real: market/swapAction.ts `prepareSwap` (funding, the leg transactions,
- * the payouts) per leg, market/swapFlow.ts `relaySwap` → `settle` /
- * `checkAgain` over market/relay.ts `submitSwap` / `awaitSwap`
- * (`amm.swap.submit` on `/call`), wallet/pendingPayouts.ts for a payout the
- * wallet does not take in at once. Re-quote first and stop if
- * `goneFromLookup` reports a planned pool gone. With `allowPartial` a failed
- * leg leaves the others standing (status "partial").
+ * relayed to the leg's validator (`amm.swap.submit`), each payout kept as a
+ * pending payout until the wallet takes it in. A planned pool gone from a
+ * fresh lookup stops the swap unless partial fills are allowed.
  */
 export async function executeSwap(quote: Quote): Promise<SwapResult> {
-  await delay(900);
-  const buy = quote.request.side === "buy";
-  const legs: LegResult[] = quote.legs.map((l) => {
-    const p = state.pools.find((x) => x.outpoint === l.poolOutpoint);
-    if (!p) return { poolOutpoint: l.poolOutpoint, status: "failed", error: "pool spent since the quote" };
-    if (buy) {
-      p.sats += l.amountIn;
-      p.tokens -= l.amountOut;
-    } else {
-      p.tokens += l.amountIn;
-      p.sats -= l.amountOut;
+  const { wallet, af } = needWallet();
+  const p = planned.get(quote);
+  if (!p) throw new Error("Quote again: this quote was not planned here");
+  const tokenId = quote.request.tokenId;
+  const fresh = await queryPools(af, context.base, tokenId);
+  const gone = goneFromLookup(p.plan, fresh);
+  if (gone.length > 0 && !quote.request.allowPartial) throw new Error(`${gone.map(outpointText).join(", ")} ${gone.length === 1 ? "was" : "were"} spent since the quote: quote again`);
+  const terms = await swapTerms(af, context.base);
+  const direction = quote.request.side === "buy" ? "bsvToToken" : "tokenToBsv";
+  let candidates: TokenInput[] = [];
+  if (direction === "tokenToBsv") candidates = tokenInputsOf((await loadWalletAssets(wallet)).tokenRows, tokenId);
+  const legs: LegResult[] = [];
+  const running: Promise<void>[] = [];
+  for (const leg of p.plan.legs) {
+    const poolOutpoint = outpointText(leg.outpoint);
+    if (gone.includes(leg.outpoint)) {
+      legs.push({ poolOutpoint, status: "failed", error: "spent since the quote" });
+      continue;
     }
-    const txid = newTxid();
-    p.outpoint = `${txid}.0`; // the pool's continuation
-    return { poolOutpoint: l.poolOutpoint, status: "filled", txid };
-  });
-  const w = state.wallet;
-  const held = w.tokens.get(quote.request.tokenId) ?? { balance: 0n, outputs: 0 };
-  if (buy) {
-    w.sats -= quote.request.amountIn;
-    w.tokens.set(quote.request.tokenId, { balance: held.balance + quote.amountOut, outputs: held.outputs + quote.legs.length });
-  } else {
-    w.sats += quote.amountOut;
-    w.tokens.set(quote.request.tokenId, { ...held, balance: held.balance - quote.request.amountIn });
+    const pool = p.pools.find((x) => x.outpoint === leg.outpoint)!;
+    const validator = validatorStatus(pool.validatorIdentityKey, p.live);
+    if (!validator.live || !validator.peerId) {
+      legs.push({ poolOutpoint, status: "failed", error: "the pool's validator is no longer live" });
+      continue;
+    }
+    let tokenInputs: TokenInput[] | undefined;
+    if (direction === "tokenToBsv") {
+      const pick = selectExactTokenInputs(candidates, leg.amountIn);
+      if (!pick) {
+        legs.push({ poolOutpoint, status: "failed", error: `no set of your ${p.sym} outputs adds up to exactly ${formatAmount(leg.amountIn, p.dec)} (the pool takes no token change)` });
+        continue;
+      }
+      tokenInputs = pick;
+      candidates = candidates.filter((c) => !pick.includes(c));
+    }
+    const result: LegResult = { poolOutpoint, status: "failed" };
+    legs.push(result);
+    try {
+      const poolOutput = await lookupPoolOutput(af, context.base, tokenId, leg.outpoint);
+      const prepared = await prepareSwap({ wallet, tokenId, meta: { sym: p.sym, dec: p.dec }, direction, leg, pool, poolOutput, commissionPkh: terms.commissionPkh, tokenInputs, satsPerKb: FEE_RATE_SATS_PER_KB });
+      const pending = pendingSwapPayouts(prepared, tokenId);
+      for (const r of pending) context.payouts.save(r);
+      running.push(
+        relaySwap({ wallet, authFetch: af, base: context.base }, prepared, validator.peerId)
+          .catch((e): SwapOutcome => ({ status: "unknown", reason: errText(e) }))
+          .then((o) => {
+            for (const r of pending) {
+              if (o.status === "accepted") {
+                if (o.completed.internalized) context.payouts.remove(r.id);
+                else context.payouts.finalize(r.id, o.txid);
+              } else if (o.status !== "unknown") context.payouts.remove(r.id);
+            }
+            if (o.status === "accepted") {
+              result.status = "filled";
+              result.txid = o.txid;
+            } else result.error = o.status === "refused" ? `refused: ${o.reason}` : o.status === "unknown" ? `no answer yet: ${o.reason}` : o.status;
+          }),
+      );
+    } catch (e) {
+      result.error = errText(e);
+    }
   }
+  await Promise.all(running);
   emit();
   const filled = legs.filter((l) => l.status === "filled").length;
-  return { status: filled === legs.length ? "filled" : filled === 0 ? "failed" : "partial", legs };
+  return { status: filled === legs.length && legs.length > 0 ? "filled" : filled === 0 ? "failed" : "partial", legs };
 }
 
-/**
- * The connected wallet's spendable sats (the Swap page's "Wallet:" line).
- *
- * Real: the wallet's balance (`listOutputs` on the default basket, or
- * 1sat-sdk's balance action); lp/wallet.ts `loadWalletAssets` for token
- * outputs.
- */
+/** The connected wallet's spendable sats (its default basket). */
 export async function walletSats(): Promise<bigint> {
-  await delay(LATENCY / 2);
-  return state.wallet.sats;
+  const { wallet } = needWallet();
+  const r = await wallet.listOutputs({ basket: "default", limit: 10_000 });
+  return r.outputs.filter((o) => o.spendable !== false).reduce((a, o) => a + BigInt(o.satoshis), 0n);
 }
 
 // ---------------------------------------------------------------------------
 // Liquidity
 // ---------------------------------------------------------------------------
 
-/**
- * The connected wallet's positions (its pools).
- *
- * Real: lp/myPools.ts `findMyPools` (the wallet's LP rows, lp/poolRows.ts
- * `isPoolRow`, matched to `queryPools` answers by lp/myPools.ts `matchPool`).
- * `feesEarnedSats` needs the deposit the pool opened with (from the deploy's
- * history, `historyOutpoints`); leave it out where that is not known.
- */
+/** The positions last loaded, by the pool's current outpoint (`<txid>.<vout>`): what `closePosition` closes. */
+const loaded = new Map<string, LoadedPosition>();
+
+/** The connected wallet's open positions: its pool rows read from the chain state (src/lp/positions.ts). */
 export async function myPositions(): Promise<Position[]> {
-  await delay(LATENCY);
-  return state.pools
-    .filter((p) => p.mine)
-    .map((p) => {
-      const t = tokenOf(p.tokenId);
-      return {
-        outpoint: p.outpoint,
-        tokenId: p.tokenId,
-        sym: t.sym,
-        dec: t.dec,
-        ...(t.icon ? { icon: t.icon } : {}),
-        sats: p.sats,
-        tokens: p.tokens,
-        ...(p.feesEarnedSats !== undefined ? { feesEarnedSats: p.feesEarnedSats } : {}),
-        validator: p.validator,
-      };
+  const { wallet, af } = needWallet();
+  const [assets, meta] = await Promise.all([loadWalletAssets(wallet), tokenMeta()]);
+  const rows = positionRowsOf(assets.tokenRows);
+  const out: Position[] = [];
+  loaded.clear();
+  const lives = new Map<string, Promise<LiveAnswer | null>>();
+  for (const row of rows) {
+    let pos: LoadedPosition;
+    try {
+      pos = await loadPosition(af, context.base, row);
+    } catch {
+      continue;
+    }
+    if (!pos.current || !pos.pool || pos.sats === undefined) continue;
+    loaded.set(pos.current, pos);
+    const topic = `tm_mandala_${sdkTokenId(row.tokenId)}`;
+    if (!lives.has(topic)) lives.set(topic, fetchLive(context.base, topic).catch(() => null));
+    const live = await lives.get(topic)!;
+    const m = meta.get(row.tokenId);
+    const identity = pos.pool.state.validatorIdentity;
+    out.push({
+      outpoint: pos.current,
+      tokenId: row.tokenId,
+      sym: m?.sym ?? row.sym ?? row.tokenId.slice(0, 8),
+      dec: m?.dec ?? row.dec ?? 0,
+      ...(m?.icon ? { icon: m.icon } : {}),
+      sats: pos.sats,
+      tokens: pos.pool.state.tokenReserve,
+      validator: { identityKey: identity, live: live ? validatorStatus(identity, live).live : false },
+      rescinded: pos.rescinded,
     });
+  }
+  return out;
 }
 
-/**
- * The validator a new position is deployed with, and its fees. Read-only:
- * the LP accepts the validator's fees (no fee input).
- *
- * Real: validator/control.ts `readAppPolicy` (the fees in the app record's
- * `config.amm`) and this skein's identity key; liveness from `fetchLive`.
- * lp/poolDeploy.ts `DEFAULT_LP_FEE_BPS` / `DEFAULT_VALIDATOR_FEE_BPS` are the
- * defaults.
- */
+interface RawTerms {
+  validator: string;
+  peerId?: string;
+  fees: Fees;
+}
+
+/** `amm.pool.terms`: this skein's validator, its peer ID and its terms. */
+async function rawTerms(): Promise<RawTerms> {
+  const { af } = needWallet();
+  const t = (await callApp(af, context.base, "amm.pool.terms", {})) as Record<string, unknown>;
+  const bytes = readBytes(t.validator);
+  const hex = bytes ? Utils.toHex(bytes) : "";
+  if (!/^[0-9a-f]{66}$/.test(hex)) throw new Error("amm.pool.terms: no validator identity");
+  return {
+    validator: hex,
+    ...(typeof t.peerId === "string" ? { peerId: t.peerId } : {}),
+    fees: { lpBps: Number(t.lpFeeBps ?? 30), validatorBps: Number(t.validatorFeeBps ?? 5), commissionBps: Number(t.commissionBps ?? 0) },
+  };
+}
+
+/** The validator a new position is deployed with (this skein), and its fees (read-only: the LP accepts them). */
 export async function validatorTerms(): Promise<ValidatorTerms> {
-  await delay(LATENCY / 2);
-  return { validator: { identityKey: THIS_VALIDATOR, live: true }, isThisExchange: true, fees: FEES };
+  const t = await rawTerms();
+  return { validator: { identityKey: t.validator, live: Boolean(t.peerId) }, isThisExchange: true, fees: t.fees };
 }
 
 /**
- * Deploys a new position: the wallet funds a pool with `tokens` and `sats`
- * at the validator's fees.
- *
- * Real: lp/poolDeploy.ts `planPoolDeploy` → `preparePoolDeploy` (the funding
- * and the pool output; `deriveLpKey` for the LP's key) and
- * `completePoolDeploy` / `abandonPoolDeploy`; lp/deployFlow.ts today relays
- * it (`relayPoolDeploy`, `amm.pool.submit`).
- * NEW: the deploy is delivered to the skein, which adds its claim and
- * broadcasts (no longer a relay to a validator that signs); the message and
- * its answer are the overlay session's to define.
+ * Deploys a new position: the deploy delivered to this skein's validator at
+ * its terms (src/lp/poolDeploy.ts: SIGHASH_SINGLE pairs, one unit left for
+ * the claim); accepted, the claimed deploy filed in the wallet.
  */
 export async function deployPosition(req: DeployRequest): Promise<DeployResult> {
-  await delay(900);
-  const t = tokenOf(req.tokenId);
-  const held = state.wallet.tokens.get(req.tokenId);
-  if (!held || held.balance < req.tokens) throw new Error(`Your wallet holds fewer ${t.sym} than that`);
-  if (state.wallet.sats < req.sats) throw new Error("Your wallet holds fewer sats than that");
+  const { wallet, af } = needWallet();
   if (req.tokens <= 0n || req.sats <= 0n) throw new Error("Both amounts must be more than 0");
-  const txid = newTxid();
-  const outpoint = `${txid}.0`;
-  state.pools.push({ outpoint, tokenId: req.tokenId, sats: req.sats, tokens: req.tokens, validator: { identityKey: THIS_VALIDATOR, live: true }, mine: true, feesEarnedSats: 0n });
-  state.wallet.sats -= req.sats;
-  state.wallet.tokens.set(req.tokenId, { ...held, balance: held.balance - req.tokens });
+  const [terms, assets, meta] = await Promise.all([rawTerms(), loadWalletAssets(wallet), tokenMeta()]);
+  if (!terms.peerId) throw new Error("this skein's validator has no peer ID (no libp2p node): it cannot take a deploy");
+  const m = meta.get(req.tokenId);
+  const { tokens } = poolableTokens(assets.tokenRows, new Map(m ? [[req.tokenId, { sym: m.sym, dec: m.dec }]] : []));
+  const token = tokens.find((t) => sameToken(t.tokenId, req.tokenId));
+  if (!token) throw new Error("Your wallet holds none of that token as a Mandala output");
+  const sel = selectDepositInputs(token.inputs, req.tokens);
+  if (!sel) throw new Error(`Your wallet holds fewer than ${formatAmount(req.tokens + 1n, m?.dec ?? 0)} of that token (the deposit and the validator's one-unit claim)`);
+  const prepared = await preparePoolDeploy({
+    wallet,
+    form: {
+      tokenId: req.tokenId,
+      inputs: sel.inputs,
+      tokens: req.tokens,
+      sats: req.sats,
+      lpFeeBps: BigInt(terms.fees.lpBps),
+      validatorFeeBps: BigInt(terms.fees.validatorBps),
+      commissionBps: BigInt(terms.fees.commissionBps),
+      validator: { identityKey: terms.validator, peerId: terms.peerId },
+    },
+    meta: { ...(m?.sym ? { sym: m.sym } : {}), ...(m?.dec !== undefined ? { dec: m.dec } : {}) },
+    satsPerKb: FEE_RATE_SATS_PER_KB,
+  });
+  const o = await relayPoolDeploy({ wallet, authFetch: af, base: context.base }, prepared, terms.peerId);
+  if (o.status !== "accepted") throw new Error(o.status === "refused" ? `refused: ${o.reason}` : "reason" in o ? o.reason : o.status);
   emit();
-  return { outpoint, txid };
+  return { outpoint: `${o.txid}.0`, txid: o.txid };
 }
 
 /**
- * Closes a position: everything in the pool returns to the wallet, less
- * `bsvFee` (the miner fee left from the pool; 0 = funded from another wallet
- * input).
- *
- * Real: lp/removeLiquidity.ts `prepareRemoveLiquidity` /
- * `completeRemoveLiquidity` / `submitToOverlay` (today a remove of a share,
- * with the LP key from lp/myPools.ts).
- * NEW: the contract's close with `bsvFee` (the whole pool out, the fee taken
- * from the pool's sats or, at 0, from a wallet input).
+ * Closes a position (src/lp/close.ts): everything in the pool returns to the
+ * wallet, less `bsvFee` (the miner fee left from the pool; 0: funded from a
+ * wallet output); submitted to this skein's overlay.
  */
 export async function closePosition(req: CloseRequest): Promise<CloseResult> {
-  await delay(900);
-  const i = state.pools.findIndex((p) => p.outpoint === req.outpoint && p.mine);
-  if (i < 0) throw new Error("No such position");
-  const p = state.pools[i]!;
-  if (req.bsvFee < 0n || req.bsvFee >= p.sats) throw new Error("The fee must be at least 0 and less than the pool's sats");
-  state.pools.splice(i, 1);
-  const sats = p.sats - req.bsvFee;
-  state.wallet.sats += sats;
-  const held = state.wallet.tokens.get(p.tokenId) ?? { balance: 0n, outputs: 0 };
-  state.wallet.tokens.set(p.tokenId, { balance: held.balance + p.tokens, outputs: held.outputs + 1 });
+  const { wallet } = needWallet();
+  let pos = loaded.get(req.outpoint);
+  if (!pos) {
+    await myPositions();
+    pos = loaded.get(req.outpoint);
+  }
+  if (!pos || !pos.output) throw new Error("No such position");
+  const meta = await tokenMeta();
+  const m = meta.get(pos.row.tokenId);
+  const prepared = await prepareClose({
+    wallet,
+    tokenId: pos.row.tokenId,
+    meta: { ...(m?.sym ? { sym: m.sym } : {}), ...(m?.dec !== undefined ? { dec: m.dec } : {}) },
+    poolOutput: pos.output,
+    lpKey: pos.row.lpKey,
+    bsvFee: req.bsvFee,
+    satsPerKb: FEE_RATE_SATS_PER_KB,
+  });
+  await submitToOverlay(context.base, prepared.topic, prepared.beef);
+  await completeClose(wallet, prepared, pos.row.deployOutpoint);
+  loaded.delete(req.outpoint);
   emit();
-  return { txid: newTxid(), sats, tokens: p.tokens };
+  return { txid: prepared.txid, sats: prepared.sats, tokens: prepared.tokenAmount };
 }
 
 // ---------------------------------------------------------------------------
 // Your tokens
 // ---------------------------------------------------------------------------
 
-/**
- * The connected wallet's own Mandala tokens with balance, each marked on this
- * exchange or not.
- *
- * Real: lp/wallet.ts `loadWalletAssets` + lp/inventory.ts `buildInventory`
- * (balances, sym/dec, the deploy's icon), `onExchange` against
- * lib/overlay.ts `listTokenTopics`.
- */
+/** The connected wallet's Mandala tokens with a balance, each marked on this exchange (registered) and requested. */
 export async function myTokens(): Promise<WalletToken[]> {
-  await delay(LATENCY);
-  const asked = new Set(state.requests.map((r) => r.tokenId));
-  return [...state.wallet.tokens.entries()]
-    .filter(([, h]) => h.balance > 0n)
-    .map(([id, h]) => {
-      const t = tokenOf(id);
-      return { tokenId: id, sym: t.sym, dec: t.dec, ...(t.icon ? { icon: t.icon } : {}), balance: h.balance, outputs: h.outputs, onExchange: t.registered, requested: asked.has(id) };
+  const { wallet } = needWallet();
+  const [assets, topics, meta, requests] = await Promise.all([
+    loadWalletAssets(wallet),
+    listTokenTopics(context.base).catch(() => [] as TokenTopic[]),
+    tokenMeta(),
+    readRequests(context.base).catch(() => []),
+  ]);
+  const inv = buildInventory(assets.tokenRows, { txs: assets.txs });
+  const registered = new Set(topics.map((t) => t.tokenId));
+  const me = context.identityKey;
+  const asked = new Set(requests.filter((r) => r.from === me).map((r) => r.tokenId));
+  return inv.tokens
+    .filter((t) => t.balance > 0n && t.encodings.includes("mandala"))
+    .map((t) => {
+      const m = meta.get(t.tokenId);
+      const icon = m?.icon ?? (t.icon?.image ? imageDataUrl(t.icon.image) : undefined);
+      return {
+        tokenId: t.tokenId,
+        sym: t.sym ?? m?.sym ?? t.tokenId.slice(0, 8),
+        dec: t.dec ?? m?.dec ?? 0,
+        ...(icon ? { icon } : {}),
+        balance: t.balance,
+        outputs: t.valueOutputs,
+        onExchange: registered.has(t.tokenId),
+        requested: asked.has(t.tokenId),
+      };
     });
 }
 
-/**
- * "Add to this exchange": a holder asks root to list a token. No billing yet
- * (a paid route later, skein#147).
- *
- * NEW: a message from the holder to the app (e.g. a box `amm/requests`,
- * recorded for root; skein#143 roles: anyone may send, nothing runs) and the
- * read Settings lists them from.
- */
+/** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the box `<app>/requests` (anyone may send; recorded for root). */
 export async function requestListing(tokenId: TokenId): Promise<void> {
-  await delay(LATENCY * 2);
-  const t = tokenOf(tokenId);
-  if (!state.requests.some((r) => r.tokenId === tokenId)) state.requests.push({ tokenId, sym: t.sym, from: USER_KEY, at: Date.now() });
+  const { af } = needWallet();
+  const t = await rawTerms();
+  await sendMessage(af, context.base, t.validator, `${app()}/requests`, { fn: "request", args: { tokenId: sdkTokenId(tokenId) } });
   emit();
 }
 
@@ -815,25 +833,26 @@ export async function requestListing(tokenId: TokenId): Promise<void> {
 // Settings (root)
 // ---------------------------------------------------------------------------
 
-/**
- * The tokens on the discovery topic (`tm_mandala`, always on) that this
- * exchange does not serve yet.
- *
- * Real: a lookup on the discovery service (`ls_mandala`) as the Mandala
- * Token topics page reads it (www/mandala/tokens/, skein-mandala), less
- * `listTokenTopics`.
- */
+/** The tokens the discovery topic knows (`/mandala/tokens`) that this exchange does not serve yet. */
 export async function discoveryTokens(): Promise<DiscoveryToken[]> {
-  await delay(LATENCY);
-  return state.tokens
-    .filter((t) => !t.registered)
-    .map((t) => ({ tokenId: t.tokenId, sym: t.sym, dec: t.dec, ...(t.icon ? { icon: t.icon } : {}), seenAt: t.discoveredAt }));
+  const [list, topics] = await Promise.all([readTokenList(context.base), listTokenTopics(context.base)]);
+  const registered = new Set(topics.map((t) => t.tokenId));
+  return list
+    .map((t) => {
+      const id = parseOutpoint(t.tokenId.replace("_", "."));
+      return { ...t, tokenId: id ? tokenIdText(id) : t.tokenId };
+    })
+    .filter((t) => !registered.has(t.tokenId) && t.tokenId.endsWith("_0"))
+    .map((t) => ({ tokenId: t.tokenId, sym: t.sym ?? t.tokenId.slice(0, 8), dec: t.dec ?? 0, ...(t.icon ? { icon: t.icon } : {}) }));
 }
 
-/** The tokens registered on this exchange. Real: lib/overlay.ts `listTokenTopics(base)`. */
+/** The tokens registered on this exchange (`listTopicManagers`). */
 export async function registeredTokens(): Promise<RegisteredToken[]> {
-  await delay(LATENCY);
-  return state.tokens.filter((t) => t.registered).map((t) => ({ tokenId: t.tokenId, sym: t.sym, ...(t.icon ? { icon: t.icon } : {}) }));
+  const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
+  return topics.map((t) => {
+    const m = meta.get(t.tokenId);
+    return { tokenId: t.tokenId, sym: symOf(meta, t.tokenId), ...(m?.icon ? { icon: m.icon } : {}) };
+  });
 }
 
 /** The topic a token's pools are admitted under (BRC-207; skein-amm 0.8.0): derived, never typed. */
@@ -846,46 +865,46 @@ export function lookupOf(tokenId: TokenId): string {
   return `ls_mandala_${sdkTokenId(tokenId)}`;
 }
 
+/** The AMM lookup's service: registered so it beats its prices on `ls_amm-live` (skein-overlay 0.12: a registered lookup beats). */
+export const AMM_LOOKUP = "ls_amm";
+
 /**
- * Registers a token: its topic, then its lookup (names from `topicOf` /
- * `lookupOf`). Root only.
- *
- * Real: the register path the Mandala Token topics page sends today
- * (www/mandala/tokens/, skein-mandala; README.md step 3): root's signed
- * messages to the box `amm/register`, `{fn: "register", args: {topic,
- * program: "mandala-topic"}}` then `{fn: "registerLookup", args: {service,
- * program: "mandala-lookup", topics: [topic]}}`. A listing request for the
- * token is settled by it.
+ * Registers a token: root's messages to `<app>/register` — its topic
+ * (`mandala-topic`), its lookup (`mandala-lookup`), and `ls_amm`
+ * (`amm-lookup`, idempotent: the same again changes nothing) so the AMM
+ * lookup's beat (the prices) is declared.
  */
 export async function registerToken(tokenId: TokenId): Promise<void> {
-  await delay(LATENCY * 2);
-  tokenOf(tokenId).registered = true;
-  state.requests = state.requests.filter((r) => r.tokenId !== tokenId);
+  const { af } = needWallet();
+  const me = (await rawTerms()).validator;
+  const box = `${app()}/register`;
+  const topic = topicOf(tokenId);
+  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "mandala-topic" } });
+  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: lookupOf(tokenId), program: "mandala-lookup", topics: [topic] } });
+  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: AMM_LOOKUP, program: "amm-lookup" } });
   emit();
 }
 
-/**
- * Deregisters a token: its lookup, then its topic. Root only.
- *
- * Real: `{fn: "deregisterLookup", args: {service}}` then `{fn: "deregister",
- * args: {topic}}` to `amm/register` (README.md step 3), as the Mandala Token
- * topics page sends them.
- */
+/** Deregisters a token: its lookup, then its topic (root's messages to `<app>/register`). */
 export async function deregisterToken(tokenId: TokenId): Promise<void> {
-  await delay(LATENCY * 2);
-  tokenOf(tokenId).registered = false;
+  const { af } = needWallet();
+  const me = (await rawTerms()).validator;
+  const box = `${app()}/register`;
+  await sendMessage(af, context.base, me, box, { fn: "deregisterLookup", args: { service: lookupOf(tokenId) } });
+  await sendMessage(af, context.base, me, box, { fn: "deregister", args: { topic: topicOf(tokenId) } });
   emit();
 }
 
-/**
- * Holders' requests to list a token, newest first; null when the skein
- * offers no such read (Settings then hides the panel).
- *
- * NEW: the read of the requests `requestListing` records.
- */
+/** Holders' requests to list a token, newest first (`GET <base>/requests`: the ones not yet registered). */
 export async function listingRequests(): Promise<ListingRequest[] | null> {
-  await delay(LATENCY);
-  return [...state.requests].sort((a, b) => b.at - a.at);
+  const [rs, meta] = await Promise.all([readRequests(context.base), tokenMeta()]);
+  return rs
+    .map((r) => {
+      const id = parseOutpoint(r.tokenId.replace("_", "."));
+      const tokenId = id ? tokenIdText(id) : r.tokenId;
+      return { tokenId, sym: symOf(meta, tokenId), from: r.from, at: r.at };
+    })
+    .sort((a, b) => b.at - a.at);
 }
 
 // ---------------------------------------------------------------------------

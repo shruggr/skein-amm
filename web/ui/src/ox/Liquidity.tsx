@@ -26,7 +26,7 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fee = parseInput(feeText, 0);
-  const feeBad = fee === null || fee >= p.sats;
+  const feeBad = fee === null || fee > p.sats;
   const pair = `${p.sym} / BSV`;
 
   async function close() {
@@ -62,7 +62,7 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
             autoFocus
           />
           <span id={`${feeId}-help`} className={`help ${feeBad ? "bad" : ""}`}>
-            {feeBad ? "A whole number of sats, less than the pool's sats." : "0 pays the fee from another input in your wallet."}
+            {feeBad ? "A whole number of sats, at most the pool's sats." : "0 pays the fee from another input in your wallet."}
           </span>
         </div>
         {error && <Notice kind="bad">{error}</Notice>}
@@ -87,6 +87,9 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
           <Id value={p.outpoint} kind="outpoint" label={`${pair} pool`} />
         </span>
       </div>
+      {p.rescinded && (
+        <Notice kind="bad">The validator withdrew this pool&apos;s listing: it no longer trades. Close it to take everything back.</Notice>
+      )}
       <dl className="kv">
         <dt>In the pool</dt>
         <dd className="num">
@@ -212,7 +215,8 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
               <Id value={terms.data.validator.identityKey} kind="key" label="validator key" />
             </span>
             <span className="muted">
-              Fees are the validator&apos;s: LP {terms.data.fees.lpBps} · validator {terms.data.fees.validatorBps} bps. The exchange adds its claim and
+              Fees are the validator&apos;s: LP {terms.data.fees.lpBps} · validator {terms.data.fees.validatorBps}
+              {terms.data.fees.commissionBps > 0 ? ` · commission ${terms.data.fees.commissionBps}` : ""} bps. The exchange adds its claim and
               broadcasts.
             </span>
           </>

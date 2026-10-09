@@ -1,15 +1,30 @@
 # @amm-poc/market-ui
 
-**Open Exchange (branch `design/open-exchange`, shruggr/skein#147).** The
-shell (`src/App.tsx`) is now Open Exchange: a landing open to all (the
-hosted tokens, live prices, symbol search) and, with a wallet, Swap,
-Liquidity, Your tokens and root's Settings, hash-routed (`#/`,
-`#/swap/<tokenId>`, `#/liquidity`, `#/tokens`, `#/settings`), pages in
-`src/ox/`. Every read and action goes through `src/data/exchange.ts`, which
-returns fixtures for now; each function names the logic to call. Preview
-states: `?fixture=wallet` / `?fixture=root`. The tab pages described below
-(`src/pages/*`) are no longer in the shell; their files and the logic under
-`lp/`, `market/`, `lib/`, `pool/` are unchanged.
+**skein-amm 0.9.0: the Open Exchange, wired** (shruggr/skein#147; David
+Case, 2026-10-08/09). The shell (`src/App.tsx`) is the Open Exchange: a
+landing open to all (the hosted tokens, live prices, symbol search) and,
+with a wallet, Swap, Liquidity, Your tokens and Settings, hash-routed
+(`#/`, `#/swap/<tokenId>`, `#/liquidity`, `#/tokens`, `#/settings`), pages
+in `src/ox/`. Every read and action goes through `src/data/exchange.ts`,
+wired to the logic (its module comment names each): prices from the AMM
+lookup's beats (`.live/ls_amm-live`, `src/market/prices.ts`: Σsats /
+Σtokens across the live validators, one report per validator), else this
+skein's listing; swaps through the matching engine and the relay
+(`market/`); positions from the wallet's pool rows and the chain state by
+outpoint (`src/lp/positions.ts`, `GET <base>/spends`: the pool followed to
+its current output, the claim spent = rescinded); a deploy delivered to
+this skein's validator at its terms (`amm.pool.terms`; `src/lp/poolDeploy.ts`:
+every input SIGHASH_SINGLE over its own output, one unit left for the
+claim; accepted, the claimed deploy filed); a Close (`src/lp/close.ts`:
+`bsvFee` from the pool, or 0 and a broadcast funding; submitted to
+`/submit`); a listing request and root's registers as messages
+(`src/lib/skein.ts`, `POST <origin>/sendMessage`). `isRoot` is a stub (no
+read of a key's grants): every connected wallet sees Settings. The
+`?fixture=` switch and the fixtures are gone; so are 0.8.1's tab pages
+(`src/pages/*`) and the logic only they used (AddLiquidity, the partial
+RemoveLiquidity, the validator picker, "my pools" by lookup, the token
+deploy form, the Validator page's control). Where the text below
+describes those pages, it is history.
 
 Four pages — **Tokens** (the wallet's tokens, Mandala deploy), **Pools**
 (create a pool, my pools, add and remove liquidity), **Swap**, **Validator** (your

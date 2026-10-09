@@ -46,12 +46,8 @@
           "description": "Label the pools you create so they are listed together in your wallet."
         },
         {
-          "protocolID": [1, "action label amm-remove-liquidity"],
-          "description": "Label your liquidity withdrawals so they are listed together in your wallet."
-        },
-        {
-          "protocolID": [1, "action label amm-add-liquidity"],
-          "description": "Label your liquidity deposits so they are listed together in your wallet."
+          "protocolID": [1, "action label amm-close"],
+          "description": "Label the positions you close so they are listed together in your wallet."
         },
         {
           "protocolID": [1, "action label amm-payout"],
