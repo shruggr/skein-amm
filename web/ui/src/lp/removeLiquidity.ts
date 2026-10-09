@@ -22,7 +22,7 @@
  *      under the pool's LP key) and the funding output (`createSignature`,
  *      SIGHASH_ALL|FORKID); outputs exactly the contract's, no change. Both
  *      inputs are checked with `Spend`.
- *   5. `POST <base>/submit` (`x-topics: tm_<txid>_0`) with the remove's
+ *   5. `POST <base>/submit` (`x-topics: tm_mandala_<txid>_0`) with the remove's
  *      AtomicBEEF; the funding transaction is in it as the unproven parent
  *      (the engine verifies against it, as it does the fixture's unproven
  *      pool deploy). The answer is BRC-22's STEAK (skein-overlay 0.9.1),
@@ -95,7 +95,7 @@ export interface PreparedRemoveLiquidity {
   size: number;
   /** The remove's AtomicBEEF (the funding and the pool's ancestry with it): the `/submit` body. */
   beef: number[];
-  /** `tm_<tokenId>`, `tm_<txid>_0` (David 2026-10-08) */
+  /** `tm_mandala_<assetId>`, `tm_mandala_<txid>_0` (BRC-207, David Case 2026-10-08) */
   topic: string;
   /** The sats withdrawal as a BRC-29 payment (null when no sats are withdrawn). */
   payout: Brc29Payout | null;
@@ -213,7 +213,7 @@ export async function prepareRemoveLiquidity(i: RemoveLiquidityInput): Promise<P
     hex: tx.toHex(),
     size: tx.toBinary().length,
     beef: tx.toAtomicBEEF(true),
-    topic: `tm_${sdkTokenId(i.tokenId)}`,
+    topic: `tm_mandala_${sdkTokenId(i.tokenId)}`,
     payout,
     tokens,
     continuation,

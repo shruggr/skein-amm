@@ -129,7 +129,7 @@ test "proofs by block: the direct call's request and reply; one BUMP per block" 
     }));
 
     // Restricted to the topic: only t1.
-    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_" ++ "ab" ** 32 ++ "_0" })))).?;
+    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_mandala_" ++ "ab" ** 32 ++ "_0" })))).?;
     const pt = try w.merkle.MerklePath.parse(a, rt);
     try testing.expect(w.beef.bumpHas(pt, t[1]));
     try testing.expect(!w.beef.bumpHas(pt, t[3]));
@@ -158,15 +158,15 @@ test "catch-up plan" {
 
 }
 
-test "names: tm_<txid>_0 and tm_<txid>_0-live, parsed here" {
-    const o = "tm_" ++ "ab" ** 32 ++ "_0";
+test "names: tm_mandala_<txid>_0 and tm_mandala_<txid>_0-live (BRC-207), parsed here" {
+    const o = "tm_mandala_" ++ "ab" ** 32 ++ "_0";
     const t = names.parse(o).?;
     try testing.expectEqual(names.Kind.overlay, t.kind);
     try testing.expectEqualSlices(u8, &([_]u8{0xab} ** 32), &t.id);
     const l = names.parse(o ++ "-live").?;
     try testing.expectEqual(names.Kind.live, l.kind);
     try testing.expectEqualStrings(o, l.overlay);
-    var buf: [80]u8 = undefined;
+    var buf: [96]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     try testing.expectEqualStrings(o ++ "-live", try names.live(fba.allocator(), o));
     // Not ours: the engine's own suffixes, the old names, upper case, a suffix, a short id.
@@ -174,9 +174,14 @@ test "names: tm_<txid>_0 and tm_<txid>_0-live, parsed here" {
     try testing.expect(names.parse(o ++ "-admit") == null);
     try testing.expect(names.parse("tm_amm_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse(o ++ "_live") == null);
-    try testing.expect(names.parse("tm_" ++ "AB" ** 32 ++ "_0") == null);
+    try testing.expect(names.parse("tm_mandala_" ++ "AB" ** 32 ++ "_0") == null);
     try testing.expect(names.parse(o ++ "_0") == null);
-    // The bare `tm_<txid>` is no topic (skein-mandala 0.8.2), nor its `-live`.
+    // The old `tm_<txid>_0` is no topic (skein-mandala 0.9.0: no alias), nor its `-live`; nor the
+    // discovery topic, nor the bare `tm_<txid>`.
+    try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "_0") == null);
+    try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "_0-live") == null);
+    try testing.expect(names.parse("tm_mandala") == null);
+    try testing.expect(names.parse("tm_mandala_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse("tm_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "-live") == null);
     try testing.expect(names.parse("tm_abcd-live") == null);
@@ -1883,7 +1888,9 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
     const m = try dagjson.decode(a, manifest_json);
     try testing.expect(m.get("dispatch") == null and m.get("reads") == null);
     const gated = m.get("roles").?.get("root").?.array;
-    try testing.expectEqual(@as(usize, 3), gated.len);
+    // register, registerLookup, deregisterLookup (skein-overlay 0.11.0), market, validator.
+    try testing.expectEqual(@as(usize, 5), gated.len);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "market", "validator" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
     try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
     try testing.expectEqualStrings("mandala-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);

@@ -1,5 +1,5 @@
 /**
- * The validators live in an instance's liveness read (`GET <base>/.live/tm_<txid>_0-live`), as the
+ * The validators live in an instance's liveness read (`GET <base>/.live/tm_mandala_<txid>_0-live`), as the
  * pool form's validator picker lists them; with `onSelect`, a radio per row.
  */
 import type { LiveAnswer } from "../lib/overlay";

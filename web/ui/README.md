@@ -19,7 +19,7 @@ deploy.
 
 **skein-amm 0.4.0: liveness is the runtime's read** (shruggr/skein#120,
 #138). Every page that showed `GET <base>/live` now reads, per token topic,
-`GET <base>/.live/tm_<txid>_0-live` → `[{sender, at, body, from}]` newest first
+`GET <base>/.live/tm_mandala_<txid>_0-live` → `[{sender, at, body, from}]` newest first
 (404: the instance keeps no liveness for it), decodes each `body` (dag-cbor
 `{identityKey, peerId}`, the beacon's) and keeps the validators within the
 window (`LIVE_WINDOW_MS`, 40 s; `src/lib/overlay.ts` `fetchLive`,
@@ -38,13 +38,18 @@ button). The remove-liquidity
 submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
 using authfetch for the submit http method").
 
-**skein-amm 0.7.2: topic names** (David, 2026-10-08: "that was the decision
-all along"; skein-mandala 0.8.2): a token's topic is `tm_<tokenId>`,
-`_<vout>` always, so a Mandala token's is `tm_<txid>_0` and its liveness
-topic `tm_<txid>_0-live`; the bare `tm_<txid>` is no topic. The pool deploy
+**skein-amm 0.8.0: BRC-207 topic names and embedded icons** (David Case,
+2026-10-08; skein-mandala 0.9.0): a token's topic is `tm_mandala_<assetId>`,
+the asset id `<txid>_<vout>`, `_0` included, so a Mandala token's is
+`tm_mandala_<txid>_0` and its liveness topic `tm_mandala_<txid>_0-live`; 0.7.2's
+`tm_<txid>_0` is no topic (no alias). A Mandala deploy's icon is the image
+embedded in it (BRC-162 draft bsv-blockchain/BRCs#308, `[mediaType,
+bytes]`): the Tokens page shows it, and the deploy form embeds an uploaded
+image or a picked ordinal's bytes (below, "Deploy"). **skein-amm 0.7.2: topic names** (David, 2026-10-08: "that was the decision
+all along"; skein-mandala 0.8.2): a token's topic was `tm_<tokenId>`. The pool deploy
 and the remove-liquidity submit name the token's topic from its full id
 (`src/lp/poolDeploy.ts`, `src/lp/removeLiquidity.ts`), and `parseTokenTopic`
-(`src/lib/overlay.ts`) takes `tm_<txid>_<vout>` only.
+(`src/lib/overlay.ts`) takes `tm_mandala_<txid>_<vout>` only.
 
 **skein-amm 0.7.1: one token id form** (David, 2026-10-07, shruggr/skein#120;
 supersedes 0.6.3's bare txid): every token id, Mandala and legacy BSV-21
@@ -81,7 +86,7 @@ market on".
 David 2026-10-06 evening). Registering a token's topic (the Tokens page) is
 the one act: with `config.overlay.market {window}` the engine asks for the
 topic's liveness, with `config.overlay.validator {every}` it beacons
-`tm_<txid>_0-live`, and amm-validator signs for every registered token. The
+`tm_mandala_<txid>_0-live`, and amm-validator signs for every registered token. The
 beat has no body: `parseLiveBeats` takes the validator's identity from each
 entry's `sender` and its peer ID from `from`. The Validator page has no
 buttons any more — no "Start / Stop heartbeat" (amm-p2p takes no start or
@@ -145,7 +150,7 @@ untracked, or the environment):
 | variable | default | what |
 |---|---|---|
 | `VITE_AMM_OVERLAY` | the page's own directory (`appBaseOf`) | the AMM app's base URL (every page); its origin is the instance (messagebox, `/.well-known/auth`, `/explore`). Set it for a dev server on another origin |
-| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_<txid>_0-live` reads (0.4.0); unset disables |
+| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_mandala_<txid>_0-live` reads (0.4.0); unset disables |
 | `VITE_AMM_REFRESH_MS` | `10000` | the Swap page's refresh |
 | `VITE_FEE_RATE` | `100` | the swap's miner fee rate, sats per 1000 bytes: the funding output carries `ceil(size × rate / 1000)` for the final swap (below, "Funding") |
 
@@ -272,11 +277,11 @@ server on another origin calls it cross-origin. Plain
 `LookupResolver` drops freeform answers and `TopicBroadcaster` refuses topic
 names like `tm_<64 hex>` before sending anything.
 
-Names (skein-mandala docs/MANDALA.md): a token's topic is `tm_<tokenId>`,
-`_<vout>` always (0.7.2, skein-mandala 0.8.2; David 2026-10-08: "that was
-the decision all along"): a token deployed at output 0 is topic
-`tm_<txid>_0`, a BRC-161 token deployed at a non-zero output
-`tm_<txid>_<vout>`; the bare `tm_<txid>` is no topic. The pages write
+Names (skein-mandala docs/MANDALA.md): a token's topic is `tm_mandala_<assetId>`,
+the asset id `<txid>_<vout>` always (0.8.0, skein-mandala 0.9.0, BRC-207;
+David Case 2026-10-08): a token deployed at output 0 is topic
+`tm_mandala_<txid>_0`, a BRC-161 token deployed at a non-zero output
+`tm_mandala_<txid>_<vout>`; the old `tm_<txid>_<vout>` is no topic. The pages write
 every token id `<txid>_<vout>`, `_0` included (BRC-162 "Token
 identification"; 0.7.1, David 2026-10-07), and
 show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
@@ -592,16 +597,18 @@ no overlay is queried and nothing is submitted to one.
   amounts summed. The script decides id and amount, not the tags.
 - A deploy output in the wallet gives sym / dec / icon (Mandala payload, or
   the JSON deploy's fields). Tokens without one show id and balance only.
-- Icons: a 4-byte vout is output N of the deploy transaction, read from
-  `listOutputs({basket: "bsv21", tags: ["bsv21:deploy"], include: "entire
-  transactions"})`'s BEEF; a 36-byte outpoint is looked up in the ordinals
-  basket. The image renders from the inscription (or B file) bytes when the
-  wallet holds them; otherwise the outpoint is shown.
+- Icons (0.8.0): a Mandala deploy's icon is the image embedded in its
+  payload (`[mediaType, bytes]`, BRC-162 draft BRCs#308; the pointer forms
+  are gone), rendered as it is (an image media type only). A legacy BSV-21
+  JSON deploy's icon is an outpoint, looked up as before in the ordinals
+  basket and the deploy transactions (`listOutputs({basket: "bsv21", tags:
+  ["bsv21:deploy"], include: "entire transactions"})`'s BEEF); the image
+  renders from the inscription (or B file) bytes when the wallet holds them,
+  otherwise the outpoint is shown.
 - `listOutputs({basket: "1sat", include: "locking scripts", includeTags})`
   for the icon picker: image ordinals, with thumbnails when the output's own
-  script carries the inscription. The icon written is the outpoint holding
-  the bytes: the output itself if it carries them, else its `content:` /
-  `origin:` tag.
+  script carries the inscription. A picked ordinal's bytes are embedded (an
+  ordinal whose bytes the wallet does not hold cannot be picked: upload it).
 
 **Deploy** (`src/lp/deploy.ts`): one `createAction`, run through
 `@1sat/actions`' `runCreateActionPipeline` (the pipeline 1sat-sdk's actions
@@ -614,17 +621,16 @@ wallet broadcasts). `randomizeOutputs: false`.
   counterparty: "self", forSelf: true})` (as 1sat-sdk's `resolveDestination`),
   payload `{sym, dec, icon}`. Basket `bsv21`, tags `bsv21:deploy` (+
   `bsv21:auth`), customInstructions from `buildBsv21CustomInstructions`:
-  `{amt, op: "deploy+mint" | "deploy+auth", sym, dec, [icon], protocolID,
+  `{amt, op: "deploy+mint" | "deploy+auth", sym, dec, protocolID,
   keyID}`, no `id` (the token id is this outpoint, `<txid>_0`), as
   `deployBsv21Mint` / `deployBsv21Auth` file it.
-- Output 1, an uploaded icon (payload `icon` = vout 1): either a 1Sat ordinal
-  (`buildInscriptionScript` over P2PKH to a `inscribe-<hex>` key, 1 sat,
-  basket `1sat`, tags `type:<mime>`, `origin`, `sha256:<hash>`,
-  customInstructions `{protocolID, keyID}`, as 1sat-sdk's `inscribe`), or a
-  B protocol file (`buildDataScript`, 0 sats, `OP_FALSE OP_RETURN`, no basket).
-- A picked ordinal: payload `icon` = its 36-byte outpoint, also recorded as
-  `icon` in customInstructions. A vout icon is not put in customInstructions
-  (that field is an outpoint string and the txid does not exist yet).
+- The icon (0.8.0, skein-mandala 0.9.0; BRC-162 draft BRCs#308): embedded in
+  the payload, `icon: {mediaType, bytes}` (the template writes
+  `[mediaType, bytes]`), an uploaded image or a picked ordinal's bytes, at
+  most `MAX_INSCRIPTION_BYTES`. One output: no icon output 1, no `icon` in
+  customInstructions. (Before 0.8.0: output 1 carried an uploaded image as
+  a 1Sat ordinal or a B file and the payload pointed at it, `icon` = vout 1;
+  a picked ordinal was its 36-byte outpoint.)
 
 After the deploy the page shows the txid and token id and reloads the
 inventory from the wallet.
@@ -790,7 +796,7 @@ it, so the funding is broadcast at once (no nosend):
    contract's. Both inputs checked with `Spend`. The sats withdrawal is
    recorded under Pending payouts before submitting.
 5. `POST <base>/submit`, body the remove's AtomicBEEF (the funding as its
-   unproven parent, the pool's ancestry), `x-topics: tm_<txid>_0`; plain
+   unproven parent, the pool's ancestry), `x-topics: tm_mandala_<txid>_0`; plain
    `fetch`, unsigned (0.6.3: AuthFetch refuses `x-topics`; the front door
    takes the submit unsigned).
 6. `internalizeAction({tx: that BEEF, outputs: [continuation (basket
@@ -986,9 +992,14 @@ was written (draft PR b-open-io/1sat-sdk#82). Like
 runar-sdk, it is bundled from the checkout's sources: `vite.config.ts`
 aliases `@1sat/templates/mandala` to
 `$ONESAT_SDK_DIR/packages/templates/src/mandala/mandala.ts` (default
-`../../../../bsv/1sat-sdk` from here, i.e. `~/Work/bsv/1sat-sdk`; the committed
-`www/` was built with its master at 183c0ce3), and `tsconfig.json`
-`paths` mirror it. Its DAG-CBOR payload code imports `cbor2`, a dependency
+`../../../../bsv/1sat-sdk` from here, i.e. `~/Work/bsv/1sat-sdk`), and `tsconfig.json`
+`paths` mirror it. The committed `www/` (0.8.0) was built against the
+unpublished embedded icon, b-open-io/1sat-sdk#92 (branch
+`feat/mandala-embedded-icon`, aff025c3, its worktree
+`~/Work/bsv/1sat-sdk-embedded-icon`): `ONESAT_SDK_DIR` at that worktree for
+`vite build` and the tests, and the typecheck with `paths` pointed there
+(a temporary tsconfig extending this one; `tsconfig.json` itself still names
+`~/Work/bsv/1sat-sdk`). Before 0.8.0, with its master at 183c0ce3. Its DAG-CBOR payload code imports `cbor2`, a dependency
 here, deduped with `@bsv/sdk` so the checkout needs no `node_modules`.
 `src/pool/mandala.ts` adapts it for the pool template; there is no second
 decoder. Once published, drop the alias and import from `@1sat/templates`.

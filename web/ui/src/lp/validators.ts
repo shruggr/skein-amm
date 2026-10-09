@@ -1,7 +1,7 @@
 /**
  * The validator picker's model (pure, plus plain fetches for BRC-169):
  *
- * - the validators live in the instance's liveness read (`GET <base>/.live/tm_<txid>_0-live`);
+ * - the validators live in the instance's liveness read (`GET <base>/.live/tm_mandala_<txid>_0-live`);
  * - a BRC-169 handle, resolved in the page as skein's docs/MESSAGES.md
  *   "BRC-169 is discovery" describes: `GET <origin>/manifest.json` →
  *   `metanet.handles.resolve` (default `/.well-known/metanet-handles/resolve`)

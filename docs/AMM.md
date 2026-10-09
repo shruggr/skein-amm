@@ -10,9 +10,9 @@ topic per token, registered by root at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.10.0 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic, and with it the market's liveness and the validator's beacon on `tm_<txid>_0-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.8.2 (copied) | judges `tm_<txid>_0` (`tm_<tokenId>`, `_<vout>` always) by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.8.2 (copied) | `ls_mandala`, `ls_mandala_deploys`; its fn `tokens`, the token list, the read route `/mandala/tokens` (0.6.0: the token list is a read of the components) |
+| `overlay` | skein-overlay 0.11.0 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_mandala_<txid>_0-live` (below, "Market and validator"); hands every admitted BEEF to the chain app |
+| `mandala-topic` | skein-mandala 0.9.0 (copied) | judges `tm_mandala_<txid>_0` (`tm_mandala_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_mandala` admits every deploy |
+| `mandala-lookup` | skein-mandala 0.9.0 (copied) | `ls_mandala`, `ls_mandala_deploys`, each token's `ls_mandala_<assetId>` (BRC-207: `mandala-spendability`, `mandala-admission`), one index; its fn `tokens`, the token list, the read route `/mandala/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the live pools that pass the pool checks, per token |
 | `amm-validator` | `programs/amm-validator` | the validator's three direct calls, for every registered token when the validator role is on (root's switch, else `config.overlay.validator`); submits by message to its own overlay |
 | `amm-p2p` | `programs/amm-p2p` | the relay, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
@@ -56,7 +56,7 @@ state.
   outputs are the contract's, every other input (and every unproven parent)
   is signed. Then it signs the pool input through the signer and submits
   the transaction to its own overlay by message — `{fn: "submit", args:
-  {beef, topics: [tm_<txid>_0]}}` from the instance to itself, box
+  {beef, topics: [tm_mandala_<txid>_0]}}` from the instance to itself, box
   `amm/submit` —
   and answers the direct call on the engine's first answer (`admitted`,
   `rejected`).
@@ -70,8 +70,8 @@ state.
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}`; `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
-| `GET /.live/tm_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` empty: the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (not a market, or the topic not registered) |
-| `GET /mandala/tokens` | mandala-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]`; a read (0.6.0) |
+| `GET /.live/tm_mandala_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` empty: the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (not a market, or the topic not registered) |
+| `GET /mandala/tokens` | mandala-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]` (`icon` a Mandala deploy's embedded image as a data URL, skein-mandala 0.9.0); a read (0.6.0) |
 | `POST /call` | amm-p2p: `{fn, args}` for the three interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
 
@@ -82,7 +82,9 @@ below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).
 
 **Box `amm/register`** (the manifest's `"register"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
-{topic}`, from root (`roles`, 0.7.0). skein-overlay 0.7.7+ takes them in this box only
+{topic}`, `registerLookup {service, program, topics?}`, `deregisterLookup
+{service}` (skein-overlay 0.11.0: a token is its topic `tm_mandala_<assetId>`
+and its lookup `ls_mandala_<assetId>`, BRC-207), from root (`roles`, 0.7.0). skein-overlay 0.7.7+ takes them in this box only
 (0.7.5–0.7.6: `amm/overlay`).
 
 **Box `amm/submit`** (the manifest's `"submit"`, `kernel.beef`): the
@@ -114,7 +116,7 @@ marketplace relay").
 
 **libp2p**: `/amm-validator/1/swap`, `/addLiquidity`, `/deploy`
 (amm-validator; one signed-message package per frame); the engine's
-`<topic>`, `-admit`, `-proof` for each registered topic; `tm_<txid>_0-live`,
+`<topic>`, `-admit`, `-proof` for each registered topic; `tm_mandala_<txid>_0-live`,
 beaconed by a validator's host and subscribed, without admitting anything,
 by a market's liveness tool (below).
 
@@ -144,16 +146,16 @@ answered `{market?: {window}, validator?: {every}}`, the roles in effect.
 The switch is kept beside the registered set in `amm/topics` (`market?` /
 `validator?`, `{window}` / `{every}` or `{off: true}`) and has precedence
 over `config.overlay` from then on. On emits `liveness` / `beacon` on
-`tm_<txid>_0-live` for every token already registered, off `unliveness` /
+`tm_mandala_<txid>_0-live` for every token already registered, off `unliveness` /
 `unbeacon`; registers and deregisters from then on follow the roles in
 effect. The Validator page shows the roles in effect, read the same way
 (the switch in `amm/topics` over the app record's `config.overlay`;
 web/ui `src/validator/control.ts` `withSwitches`).
 
-The engine, on `register {topic: "tm_<txid>_0", program: "mandala-topic"}`
+The engine, on `register {topic: "tm_mandala_<txid>_0", program: "mandala-topic"}`
 (box `amm/register`, from root): subscribes the topic and seeds; with
-the market on, emits `{event: "liveness", topic: "tm_<txid>_0-live", window}`; with
-`validator`, `{event: "beacon", topic: "tm_<txid>_0-live", every, body:
+the market on, emits `{event: "liveness", topic: "tm_mandala_<txid>_0-live", window}`; with
+`validator`, `{event: "beacon", topic: "tm_mandala_<txid>_0-live", every, body:
 <empty>}` — "the beat needs no body: the frame carries the sender's
 identity key and the gossip message the peer id". `deregister` reverses
 both (`unliveness`, `unbeacon`). A start or a re-read emits nothing: the
@@ -173,11 +175,11 @@ intents stand in the log.
   gossip message's peer is the node's peer ID, derived from the instance's
   root (`[2, "skein instance"]`, key ID `libp2p:<handle>`, counterparty
   self; skein signer.ts `peerKey`).
-- **The market.** The runtime's liveness tool subscribes `tm_<txid>_0-live`
+- **The market.** The runtime's liveness tool subscribes `tm_mandala_<txid>_0-live`
   without admitting its messages (no entry, nothing logged), verifies each
   beat's signature against `sender`, and keeps the beats newer than
   `window`, the latest per sender, with the node's own published beats, in
-  memory; it serves them at `GET <base>/.live/tm_<txid>_0-live` → `[{sender,
+  memory; it serves them at `GET <base>/.live/tm_mandala_<txid>_0-live` → `[{sender,
   at, body: <base64>, from: <peer ID>}]` newest first (404 when no liveness
   is kept). The window is a margin over the beat (40 s against 30 s).
 - **The page** reads that endpoint per token, takes each beat's `sender`
@@ -211,7 +213,7 @@ both off until root turns one on, above; 0.6.0–0.6.1 set
 shruggr/skein#143 (0.7.0): a route names a transport, an address, its
 filters and a handler; no sender. Mailbox addresses are relative to the app
 (shruggr/skein#128: `"x"` is the box `amm/x`); one route per box. Who may
-run a function is `roles`: `{"root": ["register", "market", "validator"]}`.
+run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterLookup", "market", "validator"]}`.
 
 1. `register` → `overlay.register` (register / deregister and the
    switches; root's: any other key's message is recorded and runs nothing)
@@ -253,7 +255,7 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `topicDocumentation`, `lookupDocumentation` → `overlay.<the same>` | 0.5.0 (http rows before) |
 | `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `page` → `amm-p2p.serve` | 0.5.0 (an http row before) |
 | `/mandala/tokens` | read | `tokens` → `mandala-lookup.tokens` | 0.6.0 |
-| `/.live/tm_<txid>_0-live` | the runtime's liveness read (no program, skein #138) | | |
+| `/.live/tm_mandala_<txid>_0-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
 
 amm-p2p's `serve` reads only (the head `amm/app` and the tree's blobs);
@@ -265,7 +267,7 @@ called as a filter it answers `{answer: <the page>}` (0.7.0).
   0.7.1+'s manifest row): not carried, as skein-mandala 0.6.0 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
-- **`tm_<txid>_0-live` off a market host.** Liveness is kept by a host
+- **`tm_mandala_<txid>_0-live` off a market host.** Liveness is kept by a host
   serving a market (the market role on, above); on any other host its
   `.live` read answers 404 and its Swap page plans nothing.
 - **Catch-up and proofs by block.** Never specified; sync is

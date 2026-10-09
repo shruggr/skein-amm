@@ -32,7 +32,7 @@ export type PlanInput = { ok: true; request: PlanRequest } | { ok: false; error:
 
 /**
  * The pools the planner may use (0.4.0, shruggr/skein#120): those whose validator is in the token's
- * liveness read (`GET <base>/.live/tm_<txid>_0-live`) within the window. No read, none.
+ * liveness read (`GET <base>/.live/tm_mandala_<txid>_0-live`) within the window. No read, none.
  */
 export function livePools(pools: PoolState[], live: LiveAnswer | null): PoolState[] {
   if (!live) return [];

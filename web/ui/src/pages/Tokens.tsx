@@ -17,7 +17,7 @@ import { Id } from "../components/Id";
 export function Icon({ icon }: { icon?: IconRef }) {
   const src = useMemo(() => (icon?.image ? imageDataUrl(icon.image) : undefined), [icon]);
   if (!icon) return <span className="icon icon-empty" />;
-  if (src) return <img className="icon" src={src} alt="" title={outpointText(icon.outpoint)} />;
+  if (src) return <img className="icon" src={src} alt="" title={icon.image?.via === "embedded" ? "embedded in the deploy" : outpointText(icon.outpoint)} />;
   return (
     <span className="icon icon-empty" title={`icon at ${outpointText(icon.outpoint)} (not held by this wallet)`}>
       ?
@@ -99,7 +99,6 @@ function DeployForm(props: { ordinals: OrdinalImage[]; onDeployed: (r: DeployRes
   const [iconMode, setIconMode] = useState<IconMode>("none");
   const [ordinal, setOrdinal] = useState<OrdinalImage | null>(null);
   const [file, setFile] = useState<{ content: Uint8Array; contentType: string; name: string } | null>(null);
-  const [uploadAs, setUploadAs] = useState<"ordinal" | "b">("ordinal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DeployResult | null>(null);
@@ -127,15 +126,17 @@ function DeployForm(props: { ordinals: OrdinalImage[]; onDeployed: (r: DeployRes
       supplyModel = { kind: "fixed", amount };
     } else supplyModel = { kind: "authority" };
     let icon: IconChoice = { kind: "none" };
+    // The icon is embedded in the deploy (BRC-162 draft BRCs#308): its bytes, an ordinal's or a file's.
     if (iconMode === "ordinal") {
       if (!ordinal) return "pick an ordinal for the icon";
-      icon = { kind: "ordinal", outpoint: ordinal.iconOutpoint };
+      if (!ordinal.image) return "this ordinal's image is not in this wallet (its bytes are embedded): upload it instead";
+      icon = { kind: "ordinal", content: ordinal.image.bytes, contentType: ordinal.image.contentType };
     } else if (iconMode === "upload") {
       if (!file) return "choose an image file";
-      icon = { kind: "upload", as: uploadAs, content: file.content, contentType: file.contentType };
+      icon = { kind: "upload", content: file.content, contentType: file.contentType };
     }
     return { symbol: symbol.trim(), decimals: dec, supply: supplyModel, icon };
-  }, [symbol, dec, supplyKind, supply, iconMode, ordinal, file, uploadAs]);
+  }, [symbol, dec, supplyKind, supply, iconMode, ordinal, file]);
 
   async function onFile(f: File | undefined) {
     setFile(f ? { content: new Uint8Array(await f.arrayBuffer()), contentType: f.type || "application/octet-stream", name: f.name } : null);
@@ -197,27 +198,19 @@ function DeployForm(props: { ordinals: OrdinalImage[]; onDeployed: (r: DeployRes
         </label>
         <label>
           <input type="radio" name="icon" checked={iconMode === "ordinal"} onChange={() => setIconMode("ordinal")} />
-          One of my ordinals (icon = its outpoint)
+          One of my ordinals (its image, embedded in the deploy)
         </label>
         {iconMode === "ordinal" && (
           <OrdinalGrid items={props.ordinals} selected={ordinal?.iconOutpoint} onSelect={setOrdinal} />
         )}
         <label>
           <input type="radio" name="icon" checked={iconMode === "upload"} onChange={() => setIconMode("upload")} />
-          Upload an image, written in the deploy transaction (icon = output 1)
+          Upload an image, embedded in the deploy
         </label>
         {iconMode === "upload" && (
           <div className="upload">
             <input type="file" accept="image/*" onChange={(e) => void onFile(e.target.files?.[0])} />
             {filePreview && <img className="icon icon-lg" src={filePreview} alt="" />}
-            <label>
-              <input type="radio" name="uploadAs" checked={uploadAs === "ordinal"} onChange={() => setUploadAs("ordinal")} />
-              1Sat ordinal (1 sat, kept in your ordinals)
-            </label>
-            <label>
-              <input type="radio" name="uploadAs" checked={uploadAs === "b"} onChange={() => setUploadAs("b")} />
-              B protocol file (0-sat OP_RETURN, not owned)
-            </label>
           </div>
         )}
       </fieldset>

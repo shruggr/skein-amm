@@ -9,9 +9,12 @@
  * customInstructions are the wallet's index, not consulted for amounts.
  *
  * Metadata (sym/dec/icon) comes from a deploy output the wallet holds. A
- * token without one shows id and balance only.
+ * token without one shows id and balance only. A Mandala (binary) deploy's
+ * icon is the image embedded in it (BRC-162 draft bsv-blockchain/BRCs#308:
+ * `[mediaType, bytes]`; the pointer forms are gone); a legacy BSV-21 JSON
+ * deploy's icon is an outpoint, resolved as before (`resolveIcon`).
  */
-import Mandala from "@1sat/templates/mandala";
+import Mandala, { type MandalaIcon } from "@1sat/templates/mandala";
 import { BSV21 } from "@1sat/templates";
 import { formatOrdinalOutpoint } from "@1sat/types";
 import { Script, type Transaction, type WalletOutput } from "@bsv/sdk";
@@ -25,8 +28,8 @@ export type TokenEncoding = "mandala" | "bsv21";
 export interface TokenMetadata {
   sym?: string;
   dec?: number;
-  /** `txid_vout` outpoint, or (Mandala) an output index in the deploy transaction. */
-  icon?: string | number;
+  /** Mandala: the image embedded in the deploy; BSV-21 JSON: a `txid_vout` outpoint (or the raw string). */
+  icon?: string | MandalaIcon;
 }
 
 export interface TokenOutput {
@@ -43,7 +46,7 @@ export interface TokenOutput {
 }
 
 export interface IconRef {
-  /** The outpoint the icon points at, `txid_vout` (or the raw legacy string). */
+  /** The outpoint the icon points at, `txid_vout` (or the raw legacy string); an embedded icon's, its deploy's. */
   outpoint: string;
   /** The bytes, when the wallet holds that output or its transaction. */
   image?: ImageContent;
@@ -161,13 +164,17 @@ export function resolveIcon(outpoint: string, sources: IconSources): IconRef {
   return { outpoint: norm };
 }
 
-/** The icon of a deploy, resolved: a vout is output N of the deploy transaction. */
+/**
+ * The icon of a deploy: a Mandala deploy's embedded image, as it is (nothing to resolve); a
+ * BSV-21 JSON deploy's outpoint, resolved from what the wallet holds.
+ */
 export function deployIcon(deploy: TokenOutput, sources: IconSources): IconRef | undefined {
   const icon = deploy.metadata?.icon;
   if (icon === undefined) return undefined;
-  if (typeof icon === "number") {
-    const d = parseOutpoint(deploy.outpoint)!;
-    return resolveIcon(`${d.txid}_${icon}`, sources);
+  if (typeof icon !== "string") {
+    // An image only (as `imageFromScript` takes one); another media type shows no picture.
+    if (!/^image\//i.test(icon.mediaType.trim()) || icon.bytes.length === 0) return { outpoint: deploy.outpoint };
+    return { outpoint: deploy.outpoint, image: { contentType: icon.mediaType, bytes: Uint8Array.from(icon.bytes), via: "embedded" } };
   }
   return parseOutpoint(icon) ? resolveIcon(icon, sources) : { outpoint: icon };
 }

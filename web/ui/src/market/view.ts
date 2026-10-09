@@ -2,7 +2,7 @@
  * The Swap page's market view, shaped from the instance's answers (pure):
  * the token topics it serves, each token's pools from its lookup, each pool's
  * marginal price, and its validator's liveness from the runtime's liveness
- * read of the token's beacon topic (`GET <base>/.live/tm_<txid>_0-live`). Token
+ * read of the token's beacon topic (`GET <base>/.live/tm_mandala_<txid>_0-live`). Token
  * metadata (symbol, decimals, icon) comes from the wallet when it holds the
  * token's deploy output (the LP page's inventory); otherwise only the id.
  */
@@ -40,7 +40,7 @@ export interface MarketToken {
   topic: TokenTopic;
   meta?: TokenMeta;
   pools: PoolRow[];
-  /** The validators live on the token (`GET <base>/.live/tm_<txid>_0-live`), or null when unread. */
+  /** The validators live on the token (`GET <base>/.live/tm_mandala_<txid>_0-live`), or null when unread. */
   live: LiveAnswer | null;
   /** The lookup failed for this token. */
   error?: string;

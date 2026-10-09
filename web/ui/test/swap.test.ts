@@ -63,14 +63,16 @@ describe("market view from the instance's answers", () => {
   const live = parseLiveBeats(liveRead, NOW);
   const pools = parseLookupAnswer(lookupAll);
 
-  it("names: tm_<txid>_0 is a native token, tm_<txid>_<vout> a legacy one, anything else (the bare tm_<txid> included) is not a token", () => {
+  it("names (BRC-207): tm_mandala_<txid>_0 is a native token, tm_mandala_<txid>_<vout> a legacy one, anything else (the old tm_<txid>_0 included) is not a token", () => {
     expect(tokenTopics).toEqual([
-      { topic: `tm_${TXID}_0`, txid: TXID, vout: 0, kind: "native", tokenId: TOKEN_ID },
+      { topic: `tm_mandala_${TXID}_0`, txid: TXID, vout: 0, kind: "native", tokenId: TOKEN_ID },
     ]);
-    expect(parseTokenTopic(`tm_${TXID}`)).toBeNull();
-    expect(parseTokenTopic(`tm_${TXID}_3`)).toMatchObject({ kind: "legacy", tokenId: `${TXID}_3` });
+    expect(parseTokenTopic(`tm_mandala_${TXID}`)).toBeNull();
+    expect(parseTokenTopic(`tm_mandala_${TXID}_3`)).toMatchObject({ kind: "legacy", tokenId: `${TXID}_3` });
     expect(parseTokenTopic("tm_demo")).toBeNull();
-    expect(parseTokenTopic(`tm_${TXID}_0-live`)).toBeNull();
+    expect(parseTokenTopic("tm_mandala")).toBeNull();
+    expect(parseTokenTopic(`tm_${TXID}_0`)).toBeNull(); // the old name: no alias
+    expect(parseTokenTopic(`tm_mandala_${TXID}_0-live`)).toBeNull();
   });
 
   it("pools, prices (display units with decimals, base units without) and validator liveness", () => {
@@ -97,8 +99,8 @@ describe("market view from the instance's answers", () => {
     expect(failed[0]!.liveError).toBe("GET …/.live/…: 500");
   });
 
-  it("the liveness read (GET <base>/.live/tm_<txid>_0-live): each body decoded to {identityKey, peerId}; within the window, live", () => {
-    expect(liveUrl("http://a.localhost:8100/amm/", liveTopicOf(`tm_${TXID}_0`))).toBe(`http://a.localhost:8100/amm/.live/tm_${TXID}_0-live`);
+  it("the liveness read (GET <base>/.live/tm_mandala_<txid>_0-live): each body decoded to {identityKey, peerId}; within the window, live", () => {
+    expect(liveUrl("http://a.localhost:8100/amm/", liveTopicOf(`tm_mandala_${TXID}_0`))).toBe(`http://a.localhost:8100/amm/.live/tm_mandala_${TXID}_0-live`);
     expect(live.kept).toBe(true);
     expect(live.windowMs).toBe(LIVE_WINDOW_MS);
     expect(live.windowMs).toBe(40_000);

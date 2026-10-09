@@ -298,7 +298,7 @@ export interface PoolDeployForm {
 
 export interface PoolDeployPlan {
   tokenId: string;
-  /** `tm_<tokenId>`, `tm_<txid>_0`: the token's topic (David 2026-10-08). */
+  /** `tm_mandala_<assetId>`, `tm_mandala_<txid>_0`: the token's topic (BRC-207, David Case 2026-10-08). */
   topic: string;
   args: PoolArgs;
   state: PoolFields;
@@ -352,7 +352,7 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
   };
   return {
     tokenId: f.tokenId,
-    topic: `tm_${sdkTokenId(f.tokenId)}`,
+    topic: `tm_mandala_${sdkTokenId(f.tokenId)}`,
     args,
     state,
     lockingScript: PoolTemplate.lockDeploy(args, state).toHex(),

@@ -26,7 +26,7 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(parseTokenId(`${UP}.0`)).toEqual({ txid: TX, vout: 0 });
     expect(parseTokenId(`${TX}_3`)).toEqual({ txid: TX, vout: 3 });
     expect(parseTokenId(`${TX}.3`)).toEqual({ txid: TX, vout: 3 });
-    expect(parseTokenId("tm_" + TX)).toBeNull();
+    expect(parseTokenId("tm_mandala_" + TX)).toBeNull();
     expect(parseTokenId(TX.slice(2))).toBeNull();
     expect(sameToken(TX, `${TX}_0`)).toBe(true);
     expect(sameToken(`${TX}.0`, `${TX}_0`)).toBe(true);
@@ -65,10 +65,11 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(() => assetIdOf(`${TX}_1`)).toThrow(/32-byte id/);
   });
 
-  it("a topic name gives tm_<txid>_0 → <txid>_0, tm_<txid>_<vout> → <txid>_<vout>; the bare tm_<txid> is no topic (David 2026-10-08)", () => {
-    expect(parseTokenTopic(`tm_${TX}_0`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
-    expect(parseTokenTopic(`tm_${TX}`)).toBeNull();
-    expect(parseTokenTopic(`tm_${TX}_4`)).toMatchObject({ kind: "legacy", tokenId: `${TX}_4` });
+  it("a topic name gives tm_mandala_<txid>_0 → <txid>_0, tm_mandala_<txid>_<vout> → <txid>_<vout> (BRC-207); the old tm_<txid>_0 is no topic", () => {
+    expect(parseTokenTopic(`tm_mandala_${TX}_0`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
+    expect(parseTokenTopic(`tm_mandala_${TX}`)).toBeNull();
+    expect(parseTokenTopic(`tm_${TX}_0`)).toBeNull();
+    expect(parseTokenTopic(`tm_mandala_${TX}_4`)).toMatchObject({ kind: "legacy", tokenId: `${TX}_4` });
   });
 });
 
@@ -96,7 +97,7 @@ describe("outpoints are shown <txid>.<vout> (David 2026-10-08)", () => {
     expect(shortId(TX, "token")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}_0`);
     expect(fullId(TX, "txid")).toBe(TX);
     expect(shortId(TX, "txid")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}`);
-    expect(shortId(`tm_${TX}_1`, "topic")).toBe(`tm_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
-    expect(fullId(`tm_${TX}_0`, "topic")).toBe(`tm_${TX}_0`);
+    expect(shortId(`tm_mandala_${TX}_1`, "topic")).toBe(`tm_mandala_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
+    expect(fullId(`tm_mandala_${TX}_0`, "topic")).toBe(`tm_mandala_${TX}_0`);
   });
 });

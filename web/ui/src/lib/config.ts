@@ -7,7 +7,7 @@
  *   AMM_OVERLAY        the AMM app's base URL: `https://<handle>.<host>/<app>`
  *                      or a host's dev form `<host>/@<handle>/<app>` (GET
  *                      listTopicManagers, GET listLookupServiceProviders,
- *                      POST lookup, POST submit, GET .live/tm_<txid>_0-live, POST call under
+ *                      POST lookup, POST submit, GET .live/tm_mandala_<txid>_0-live, POST call under
  *                      it). The pages are the app's `www/`, served at
  *                      `<base>/` (index.html), so the base is the page's own
  *                      directory (`appBaseOf`); `VITE_AMM_OVERLAY` overrides
@@ -15,7 +15,7 @@
  *   VITE_AMM_PEER_OVERLAY  another instance's AMM base URL (no default): the
  *                      Validator page reads this instance's liveness (and
  *                      peer ID) from the peer's liveness read of its token
- *                      topics (GET .live/tm_<txid>_0-live, kept where the peer
+ *                      topics (GET .live/tm_mandala_<txid>_0-live, kept where the peer
  *                      is a market for the token)
  *   VITE_FEE_RATE      the miner fee rate, sats per 1000 bytes, the Swap page
  *                      applies to the swap transaction it builds (default
@@ -66,7 +66,7 @@ export const AMM_OVERLAY = (
 /** How often the Swap page re-reads the instance (topics, pools, live validators). `VITE_AMM_REFRESH_MS`. */
 export const REFRESH_MS = Number(env?.VITE_AMM_REFRESH_MS ?? 10_000);
 
-/** The peer instance whose liveness read (`GET .live/tm_<txid>_0-live`) tells us whether our heartbeat is heard. `VITE_AMM_PEER_OVERLAY`; unset or "" disables. */
+/** The peer instance whose liveness read (`GET .live/tm_mandala_<txid>_0-live`) tells us whether our heartbeat is heard. `VITE_AMM_PEER_OVERLAY`; unset or "" disables. */
 export const AMM_PEER_OVERLAY = (env?.VITE_AMM_PEER_OVERLAY ?? "").replace(/\/+$/, "");
 
 /**

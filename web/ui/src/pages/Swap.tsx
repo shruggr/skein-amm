@@ -5,7 +5,7 @@
  * nothing itself (the validator does).
  *
  *   market    topics → pools (lookup) → prices; per token, the validators live
- *             (`GET <base>/.live/tm_<txid>_0-live`, the runtime's liveness read:
+ *             (`GET <base>/.live/tm_mandala_<txid>_0-live`, the runtime's liveness read:
  *             the beats within the window: `sender` the validator, `from` its peer ID)
  *   form      token, direction, amount, slippage → the engine's plan over the
  *             pools whose validator is live there (src/market/plan.ts `livePools`)
@@ -369,7 +369,7 @@ export function SwapPage() {
           <small>
             Refreshes every {Math.round(REFRESH_MS / 1000)} s
             {refreshedAt && ` · last ${new Date(refreshedAt).toLocaleTimeString()}`}
-            {` · validators live: a beat within ${Math.round(LIVE_WINDOW_MS / 1000)} s on the token's tm_<txid>_0-live`}
+            {` · validators live: a beat within ${Math.round(LIVE_WINDOW_MS / 1000)} s on the token's tm_mandala_<txid>_0-live`}
           </small>
         </p>
         {instanceError && <p className="bad">Instance: {instanceError}</p>}
@@ -576,7 +576,7 @@ export function SwapPage() {
   );
 }
 
-/** A token's validators live: its liveness read (`GET <base>/.live/tm_<txid>_0-live`), newest first. */
+/** A token's validators live: its liveness read (`GET <base>/.live/tm_mandala_<txid>_0-live`), newest first. */
 function LiveLine({ t }: { t: MarketToken }) {
   if (t.liveError) return <p className="warn"><small>Liveness ({t.topic.topic}-live): {t.liveError}</small></p>;
   const l = t.live;

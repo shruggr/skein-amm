@@ -3,10 +3,10 @@
  * under one base URL (`AMM_OVERLAY`, src/lib/config.ts: the
  * app's base URL, `https://<handle>.<host>/amm` or `<host>/@<handle>/amm`):
  *
- *   GET  <base>/listTopicManagers            {tm_<txid>_<vout>: {name, shortDescription}, …}: the registered token topics
+ *   GET  <base>/listTopicManagers            {tm_mandala_<txid>_<vout>: {name, shortDescription}, …}: the registered token topics
  *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_mandala: …, ls_mandala_deploys: …}
  *   POST <base>/lookup   {service: "ls_amm", query: {tokenId, …}}   BRC-24
- *   GET  <base>/.live/tm_<txid>_0-live        [{sender, at, body, from}]: the validators beating on a
+ *   GET  <base>/.live/tm_mandala_<txid>_0-live        [{sender, at, body, from}]: the validators beating on a
  *                                             token, kept by the runtime's liveness tool (skein#138)
  *
  * A skein takes no unsigned HTTP but GET/HEAD and the front door's `submit`
@@ -24,10 +24,11 @@
  * submit client here.
  *
  * Names (skein-mandala docs/MANDALA.md "The topic"; programs/amm-lookup/README.md
- * "Queries"): a token's topic is `tm_<tokenId>`, `_<vout>` always (David
- * 2026-10-08; skein-mandala 0.8.2): a token deployed at output 0 is the topic
- * `tm_<txid>_0`, a BRC-161 token deployed at a non-zero output
- * `tm_<txid>_<vout>`. The bare `tm_<txid>` is no topic. One lookup service,
+ * "Queries"): a token's topic is `tm_mandala_<assetId>` (BRC-207; David Case,
+ * 2026-10-08; skein-mandala 0.9.0), the asset id `<txid>_<vout>`, `_0`
+ * included: a token deployed at output 0 is the topic `tm_mandala_<txid>_0`,
+ * a BRC-161 token deployed at a non-zero output `tm_mandala_<txid>_<vout>`.
+ * The old `tm_<txid>_<vout>` and the bare `tm_<txid>` are no topic. One lookup service,
  * `ls_amm`, answers for every token topic the overlay serves; each query
  * names its token (`tokenId`: `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`).
  */
@@ -39,7 +40,7 @@ import { outpointText, tokenIdText } from "./tokenId";
 // ---------------------------------------------------------------------------
 
 export interface TokenTopic {
-  /** `tm_<txid>_<vout>` (`tm_<txid>_0` at output 0). */
+  /** `tm_mandala_<txid>_<vout>` (`tm_mandala_<txid>_0` at output 0). */
   topic: string;
   /** Deploy txid, 64 lowercase hex, display order. */
   txid: string;
@@ -47,7 +48,7 @@ export interface TokenTopic {
   kind: "native" | "legacy";
   /**
    * The token id, `<txid>_<vout>` (src/lib/tokenId.ts, BRC-162 "Token
-   * identification"): `tm_<txid>_<vout>` → `<txid>_<vout>`, `_0`
+   * identification"): `tm_mandala_<txid>_<vout>` → `<txid>_<vout>`, `_0`
    * included. What an `ls_amm` query names (any form).
    */
   tokenId: string;
@@ -56,9 +57,9 @@ export interface TokenTopic {
 /** The AMM pool lookup service (programs/amm-lookup): one service over every token topic. */
 export const AMM_LOOKUP_SERVICE = "ls_amm";
 
-const TOPIC = /^tm_([0-9a-f]{64})_(0|[1-9]\d*)$/;
+const TOPIC = /^tm_mandala_([0-9a-f]{64})_(0|[1-9]\d*)$/;
 
-/** A token topic name, `tm_<txid>_<vout>`, or null for anything else (the bare `tm_<txid>`, `tm_demo`, a `-live` topic, ...). */
+/** A token topic name, `tm_mandala_<txid>_<vout>` (BRC-207), or null for anything else (the old `tm_mandala_<txid>_<vout>`, `tm_mandala`, `tm_demo`, a `-live` topic, ...). */
 export function parseTokenTopic(name: string): TokenTopic | null {
   const m = TOPIC.exec(name);
   if (!m) return null;
@@ -142,7 +143,7 @@ export function parseOutputList(answer: unknown): LookupOutput[] {
  */
 export const LIVE_WINDOW_MS = 40_000;
 
-/** A validator seen beating on a token's `tm_<txid>_0-live` (the runtime's liveness read). */
+/** A validator seen beating on a token's `tm_mandala_<txid>_0-live` (the runtime's liveness read). */
 export interface LiveValidator {
   identityKey: string;
   /** libp2p peer ID, text (base58): what the swap names for the relay to dial. */
@@ -162,7 +163,7 @@ export interface LiveAnswer {
   kept: boolean;
 }
 
-/** The beacon topic of a token topic: `tm_<txid>_0` → `tm_<txid>_0-live`. */
+/** The beacon topic of a token topic: `tm_mandala_<txid>_0` → `tm_mandala_<txid>_0-live`. */
 export function liveTopicOf(topic: string): string {
   return `${topic}-live`;
 }
@@ -276,7 +277,7 @@ export async function lookupPoolOutput(af: SignedFetch | null, base: string, tok
 }
 
 /**
- * The validators live on a token topic (`tm_<txid>_0`): `GET <base>/.live/tm_<txid>_0-live`; a 404
+ * The validators live on a token topic (`tm_mandala_<txid>_0`): `GET <base>/.live/tm_mandala_<txid>_0-live`; a 404
  * (the instance keeps no liveness for it) is `kept: false` with none.
  */
 export async function fetchLive(

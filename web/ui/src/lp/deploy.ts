@@ -6,11 +6,14 @@
  *   P2PKH to a wallet-derived key, payload {sym, dec, icon}; basket `bsv21`,
  *   tags and customInstructions as 1sat-sdk's `deployBsv21Mint` /
  *   `deployBsv21Auth` file them (`bsv21:deploy` [+ `bsv21:auth`], no
- *   `bsv21:<id>` and no `id` in customInstructions: the id is this outpoint);
- * - output 1, when the icon is uploaded: the image as a 1Sat ordinal
- *   inscription (basket `1sat`, tags/customInstructions as 1sat-sdk's
- *   `inscribe`) or as a 0-sat B protocol file (no basket: unspendable). The
- *   payload's icon is then the 4-byte vout 1.
+ *   `bsv21:<id>` and no `id` in customInstructions: the id is this outpoint).
+ *
+ * The icon is embedded in the deploy's payload (BRC-162 draft
+ * bsv-blockchain/BRCs#308: `icon` is `[mediaType, bytes]`; the pointer forms,
+ * an outpoint or an output index, are gone — 0.8.0, on skein-mandala 0.9.0):
+ * an uploaded image, or a copy of one of the wallet's image ordinals' bytes.
+ * No second output carries it (before 0.8.0: output 1, an inscription or a B
+ * file, the payload pointing at it).
  *
  * Keys: BRC-42 `getPublicKey` under 1sat-sdk's protocol (`P1SAT_PROTOCOL`),
  * counterparty self, keyID `<prefix>-<random hex>` as 1sat-sdk's
@@ -20,22 +23,16 @@
  * managed `id:` tags, createAction, signAction), the wallet broadcasts.
  */
 import Mandala, { type MandalaMetadata } from "@1sat/templates/mandala";
-import { buildInscriptionScript } from "@1sat/templates";
 import {
   BSV21_AUTH_TAG,
   BSV21_BASKET,
   BSV21_DEPLOY_TAG,
   MAX_INSCRIPTION_BYTES,
-  ORDINALS_BASKET,
   P1SAT_PROTOCOL,
   buildBsv21CustomInstructions,
-  buildDataScript,
-  buildOrdinalCustomInstructions,
   runCreateActionPipeline,
 } from "@1sat/actions";
 import {
-  Hash,
-  P2PKH,
   PublicKey,
   Utils,
   type CreateActionArgs,
@@ -47,12 +44,10 @@ import { tokenIdText } from "../lib/tokenId";
 
 export type SupplyModel = { kind: "fixed"; amount: bigint } | { kind: "authority" };
 
+/** The icon to embed: none, or an image's bytes and media type (an uploaded file, or one of the user's image ordinals' bytes). */
 export type IconChoice =
   | { kind: "none" }
-  /** One of the user's ordinals: the outpoint holding the bytes, `txid_vout`. */
-  | { kind: "ordinal"; outpoint: string }
-  /** A new image in the deploy transaction, output 1. */
-  | { kind: "upload"; as: "ordinal" | "b"; content: Uint8Array; contentType: string };
+  | { kind: "ordinal" | "upload"; content: Uint8Array; contentType: string };
 
 export interface DeployRequest {
   symbol: string;
@@ -71,8 +66,6 @@ export interface DerivedKey {
 
 /** The deploy output's index (BRC-162: deploys are output 0). */
 export const DEPLOY_VOUT = 0;
-/** Where an uploaded icon goes. */
-export const ICON_VOUT = 1;
 
 /** BRC-100 descriptions are 5-50 characters. */
 function describe(text: string): string {
@@ -85,7 +78,7 @@ export function validateRequest(req: DeployRequest): void {
     throw new Error("decimals must be an integer 0-18");
   }
   if (req.supply.kind === "fixed" && req.supply.amount <= 0n) throw new Error("supply must be positive");
-  if (req.icon.kind === "upload") {
+  if (req.icon.kind !== "none") {
     if (!req.icon.contentType.startsWith("image/")) throw new Error("the icon must be an image");
     if (req.icon.content.length === 0) throw new Error("the icon file is empty");
     if (req.icon.content.length > MAX_INSCRIPTION_BYTES) {
@@ -94,25 +87,21 @@ export function validateRequest(req: DeployRequest): void {
   }
 }
 
-/** The keyID prefixes 1sat-sdk uses for these outputs. */
-export function keyIdPrefixes(req: DeployRequest): { token: string; icon?: string } {
+/** The keyID prefix 1sat-sdk uses for the deploy output. */
+export function keyIdPrefixes(req: DeployRequest): { token: string } {
   const sym = req.symbol.trim();
-  return {
-    token: req.supply.kind === "fixed" ? `bsv21-deploy-${sym}` : `bsv21-auth-${sym}`,
-    ...(req.icon.kind === "upload" && req.icon.as === "ordinal" && { icon: "inscribe" }),
-  };
+  return { token: req.supply.kind === "fixed" ? `bsv21-deploy-${sym}` : `bsv21-auth-${sym}` };
 }
 
-/** The createAction arguments for a deploy, given the derived keys. Pure. */
-export function buildDeployArgs(req: DeployRequest, tokenKey: DerivedKey, iconKey?: DerivedKey): CreateActionArgs {
+/** The createAction arguments for a deploy, given the derived key. Pure. */
+export function buildDeployArgs(req: DeployRequest, tokenKey: DerivedKey): CreateActionArgs {
   validateRequest(req);
   const sym = req.symbol.trim();
   const fixed = req.supply.kind === "fixed";
   const amount = req.supply.kind === "fixed" ? req.supply.amount : 0n;
 
   const payload: MandalaMetadata = { sym, dec: req.decimals };
-  if (req.icon.kind === "ordinal") payload.icon = req.icon.outpoint;
-  if (req.icon.kind === "upload") payload.icon = ICON_VOUT;
+  if (req.icon.kind !== "none") payload.icon = { mediaType: req.icon.contentType.split(";")[0]!.trim().toLowerCase(), bytes: req.icon.content };
 
   const tokenAddress = PublicKey.fromString(tokenKey.publicKey).toAddress();
   const deploy = fixed
@@ -133,9 +122,7 @@ export function buildDeployArgs(req: DeployRequest, tokenKey: DerivedKey, iconKe
           op: fixed ? "deploy+mint" : "deploy+auth",
           sym,
           dec: req.decimals,
-          // The JSON field is a string; a vout pointer has no outpoint until
-          // the txid exists, so only an absolute outpoint is recorded here.
-          ...(req.icon.kind === "ordinal" && { icon: req.icon.outpoint }),
+          // The icon is in the payload itself (embedded): the JSON's `icon` string has nothing to point at.
         },
         protocolID: tokenKey.protocolID,
         keyID: tokenKey.keyID,
@@ -143,42 +130,10 @@ export function buildDeployArgs(req: DeployRequest, tokenKey: DerivedKey, iconKe
     },
   ];
 
-  if (req.icon.kind === "upload") {
-    const { content, contentType } = req.icon;
-    if (req.icon.as === "ordinal") {
-      if (!iconKey) throw new Error("an inscribed icon needs a derived key");
-      const typeBase = contentType.split(";")[0]?.trim() || contentType;
-      const tags = [`type:${typeBase}`, "origin", `sha256:${Utils.toHex(Hash.sha256(Array.from(content)))}`];
-      const script = buildInscriptionScript(
-        new P2PKH().lock(PublicKey.fromString(iconKey.publicKey).toAddress()),
-        content,
-        contentType,
-      );
-      outputs.push({
-        lockingScript: script.toHex(),
-        satoshis: 1,
-        outputDescription: describe(`${sym} icon inscription`),
-        basket: ORDINALS_BASKET,
-        tags,
-        customInstructions: buildOrdinalCustomInstructions({
-          protocolID: iconKey.protocolID,
-          keyID: iconKey.keyID,
-          tags,
-        }),
-      });
-    } else {
-      outputs.push({
-        lockingScript: buildDataScript(content, contentType).toHex(),
-        satoshis: 0,
-        outputDescription: describe(`${sym} icon (B file)`),
-      });
-    }
-  }
-
   return {
     description: describe(fixed ? `Deploy ${sym} (${amount} fixed supply)` : `Deploy ${sym} (mintable)`),
     outputs,
-    // The deploy must stay output 0 and the icon output 1.
+    // The deploy must stay output 0.
     options: { randomizeOutputs: false, acceptDelayedBroadcast: false },
   };
 }
@@ -206,8 +161,7 @@ export async function deployToken(wallet: WalletInterface, req: DeployRequest): 
   validateRequest(req);
   const prefixes = keyIdPrefixes(req);
   const tokenKey = await deriveSelfKey(wallet, prefixes.token);
-  const iconKey = prefixes.icon ? await deriveSelfKey(wallet, prefixes.icon) : undefined;
-  const args = buildDeployArgs(req, tokenKey, iconKey);
+  const args = buildDeployArgs(req, tokenKey);
   const result = await runCreateActionPipeline(wallet, args, []);
   if (result.error) throw new Error(result.error);
   if (!result.txid) throw new Error("the wallet returned no txid");

@@ -9,8 +9,8 @@ import { Script, Utils } from "@bsv/sdk";
 export interface ImageContent {
   contentType: string;
   bytes: Uint8Array;
-  /** Which encoding carried it. */
-  via: "inscription" | "b";
+  /** Which encoding carried it: an inscription, a B file, or embedded in a Mandala deploy's payload (BRC-162 draft BRCs#308). */
+  via: "inscription" | "b" | "embedded";
 }
 
 function isImage(type: string | undefined): type is string {

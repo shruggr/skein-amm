@@ -106,7 +106,7 @@ export function ValidatorPicker(props: { live: LiveAnswer | null; value: Validat
       {live && live.validators.length > 0 ? (
         <LiveTable live={live} selected={value?.identityKey} onSelect={(k) => onChange(choiceFor(k, live))} />
       ) : (
-        <p><small>No validator is live in this instance&apos;s liveness read ({AMM_OVERLAY}/.live/tm_&lt;txid&gt;_0-live, for the tokens it serves).</small></p>
+        <p><small>No validator is live in this instance&apos;s liveness read ({AMM_OVERLAY}/.live/tm_mandala_&lt;txid&gt;_0-live, for the tokens it serves).</small></p>
       )}
       <div className="form-row">
         <label>
