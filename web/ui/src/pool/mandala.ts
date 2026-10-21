@@ -1,7 +1,7 @@
 /**
- * BRC-162 (Mandala) prefix for the pool template, over 1sat-sdk's `Mandala`
+ * BRC-162 (1Color) prefix for the pool template, over 1sat-sdk's `Mandala`
  * (`@1sat/templates/mandala`, aliased to the local 1sat-sdk checkout; see
- * README.md, "Mandala from the local 1sat-sdk checkout"). One decoder: this
+ * README.md, "The `Mandala` template from the local 1sat-sdk checkout"). One decoder: this
  * file only adapts `Mandala.decode` / `Mandala.value(...).prefix()` to the
  * byte-array shape `template.ts` works in.
  *
@@ -22,7 +22,7 @@ export interface MandalaPrefix {
   length: number;
 }
 
-/** The Mandala prefix at the start of `script`, or null when it has none (`Mandala.decode`). */
+/** The 1Color prefix at the start of `script`, or null when it has none (`Mandala.decode`). */
 export function decodeMandala(script: Uint8Array | number[]): MandalaPrefix | null {
   const bytes = Array.from(script);
   const t = Mandala.decode(Script.fromBinary(bytes));

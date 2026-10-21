@@ -1,5 +1,5 @@
-// skein-amm (shruggr/skein#120): the AMM as a skein overlay app over the Mandala components.
-// Zig 0.16.0, wasm32-wasi. The app's tree carries the overlay engine and the Mandala topic
+// skein-amm (shruggr/skein#120): the AMM as a skein overlay app over the 1Color components.
+// Zig 0.16.0, wasm32-wasi. The app's tree carries the overlay engine and the 1Color topic
 // manager and lookup service, copied from their tagged builds (URL+hash dependencies; nothing is
 // built on the skein), and this repo's own programs:
 //
@@ -9,15 +9,15 @@
 //                   the reads /requests and /spends, and its pages (www/, files.serve)
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the
-// `mandala` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
+// `1color` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.12.1)
-//                          and bin/mandala-{topic,lookup}.wasm (skein-mandala v0.9.2) copied beside
+//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.14.0)
+//                          and bin/color-{topic,lookup}.wasm (skein-1color v0.10.0) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
-// The Mandala pages (skein-mandala v0.9.2's www/) are copied into www/mandala/ by
-// scripts/mandala-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
+// The 1Color pages (skein-1color v0.10.0's www/) are copied into www/color/ by
+// scripts/color-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
 // The AMM pages are built from web/ui into www/ (scripts/www.sh runs both).
 const std = @import("std");
 
@@ -34,7 +34,7 @@ const Mods = struct {
     topic: *std.Build.Module,
     lookup: *std.Build.Module,
     overlay_sk: *std.Build.Module,
-    mandala: *std.Build.Module,
+    color: *std.Build.Module,
     pool: *std.Build.Module,
     /// skein-overlay's engine sources (src/state.zig, src/submit.zig, src/engine_vm.zig, …), which
     /// it does not export as modules: the validator submits through the engine's own
@@ -45,9 +45,9 @@ const Mods = struct {
 fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Mods {
     const ov = b.dependency("skein_overlay", .{ .target = target, .optimize = optimize });
     const sdk = ov.builder.dependency("skein_sdk", .{ .target = target, .optimize = optimize });
-    const md = b.dependency("skein_mandala", .{ .target = target, .optimize = optimize });
+    const cd = b.dependency("skein_1color", .{ .target = target, .optimize = optimize });
     const chain = sdk.module("chain");
-    const mandala = md.module("mandala");
+    const color = cd.module("1color");
     const wf = b.addWriteFiles();
     _ = wf.addCopyDirectory(ov.path("src"), "skein_overlay", .{});
     const engine = b.createModule(.{
@@ -80,12 +80,12 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .topic = ov.module("topic"),
         .lookup = ov.module("lookup"),
         .overlay_sk = ov.module("sk"),
-        .mandala = mandala,
+        .color = color,
         .pool = b.createModule(.{
             .root_source_file = b.path("src/pool.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "mandala", .module = mandala } },
+            .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "1color", .module = color } },
         }),
         .engine = engine,
     };
@@ -95,7 +95,7 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
 fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module.Import {
     const common = [_]std.Build.Module.Import{
         .{ .name = "chain", .module = m.chain },
-        .{ .name = "mandala", .module = m.mandala },
+        .{ .name = "1color", .module = m.color },
         .{ .name = "pool", .module = m.pool },
     };
     const more: []const std.Build.Module.Import = if (std.mem.eql(u8, program, "amm-lookup")) &.{
@@ -145,13 +145,13 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
         bin.addCopyFileToSource(exe.getEmittedBin(), b.fmt("bin/{s}.wasm", .{p}));
     }
-    // The engine and the Mandala components, as their tags built them (not rebuilt here).
+    // The engine and the 1Color components, as their tags built them (not rebuilt here).
     const ov = b.dependency("skein_overlay", .{ .target = wasi, .optimize = .ReleaseSafe });
-    const md = b.dependency("skein_mandala", .{ .target = wasi, .optimize = .ReleaseSafe });
+    const cd = b.dependency("skein_1color", .{ .target = wasi, .optimize = .ReleaseSafe });
     bin.addCopyFileToSource(ov.path("bin/overlay.wasm"), "bin/overlay.wasm");
-    bin.addCopyFileToSource(md.path("bin/mandala-topic.wasm"), "bin/mandala-topic.wasm");
-    bin.addCopyFileToSource(md.path("bin/mandala-lookup.wasm"), "bin/mandala-lookup.wasm");
-    b.step("bin", "write the app's modules into bin/: this repo's three, and the engine and the Mandala components copied from their tags").dependOn(&bin.step);
+    bin.addCopyFileToSource(cd.path("bin/color-topic.wasm"), "bin/color-topic.wasm");
+    bin.addCopyFileToSource(cd.path("bin/color-lookup.wasm"), "bin/color-lookup.wasm");
+    b.step("bin", "write the app's modules into bin/: this repo's three, and the engine and the 1Color components copied from their tags").dependOn(&bin.step);
 
     const nm = mods(b, target, .Debug);
     const test_step = b.step("test", "The pool library and the three programs' tests, natively");

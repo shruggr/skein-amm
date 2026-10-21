@@ -2,7 +2,7 @@
  * Token ids and outpoints, written and read in one place (skein-amm 0.6.3,
  * 0.7.1).
  *
- * A token id is written `<txid>_<vout>` for every token, Mandala (BRC-162
+ * A token id is written `<txid>_<vout>` for every token, 1Color (BRC-162
  * binary) and legacy BSV-21 (BRC-161 JSON) alike, `_0` included: BRC-162
  * "Token identification" ("For display and APIs, the string form is
  * `<txid>_<vout>` ... fixed for BSV-21 and Mandala ... for a 32-byte id,
@@ -54,7 +54,7 @@ export function tokenIdText(ref: TokenRef): string {
 }
 
 /**
- * The token id a Mandala output names by its BRC-162 wire id (internal byte
+ * The token id a 1Color output names by its BRC-162 wire id (internal byte
  * order): 32 bytes is `<txid>_0`, 36 bytes (a legacy BRC-161 token at
  * vout > 0) `<txid>_<vout>`; as 1sat-sdk's `MandalaToken.tokenId` prints it.
  */
@@ -95,7 +95,7 @@ export function outpointText(op: string): string {
 
 const shortTxid = (txid: string) => `${txid.slice(0, 8)}…${txid.slice(-8)}`;
 
-/** An outpoint shortened for display (the txid to its first and last 8, as skein-mandala 0.7.4 shows ids): `abcdef01…456789ab.0`. */
+/** An outpoint shortened for display (the txid to its first and last 8, as skein-1color 0.7.4 shows ids): `abcdef01…456789ab.0`. */
 export function shortOutpoint(op: string): string {
   const r = parseOutpoint(op);
   return r ? `${shortTxid(r.txid)}.${r.vout}` : op;

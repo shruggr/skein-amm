@@ -6,7 +6,7 @@
  *
  *   1. The pool's current output: followed from the position's deploy by the
  *      chain state (`GET <base>/spends`, src/lp/positions.ts), its BEEF from
- *      the token's Mandala lookup (`ls_mandala {txid, outputIndex}`): the
+ *      the token's 1Color lookup (`ls_color {txid, outputIndex}`): the
  *      listing (`ls_amm`) no longer answers a pool whose claim was spent.
  *   2. `PoolTemplate.planClose`: the outputs the contract requires (the BSV
  *      payout, the pool's sats less `bsvFee`, when nonzero; every token; both
@@ -21,7 +21,7 @@
  *      `_changeAmount = 0`; the LP's slot filled with `createSignature`
  *      under the pool's LP key), the funding output (`createSignature`,
  *      ALL|FORKID); outputs exactly the contract's. Checked with `Spend`.
- *   5. `POST <base>/submit` (`x-topics: tm_mandala_<assetId>`), the close's
+ *   5. `POST <base>/submit` (`x-topics: tm_color_<assetId>`), the close's
  *      AtomicBEEF (the funding as its unproven parent): BRC-22's STEAK.
  *   6. `completeClose`: one `internalizeAction` — the BSV payout as a BRC-29
  *      wallet payment (the LP key is a BRC-29 key to self), the tokens as a
@@ -78,7 +78,7 @@ export interface PreparedClose {
   txid: string;
   /** The close's AtomicBEEF: the `/submit` body. */
   beef: number[];
-  /** `tm_mandala_<assetId>` */
+  /** `tm_color_<assetId>` */
   topic: string;
   /** The BSV payout as a BRC-29 payment (null when bsvFee takes every sat). */
   payout: Brc29Payout | null;
@@ -184,7 +184,7 @@ export async function prepareClose(i: CloseInput): Promise<PreparedClose> {
     tx,
     txid: tx.id("hex"),
     beef: tx.toAtomicBEEF(true),
-    topic: `tm_mandala_${sdkId}`,
+    topic: `tm_color_${sdkId}`,
     payout,
     tokens,
     sats: sats - i.bsvFee,
@@ -271,8 +271,8 @@ export function steakText(r: { steak?: Steak }): string {
 }
 
 /**
- * Whether the overlay admitted `txid`: `ls_mandala {txid, outputIndex}` (one Mandala output, if
- * unspent; skein-mandala docs/MANDALA.md) asked until it answers the output or `timeoutMs` passes.
+ * Whether the overlay admitted `txid`: `ls_color {txid, outputIndex}` (one 1Color output, if
+ * unspent; skein-1color docs/1COLOR.md) asked until it answers the output or `timeoutMs` passes.
  * The engine admits once the chain app accepts the transaction (its broadcast succeeded).
  */
 export async function awaitAdmitted(
@@ -288,7 +288,7 @@ export async function awaitAdmitted(
     const res = await signed.fetch(`${base}/lookup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ service: "ls_mandala", query: { txid, outputIndex } }),
+      body: JSON.stringify({ service: "ls_color", query: { txid, outputIndex } }),
     });
     if (res.ok) {
       const a = (await res.json()) as { outputs?: unknown[] };

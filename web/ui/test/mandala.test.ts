@@ -4,7 +4,7 @@ import { decodeMandala, mandalaValuePrefix } from "../src/pool/mandala";
 const ID = Array(32).fill(0x11);
 const P2PKH = [0x76, 0xa9, 0x14, ...Array(20).fill(0x22), 0x88, 0xac];
 
-describe("Mandala prefix (Pool.runar.go tokenPrefix; 1sat-sdk Mandala.decode rules)", () => {
+describe("1Color prefix (Pool.runar.go tokenPrefix; 1sat-sdk Mandala.decode rules)", () => {
   it("pushes 1..16 as OP_1..OP_16, larger amounts minimally", () => {
     expect(mandalaValuePrefix(ID, 1n).slice(33)).toEqual([0x51, 0x6d]);
     expect(mandalaValuePrefix(ID, 16n).slice(33)).toEqual([0x60, 0x6d]);

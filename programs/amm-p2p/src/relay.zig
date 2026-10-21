@@ -83,7 +83,7 @@
 //! (AddLiquidity, `amm.liquidity/1`, is gone with the contract's method.)
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const scbor = @import("sdk_cbor");
 const libp2p = @import("libp2p.zig");
 
@@ -92,7 +92,7 @@ const Value = cbor.Value;
 const Allocator = std.mem.Allocator;
 const Transaction = w.bsvz.transaction.Transaction;
 const beef = w.beef;
-const brc162 = mandala.brc162;
+const brc162 = color.brc162;
 const pool = @import("pool");
 const eql = std.mem.eql;
 
@@ -615,7 +615,7 @@ pub fn checkDeploy(a: Allocator, funding_bytes: []const u8, deploy_bytes: []cons
         const raw = e.raw orelse return refusedDeploy("missing_parent", try std.fmt.allocPrint(a, "input {d}: {s} is in the deploy's BEEF by txid only", .{ i, &w.header.toHex(op.txid.bytes) }));
         const pt = e.tx orelse (Transaction.parse(a, raw) catch return refusedDeploy("missing_parent", try std.fmt.allocPrint(a, "input {d}: its source does not parse", .{i})));
         if (op.index >= pt.outputs.len) return refusedDeploy("missing_parent", try std.fmt.allocPrint(a, "input {d}: no output {d} in its source", .{ i, op.index }));
-        if (first == null) if (try mandala.bsv21.tokenOf(a, .{ .txid = cont.asset_id }, op.txid.bytes, op.index, pt.outputs[op.index].locking_script.bytes)) |_| {
+        if (first == null) if (try color.bsv21.tokenOf(a, .{ .txid = cont.asset_id }, op.txid.bytes, op.index, pt.outputs[op.index].locking_script.bytes)) |_| {
             first = .{ .txid = op.txid.bytes, .vout = op.index };
         };
     }

@@ -19,12 +19,12 @@
 //!      (`OP_0`) and its code push the pool's own code;
 //!   5. the next validator key (the call's argument, and the continuation's
 //!      state) is the child of the spent pool outpoint;
-//!   6. our topic would admit the transaction (Mandala's `token.judge`,
+//!   6. our topic would admit the transaction (1Color's `token.judge`,
 //!      the BSV-21 rules alone, with the pool and the taker's token inputs
 //!      as previous coins, and the inputs' sources where the topic's own
 //!      call reads them: held, else the request's BEEF — the same judgement
 //!      `submit.route` asks the topic for, after signing); the pool checks
-//!      pass (`pool.check`: the topic `tm_mandala_<txid>_0` no longer runs
+//!      pass (`pool.check`: the topic `tm_color_<txid>_0` no longer runs
 //!      them, decided 2026-10-01, so a malformed continuation would be a
 //!      valid token output — the validator refuses to sign it, `bad_pool`;
 //!      `pool.check` does not look at the ValidatorPubKey, which is ours to
@@ -57,17 +57,17 @@
 //! submission thread on the record it makes.
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const unlock = @import("unlock.zig");
 const view_mod = @import("view.zig");
 const Oracle = @import("oracle.zig").Oracle;
 
 const bsvz = w.bsvz;
 const beef = w.beef;
-const brc162 = mandala.brc162;
-const bsv21 = mandala.bsv21;
+const brc162 = color.brc162;
+const bsv21 = color.bsv21;
 const pool = @import("pool");
-const token = mandala.token;
+const token = color.token;
 const Transaction = bsvz.transaction.Transaction;
 const View = view_mod.View;
 pub const Outpoint = view_mod.Outpoint;
@@ -247,10 +247,10 @@ pub fn tokenId(id: [32]u8) bsv21.TokenId {
     return .{ .txid = id };
 }
 
-/// The token's topic, `tm_mandala_<txid>_0` (skein-mandala name.zig: `tm_mandala_<assetId>`, BRC-207, 0.9.0).
+/// The token's topic, `tm_color_<txid>_0` (skein-1color name.zig: `tm_color_<assetId>`, BRC-207, 0.9.0).
 pub fn topicOf(a: std.mem.Allocator, id: [32]u8) ![]u8 {
-    const buf = try a.create([mandala.name.max_topic_len]u8);
-    return a.dupe(u8, mandala.name.topicName(buf, .{ .txid = id }));
+    const buf = try a.create([color.name.max_topic_len]u8);
+    return a.dupe(u8, color.name.topicName(buf, .{ .txid = id }));
 }
 
 /// The request's transaction: raw bytes, or a BEEF (V1, V2, Atomic) whose
@@ -337,7 +337,7 @@ pub fn unprovenParents(a: std.mem.Allocator, v: View, sub: Subject) ![]const Par
 }
 
 /// The transaction as the topic's rules see it: each input's source where
-/// the topic's own call reads it (the topic program's `txOf`, skein-mandala mandala_topic.zig: the records
+/// the topic's own call reads it (the topic program's `txOf`, skein-1color color_topic.zig: the records
 /// `submit.route` decoded — what the overlay holds, and the BEEF).
 fn rulesTx(a: std.mem.Allocator, v: View, sub: Subject, txid: [32]u8) !bsv21.Tx {
     const ins = try a.alloc(bsv21.Input, sub.tx.inputs.len);

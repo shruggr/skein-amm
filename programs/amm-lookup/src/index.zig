@@ -1,10 +1,10 @@
 //! The AMM pool liquidity index (`ls_amm`): unspent pool outputs that pass
 //! the pool checks, maintained through skein-overlay's lookup hooks
 //! (skein-overlay docs/OVERLAY.md, the `lookup` module), and its queries. One
-//! service over every Mandala token topic the overlay serves (`config.overlay`
+//! service over every 1Color token topic the overlay serves (`config.overlay`
 //! names it with no `topics` list, so it listens to every topic, declared or
 //! registered with the engine; shruggr/skein#120: "AMM keeps only its lookup"):
-//! the topic (`tm_mandala_<txid>_<vout>`, skein-mandala's topic manager) is the token's and
+//! the topic (`tm_color_<txid>_<vout>`, skein-1color's topic manager) is the token's and
 //! admits any output the BSV-21 rules allow; which of those outputs are pools
 //! worth indexing is this service's judgement (decided 2026-10-01): `admitted`
 //! runs `pool.check` and indexes only the pools that pass. Every map key
@@ -28,11 +28,11 @@ const std = @import("std");
 const w = @import("chain");
 const lookup = @import("lookup");
 const pool = @import("pool");
-const mandala = @import("mandala");
+const color = @import("1color");
 
 const brc162 = pool.brc162;
 const bsv21 = pool.bsv21;
-const names = mandala.name;
+const names = color.name;
 const cbor = w.cbor;
 const Value = cbor.Value;
 const Entry = cbor.Entry;
@@ -55,19 +55,19 @@ fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
     return std.mem.concat(a, u8, parts);
 }
 
-/// The topic a query's token id names (skein-mandala's name.zig `tokenIdOfString`: `<txid>`,
-/// `<txid>_<vout>` or `<txid>.<vout>`; the topic `tm_mandala_<txid>_<vout>` (BRC-207),
-/// `tm_mandala_<txid>_0` for output 0 in any form).
+/// The topic a query's token id names (skein-1color's name.zig `tokenIdOfString`: `<txid>`,
+/// `<txid>_<vout>` or `<txid>.<vout>`; the topic `tm_color_<txid>_<vout>` (BRC-207),
+/// `tm_color_<txid>_0` for output 0 in any form).
 pub fn topicOf(a: Allocator, token_id: []const u8) ![]const u8 {
     const id = names.tokenIdOfString(token_id) orelse return error.BadQuery;
     var buf: [names.max_topic_len]u8 = undefined;
     return a.dupe(u8, names.topicName(&buf, id));
 }
 
-/// The token a topic name carries, as the rules take it (skein-mandala's token.zig); null for
-/// a topic that is not a token's (`tm_mandala`, `tm_demo`).
+/// The token a topic name carries, as the rules take it (skein-1color's token.zig); null for
+/// a topic that is not a token's (`tm_color`, `tm_demo`).
 pub fn tokenIdOf(topic: []const u8) ?bsv21.TokenId {
-    return mandala.token.tokenIdOf(topic);
+    return color.token.tokenIdOf(topic);
 }
 
 /// The key prefix of a topic's entries: len ‖ topic (the engine's convention, skein-sdk `store.nameKey`).

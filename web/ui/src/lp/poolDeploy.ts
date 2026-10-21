@@ -18,7 +18,7 @@
  *        input 0     the first token input   → output 0, the pool
  *        input j     each further input (the other token inputs, then the
  *                    funding, last)          → output j, an LP output: the
- *                    token change (Mandala value, P2PKH to the change key,
+ *                    token change (1Color value, P2PKH to the change key,
  *                    filed in `bsv21`) first when the inputs carry more
  *                    than the deposit and the claim's unit, else the LP's
  *                    sats change (1 sat, P2PKH to the BRC-29 change key: a
@@ -175,7 +175,7 @@ export interface PoolableToken {
   txid: string;
   sym?: string;
   dec?: number;
-  /** Spendable Mandala outputs of the token (value outputs; a fixed-supply deploy output too). */
+  /** Spendable 1Color outputs of the token (value outputs; a fixed-supply deploy output too). */
   inputs: TokenInput[];
   balance: bigint;
 }
@@ -188,7 +188,7 @@ export interface HiddenToken {
 const LEGACY_HIDDEN = "legacy token (BRC-161 deploy, 36-byte id or JSON form): the Pool contract hard-codes a 32-byte asset id";
 
 /**
- * The tokens a pool can be made of: Mandala outputs with a 32-byte id (or the
+ * The tokens a pool can be made of: 1Color outputs with a 32-byte id (or the
  * deploy output itself, as amm-topic's fixture pool deploy spends it) whose
  * customInstructions name the wallet key. Legacy tokens are listed as hidden.
  */
@@ -309,7 +309,7 @@ export interface PoolDeployForm {
 
 export interface PoolDeployPlan {
   tokenId: string;
-  /** `tm_mandala_<assetId>`, `tm_mandala_<txid>_0`: the token's topic (BRC-207, David Case 2026-10-08). */
+  /** `tm_color_<assetId>`, `tm_color_<txid>_0`: the token's topic (BRC-207, David Case 2026-10-08). */
   topic: string;
   args: PoolArgs;
   state: PoolFields;
@@ -337,7 +337,7 @@ export class PoolDeployError extends Error {
 /** A token with a 32-byte id (`<txid>_0`; `<txid>` / `<txid>.0` read the same) → the wire id (internal byte order), hex. */
 export function assetIdHex(tokenId: string): string {
   const r = parseTokenId(tokenId);
-  if (!r || r.vout !== 0) throw new PoolDeployError(`pools exist only for Mandala tokens with a 32-byte id (<txid>_0), not ${tokenId}`);
+  if (!r || r.vout !== 0) throw new PoolDeployError(`pools exist only for 1Color tokens with a 32-byte id (<txid>_0), not ${tokenId}`);
   return toHex((Utils.toArray(r.txid, "hex") as number[]).reverse());
 }
 
@@ -364,7 +364,7 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
   };
   return {
     tokenId: f.tokenId,
-    topic: `tm_mandala_${sdkTokenId(f.tokenId)}`,
+    topic: `tm_color_${sdkTokenId(f.tokenId)}`,
     args,
     state,
     lockingScript: PoolTemplate.lockDeploy(args, state).toHex(),
@@ -377,7 +377,7 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
   };
 }
 
-/** A Mandala value output of `amount` to `pubKey` (P2PKH), as Pool.runar.go's `tokenP2pkh` writes it. */
+/** A 1Color value output of `amount` to `pubKey` (P2PKH), as Pool.runar.go's `tokenP2pkh` writes it. */
 export function tokenP2pkhScript(tokenId: string, amount: bigint, pubKey: string): string {
   const prefix = mandalaValuePrefix(Utils.toArray(assetIdHex(tokenId), "hex"), amount);
   return toHex(prefix) + new P2PKH().lock(PublicKey.fromString(pubKey).toAddress()).toHex();

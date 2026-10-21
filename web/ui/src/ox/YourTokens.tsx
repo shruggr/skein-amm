@@ -1,6 +1,6 @@
-/** Your tokens: the wallet's own Mandala tokens with balance, each on this exchange or with "Add to this exchange". */
+/** Your tokens: the wallet's own 1Color tokens with balance, each on this exchange or with "Add to this exchange". */
 import { useState } from "react";
-import { MANDALA_DEPLOY_HREF, requestListing, useMyTokens, type Session, type WalletToken } from "../data/exchange";
+import { COLOR_DEPLOY_HREF, requestListing, useMyTokens, type Session, type WalletToken } from "../data/exchange";
 import { fmtAmount } from "./format";
 import { NeedWallet, Notice, TokenName } from "./bits";
 
@@ -39,11 +39,11 @@ export function YourTokens({ session }: { session: Session }) {
     <>
       <div className="title-row">
         <h1 className="page-title">Your tokens</h1>
-        <a href={MANDALA_DEPLOY_HREF} className="link-strong">
+        <a href={COLOR_DEPLOY_HREF} className="link-strong">
           Deploy a new token
         </a>
       </div>
-      <p className="lead lead-tight">Mandala tokens in your wallet. Add one to ask this exchange to list it.</p>
+      <p className="lead lead-tight">1Color tokens in your wallet. Add one to ask this exchange to list it.</p>
       {!connected ? (
         <NeedWallet session={session} what="your tokens" />
       ) : (
@@ -58,7 +58,7 @@ export function YourTokens({ session }: { session: Session }) {
             {mine.data === null ? (
               <p className="empty">Loading your tokens…</p>
             ) : mine.data.length === 0 ? (
-              <p className="empty">Your wallet holds no Mandala tokens.</p>
+              <p className="empty">Your wallet holds no 1Color tokens.</p>
             ) : (
               <ul className="ttable-rows">
                 {mine.data.map((t) => (

@@ -2,7 +2,7 @@
  * The wallet reads behind the LP page (BRC-100 `listOutputs`, the connected
  * wallet from @1sat/react's `useWallet()`). Nothing here talks to an overlay.
  *
- * Where token outputs live: 1sat-sdk files a Mandala token's outputs
+ * Where token outputs live: 1sat-sdk files a 1Color token's outputs
  * (deploy, receive, send change) in the token's own basket
  * `mandala <txid> <vout>`, and labels their actions `mandala` and
  * `mandala <txid> <vout>` (1sat-sdk actions/src/mandala/deploy.ts). This
@@ -17,18 +17,18 @@ import { parseTokenId } from "../lib/tokenId";
 /** BRC-100's largest `limit`. */
 const LIMIT = 10000;
 
-/** 1sat-sdk's action label on every Mandala token action (`MANDALA_LABEL`, @1sat/types after 0.0.49). */
+/** 1sat-sdk's action label on every 1Color token action (`MANDALA_LABEL`, @1sat/types after 0.0.49). */
 export const MANDALA_LABEL = "mandala";
 const MANDALA_NAME = /^mandala ([0-9a-f]{64}) (0|[1-9]\d*)$/;
 
-/** A Mandala token's basket `mandala <txid> <vout>` (1sat-sdk `mandalaTokenBasket`), from any token id form (`<txid>` is vout 0). */
+/** A 1Color token's basket `mandala <txid> <vout>` (1sat-sdk `mandalaTokenBasket`), from any token id form (`<txid>` is vout 0). */
 export function mandalaBasket(tokenId: string): string {
   const r = parseTokenId(tokenId);
   if (!r) throw new Error(`not a token id (<txid>, <txid>_<vout> or <txid>.<vout>): ${tokenId}`);
   return `mandala ${r.txid} ${r.vout}`;
 }
 
-/** The Mandala token baskets the wallet tracks, from its `mandala`-labelled actions' per-token labels. */
+/** The 1Color token baskets the wallet tracks, from its `mandala`-labelled actions' per-token labels. */
 export async function mandalaBaskets(wallet: WalletInterface): Promise<string[]> {
   const r = await wallet.listActions({ labels: [MANDALA_LABEL], includeLabels: true, limit: LIMIT });
   const out = new Set<string>();
@@ -109,7 +109,7 @@ export async function loadWalletAssets(wallet: WalletInterface): Promise<WalletA
     warnings.push(`deploy transactions: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Mandala tokens 1sat-sdk filed: their own baskets.
+  // 1Color tokens 1sat-sdk filed: their own baskets.
   const tokenRows = [...tokens.outputs];
   try {
     const baskets = await mandalaBaskets(wallet);
@@ -120,7 +120,7 @@ export async function loadWalletAssets(wallet: WalletInterface): Promise<WalletA
     );
     for (const l of lists) tokenRows.push(...l.outputs);
   } catch (err) {
-    warnings.push(`Mandala token baskets: ${err instanceof Error ? err.message : String(err)}`);
+    warnings.push(`1Color token baskets: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return { tokenRows, ordinalRows: ordinals.outputs, txs, warnings };

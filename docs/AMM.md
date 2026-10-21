@@ -1,8 +1,8 @@
 # The AMM on a skein
 
-A constant-product AMM between BSV and one Mandala token per pool, served by
-a skein overlay app. Decided in shruggr/skein#120: Mandala is components (a
-topic manager and a lookup service, shruggr/skein-mandala); the AMM is an
+A constant-product AMM between BSV and one 1Color token per pool, served by
+a skein overlay app. Decided in shruggr/skein#120: 1Color is components (a
+topic manager and a lookup service, shruggr/skein-1color); the AMM is an
 app that carries them with its own pool lookup, validator and relay; one
 topic per token, registered by root at runtime.
 
@@ -10,15 +10,15 @@ topic per token, registered by root at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.12.1 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_mandala_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
-| `mandala-topic` | skein-mandala 0.9.2 (copied) | judges `tm_mandala_<txid>_0` (`tm_mandala_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_mandala` admits every deploy |
-| `mandala-lookup` | skein-mandala 0.9.2 (copied) | `ls_mandala`, `ls_mandala_deploys`, each token's `ls_mandala_<assetId>` (BRC-207: `mandala-spendability`, `mandala-admission`), one index; its fn `tokens`, the token list, the read route `/mandala/tokens` (0.6.0: the token list is a read of the components) |
+| `overlay` | skein-overlay 0.14.0 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
+| `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
+| `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The claim and the listing"), per token; its beat, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator's two direct calls (`swap`, `deploy`), for every registered token (always, 0.8.1); submits by message to its own overlay; files the claim in the wallet; root's `rescind` |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`, `amm.pool/1`), the holders' listing requests, the reads `/requests` and `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
-| | `src/pool.zig` | the pool library (module `pool`), over `mandala`'s parser and rules |
+| | `src/pool.zig` | the pool library (module `pool`), over `1color`'s parser and rules |
 | | `pool/Pool.runar.go` | the contract |
-| | `web/ui` → `www/` | the AMM pages; `www/mandala/` the Mandala pages |
+| | `web/ui` → `www/` | the AMM pages; `www/color/` the 1Color pages |
 
 The topic knows no application: a pool output is a token output like any
 other and is admitted exactly when the BRC-162 rules admit it. Which of
@@ -64,7 +64,7 @@ state.
   outputs are the contract's, every other input (and every unproven parent)
   is signed. Then it signs the pool input through the signer and submits
   the transaction to its own overlay by message — `{fn: "submit", args:
-  {beef, topics: [tm_mandala_<txid>_0]}}` from the instance to itself, box
+  {beef, topics: [tm_color_<txid>_0]}}` from the instance to itself, box
   `amm/submit` —
   and answers the direct call on the engine's first answer (`admitted`,
   `rejected`).
@@ -138,7 +138,7 @@ the read `GET <base>/spends?outpoint=<txid>.<vout>` (amm-p2p, the chain
 app's `spent` as the overlay reads it) follows the pool from its deploy to
 its current output (each spender's output 0 while it is a pool; `closed`
 once Close spent it) and tells the claim spent (rescinded: the page offers
-Close). The current output's BEEF comes from `ls_mandala {txid,
+Close). The current output's BEEF comes from `ls_color {txid,
 outputIndex}`.
 
 ## Prices (0.9.0)
@@ -170,16 +170,16 @@ topic manager's beat carries no prices.
 | route | what |
 |---|---|
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
-| `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only, 0.9.0); `ls_mandala`, `ls_mandala_deploys` (skein-mandala README) |
+| `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only, 0.9.0); `ls_color`, `ls_color_deploys` (skein-1color README) |
 | `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read |
 | `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): the chain state of an outpoint, a pool followed to its current output, `{outpoint, spentBy?, current?, hops, closed}`; a read |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
-| `GET /.live/tm_mandala_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` the topic's view digest; the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (the topic not registered) |
-| `GET /mandala/tokens` | mandala-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]` (`icon` a Mandala deploy's embedded image as a data URL, skein-mandala 0.9.0); a read (0.6.0) |
+| `GET /.live/tm_color_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` the topic's view digest; the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (the topic not registered) |
+| `GET /color/tokens` | color-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]` (`icon` a 1Color deploy's embedded image as a data URL, skein-1color 0.9.0); a read (0.6.0) |
 | `POST /call` | amm-p2p: `{fn, args}` for the two interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
 
-A token id in a query is any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`); the pages write every token id as `<txid>_<vout>`, Mandala and legacy BSV-21 alike, `_0` included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and show outpoints as `<txid>.<vout>` (0.6.3, David 2026-10-08), while `ls_amm`'s `outpoint` and the relay's take `<txid>_<vout>`.
+A token id in a query is any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`); the pages write every token id as `<txid>_<vout>`, 1Color and legacy BSV-21 alike, `_0` included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and show outpoints as `<txid>.<vout>` (0.6.3, David 2026-10-08), while `ls_amm`'s `outpoint` and the relay's take `<txid>_<vout>`.
 
 Which of these is a read and which a route with a handler is "Read routes",
 below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).
@@ -187,8 +187,8 @@ below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).
 **Box `amm/register`** (the manifest's `"register"`, relative to the app,
 shruggr/skein#128): the engine's `register {topic, program}`, `deregister
 {topic}`, `registerLookup {service, program, topics?}`, `deregisterLookup
-{service}` (skein-overlay 0.11.0: a token is its topic `tm_mandala_<assetId>`
-and its lookup `ls_mandala_<assetId>`, BRC-207), from root (`roles`, 0.7.0). skein-overlay 0.7.7+ takes them in this box only
+{service}` (skein-overlay 0.11.0: a token is its topic `tm_color_<assetId>`
+and its lookup `ls_color_<assetId>`, BRC-207), from root (`roles`, 0.7.0). skein-overlay 0.7.7+ takes them in this box only
 (0.7.5–0.7.6: `amm/overlay`).
 
 **Box `amm/submit`** (the manifest's `"submit"`, `kernel.beef`): the
@@ -233,7 +233,7 @@ deploy, the delivered one with one output appended (0.9.0), and its record's
 **libp2p**: `/amm-validator/1/swap`, `/deploy` (0.9.0: `/addLiquidity` gone)
 (amm-validator; one signed-message package per frame); the engine's
 `<topic>` (submit and admit messages, one mesh) and `-proof` for each
-registered topic (skein-overlay 0.12.0; `-admit` before); `tm_mandala_<txid>_0-live`,
+registered topic (skein-overlay 0.12.0; `-admit` before); `tm_color_<txid>_0-live`,
 beaconed by a validator's host and subscribed, without admitting anything,
 by a market's liveness tool (below); `ls_amm-live`, the AMM lookup's beat
 (the prices, above), once root registers `ls_amm`.
@@ -252,10 +252,10 @@ page's Market and Validator switches are gone. `config.overlay.market:
 {window}` / `.validator: {every}` give the ms (this manifest sets neither:
 40 000 / 30 000). (0.8.1's Validator page is gone with the 0.9.0 pages.)
 
-The engine, on `register {topic: "tm_mandala_<txid>_0", program: "mandala-topic"}`
+The engine, on `register {topic: "tm_color_<txid>_0", program: "color-topic"}`
 (box `amm/register`, from root): subscribes the topic and seeds; emits
-`{event: "liveness", topic: "tm_mandala_<txid>_0-live", window}` and
-`{event: "beacon", topic: "tm_mandala_<txid>_0-live", every, body}` — the
+`{event: "liveness", topic: "tm_color_<txid>_0-live", window}` and
+`{event: "beacon", topic: "tm_color_<txid>_0-live", every, body}` — the
 frame carries the sender's identity key and the gossip message the peer
 id; the body is the topic's view digest `{view: {count, digest}}`
 (skein-overlay 0.12.0), re-declared when it changes. `deregister` reverses
@@ -274,11 +274,11 @@ intents stand in the log.
   gossip message's peer is the node's peer ID, derived from the instance's
   root (`[2, "skein instance"]`, key ID `libp2p:<handle>`, counterparty
   self; skein signer.ts `peerKey`).
-- **The market.** The runtime's liveness tool subscribes `tm_mandala_<txid>_0-live`
+- **The market.** The runtime's liveness tool subscribes `tm_color_<txid>_0-live`
   without admitting its messages (no entry, nothing logged), verifies each
   beat's signature against `sender`, and keeps the beats newer than
   `window`, the latest per sender, with the node's own published beats, in
-  memory; it serves them at `GET <base>/.live/tm_mandala_<txid>_0-live` → `[{sender,
+  memory; it serves them at `GET <base>/.live/tm_color_<txid>_0-live` → `[{sender,
   at, body: <base64>, from: <peer ID>}]` newest first (404 when no liveness
   is kept). The window is a margin over the beat (40 s against 30 s).
 - **The page** reads that endpoint per token, takes each beat's `sender`
@@ -299,7 +299,7 @@ split, we would split it across multiple skeins".
 ## The manifest
 
 `etc/app.json`: the six programs; `config.overlay` with no topics and the
-lookups `ls_mandala`, `ls_mandala_deploys` (both `mandala-lookup`) and
+lookups `ls_color`, `ls_color_deploys` (both `color-lookup`) and
 `ls_amm` (`amm-lookup`), none with a `topics` list, so each listens to every
 topic served; gossip on (the default); no `market` or `validator` (0.8.1:
 both always on, at the defaults 40 000 / 30 000 ms; 0.6.0–0.6.1 set
@@ -362,10 +362,10 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/listTopicManagers`, `/listLookupServiceProviders` | read | `listTopicManagers`, `listLookupServiceProviders` → `overlay.<the same>` | 0.5.0 (http rows before) |
 | `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `topicDocumentation`, `lookupDocumentation` → `overlay.<the same>` | 0.5.0 (http rows before) |
 | `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `page` → `amm-p2p.serve` | 0.5.0 (an http row before) |
-| `/mandala/tokens` | read | `tokens` → `mandala-lookup.tokens` | 0.6.0 |
+| `/color/tokens` | read | `tokens` → `color-lookup.tokens` | 0.6.0 |
 | `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
-| `/.live/tm_mandala_<txid>_0-live`, `/.live/ls_amm-live` | the runtime's liveness read (no program, skein #138) | | |
+| `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
 
 amm-p2p's `serve` reads only (the head `amm/app` and the tree's blobs);
@@ -384,10 +384,10 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
 ## Not wired
 
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
-  0.7.1+'s manifest row): not carried, as skein-mandala 0.6.0 does not; a
+  0.7.1+'s manifest row): not carried, as skein-1color 0.6.0 does not; a
   submission paused on a parent resumes only when a later submission brings
   it.
-- **`tm_mandala_<txid>_0-live` for an unregistered token.** Liveness is
+- **`tm_color_<txid>_0-live` for an unregistered token.** Liveness is
   kept for a registered topic (every skein a market, 0.8.1); for a token
   not registered here the `.live` read answers 404 and its Swap page plans
   nothing.
@@ -405,8 +405,8 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
   the engine's are; a register of a topic registered already emits nothing,
   so deregister and register it to replace them). Their beats still carry
   0.5.0's body, which the page no longer reads.
-- **Governance per token** (#120 item 4) and the other Mandala queries:
-  skein-mandala docs/MANDALA.md "Not built".
+- **Governance per token** (#120 item 4) and the other 1Color queries:
+  skein-1color docs/1COLOR.md "Not built".
 - **`ls_amm` beats once registered.** skein-overlay 0.12 declares a
   lookup's beacon (and keeps liveness on `<service>-live`) at
   `registerLookup`, not for a service the manifest declares; `ls_amm` is

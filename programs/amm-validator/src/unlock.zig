@@ -16,10 +16,10 @@
 //! preimage.
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 
 const bsvz = w.bsvz;
-const brc162 = mandala.brc162;
+const brc162 = color.brc162;
 const pool = @import("pool");
 const Transaction = bsvz.transaction.Transaction;
 const Script = bsvz.script.Script;

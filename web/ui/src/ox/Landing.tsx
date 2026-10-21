@@ -67,7 +67,7 @@ export function Landing({ session, tokens, error }: { session: Session; tokens: 
       <section className="hero">
         <h1>Tokens traded here</h1>
         <p className="lead">
-          Mandala tokens with open pools on this exchange. Prices come from the pools themselves and update as trades land.
+          1Color tokens with open pools on this exchange. Prices come from the pools themselves and update as trades land.
           {connected ? " Pick a token to swap it." : " Connect a wallet to swap, provide liquidity or add your own token."}
         </p>
       </section>

@@ -1,6 +1,6 @@
 /**
  * src/data/exchange.ts, wired (skein-amm 0.9.0): each function against a
- * fake instance (the routes it reads: listTopicManagers, /mandala/tokens,
+ * fake instance (the routes it reads: listTopicManagers, /color/tokens,
  * the liveness reads, /lookup, /requests, /spends, /call, /sendMessage) and
  * a fake wallet, over the Go fixtures (src/fixtures/vectors.zig's copy).
  */
@@ -48,7 +48,7 @@ const poolDeploy = Transaction.fromHex(v.pool_deploy);
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
 const DEPLOY = tokenDeploy.id("hex");
 const TOKEN = `${DEPLOY}_0`;
-const TOPIC = `tm_mandala_${TOKEN}`;
+const TOPIC = `tm_color_${TOKEN}`;
 const OTHER = `${"cd".repeat(32)}_0`;
 const ME = "02" + "11".repeat(32);
 const V2 = "03" + "22".repeat(32);
@@ -72,7 +72,7 @@ interface Instance {
   pools: Record<string, unknown[]>;
   requests: unknown[];
   spends: Record<string, unknown>;
-  mandala: Record<string, unknown>;
+  color: Record<string, unknown>;
   sent: { url: string; body: Record<string, unknown> }[];
   calls: { fn: string; args: unknown }[];
   terms: Record<string, unknown>;
@@ -80,10 +80,10 @@ interface Instance {
 
 function instance(): Instance {
   return {
-    topics: { [TOPIC]: { name: "Mandala" }, tm_mandala: { name: "Mandala discovery" } },
+    topics: { [TOPIC]: { name: "1Color" }, tm_color: { name: "1Color discovery" } },
     tokens: [
       { tokenId: TOKEN, topic: TOPIC, sym: "TST", dec: 0, txid: DEPLOY, vout: 0 },
-      { tokenId: OTHER, topic: `tm_mandala_${OTHER}`, sym: "OTH", dec: 2, txid: OTHER.slice(0, 64), vout: 0 },
+      { tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, txid: OTHER.slice(0, 64), vout: 0 },
     ],
     live: {
       // ls_amm's beats: this skein's own (its pools of the token), and another skein naming a validator that is not live.
@@ -99,7 +99,7 @@ function instance(): Instance {
       { tokenId: `${"ef".repeat(32)}_0`, from: V2, at: 400 },
     ],
     spends: {},
-    mandala: {},
+    color: {},
     sent: [],
     calls: [],
     terms: { validator: { "/": { bytes: Utils.toBase64(Utils.toArray(SKEIN, "hex")).replace(/=+$/, "") } }, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 0 },
@@ -113,7 +113,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   const u = new URL(url);
   const path = u.pathname.replace(/^\/amm/, "");
   if (path === "/listTopicManagers") return json(inst.topics);
-  if (path === "/mandala/tokens") return json(inst.tokens);
+  if (path === "/color/tokens") return json(inst.tokens);
   if (path.startsWith("/.live/")) {
     const t = decodeURIComponent(path.slice(7));
     return t in inst.live ? json(inst.live[t]) : json({}, 404);
@@ -123,7 +123,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   if (path === "/lookup") {
     const q = JSON.parse(String(init!.body)) as { service: string; query: Record<string, unknown> };
     if (q.service === "ls_amm") return json({ type: "freeform", result: inst.pools[String(q.query.tokenId)] ?? [] });
-    if (q.service === "ls_mandala") return json(inst.mandala[`${q.query.txid}.${q.query.outputIndex}`] ?? { type: "output-list", outputs: [] });
+    if (q.service === "ls_color") return json(inst.color[`${q.query.txid}.${q.query.outputIndex}`] ?? { type: "output-list", outputs: [] });
   }
   if (path === "/call") {
     const b = JSON.parse(String(init!.body)) as { fn: string; args: unknown };
@@ -170,8 +170,8 @@ afterEach(() => {
 const connect = (rows?: unknown[]) => setExchangeContext({ wallet: fakeWallet(rows), af: af as never, identityKey: ME });
 
 describe("exchange.ts, wired", () => {
-  it("hostedTokens: the registered Mandala tokens, priced from ls_amm's beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
-    inst.topics[`tm_mandala_${OTHER}`] = {};
+  it("hostedTokens: the registered 1Color tokens, priced from ls_amm's beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
+    inst.topics[`tm_color_${OTHER}`] = {};
     inst.pools[OTHER] = [];
     const ts = await hostedTokens();
     expect(ts.map((t) => [t.tokenId, t.sym, t.dec])).toEqual([
@@ -240,7 +240,7 @@ describe("exchange.ts, wired", () => {
     expect(await walletSats()).toBe(3_500n);
   });
 
-  it("myPositions: the wallet's pool rows read from the chain state — followed to the current output (its BEEF from ls_mandala), the claim spent = rescinded; closed ones left out", async () => {
+  it("myPositions: the wallet's pool rows read from the chain state — followed to the current output (its BEEF from ls_color), the claim spent = rescinded; closed ones left out", async () => {
     const pd = poolDeploy.id("hex");
     const row = {
       outpoint: `${pd}.0`,
@@ -252,7 +252,7 @@ describe("exchange.ts, wired", () => {
     connect([row]);
     inst.spends[`${pd}.0`] = { outpoint: `${pd}.0`, spentBy: swap1.id("hex"), current: `${swap1.id("hex")}.0`, hops: 1, closed: false };
     inst.spends[`${pd}.${v.claimVout}`] = { outpoint: `${pd}.${v.claimVout}`, spentBy: "ab".repeat(32), hops: 0, closed: false };
-    inst.mandala[`${swap1.id("hex")}.0`] = { type: "output-list", outputs: [{ beef: atomic(swap1, [fund, tokenDeploy, poolDeploy]), outputIndex: 0 }] };
+    inst.color[`${swap1.id("hex")}.0`] = { type: "output-list", outputs: [{ beef: atomic(swap1, [fund, tokenDeploy, poolDeploy]), outputIndex: 0 }] };
     const ps = await myPositions();
     expect(ps).toEqual([
       {
@@ -296,7 +296,7 @@ describe("exchange.ts, wired", () => {
     await expect(deployPosition({ tokenId: TOKEN, tokens: 5n, sats: 1_000n })).rejects.toThrow(/no peer ID/);
   });
 
-  it("myTokens: the wallet's Mandala tokens with a balance, on this exchange (registered) and requested (by this wallet)", async () => {
+  it("myTokens: the wallet's 1Color tokens with a balance, on this exchange (registered) and requested (by this wallet)", async () => {
     const deployRow = {
       outpoint: `${DEPLOY}.0`,
       satoshis: 1,
@@ -335,12 +335,12 @@ describe("exchange.ts, wired", () => {
       expect(msg.messageBox).toBe("amm/register");
       return decode(msg.body);
     });
-    const topic = `tm_mandala_${OTHER}`;
+    const topic = `tm_color_${OTHER}`;
     expect(bodies).toEqual([
-      { fn: "register", args: { topic, program: "mandala-topic" } },
-      { fn: "registerLookup", args: { service: `ls_mandala_${OTHER}`, program: "mandala-lookup", topics: [topic] } },
+      { fn: "register", args: { topic, program: "color-topic" } },
+      { fn: "registerLookup", args: { service: `ls_color_${OTHER}`, program: "color-lookup", topics: [topic] } },
       { fn: "registerLookup", args: { service: "ls_amm", program: "amm-lookup" } },
-      { fn: "deregisterLookup", args: { service: `ls_mandala_${OTHER}` } },
+      { fn: "deregisterLookup", args: { service: `ls_color_${OTHER}` } },
       { fn: "deregister", args: { topic } },
     ]);
   });
@@ -359,11 +359,11 @@ describe("exchange.ts, wired", () => {
     expect(await isRoot(null)).toBe(false);
   });
 
-  it("topic and lookup names are derived from the assetId (BRC-207: tm_mandala_<txid>_<vout>, `_0` included)", () => {
+  it("topic and lookup names are derived from the assetId (BRC-207: tm_color_<txid>_<vout>, `_0` included)", () => {
     const t = "cd".repeat(32);
-    expect(topicOf(`${t}_0`)).toBe(`tm_mandala_${t}_0`);
-    expect(lookupOf(`${t}_0`)).toBe(`ls_mandala_${t}_0`);
-    expect(topicOf(`${t}_2`)).toBe(`tm_mandala_${t}_2`);
+    expect(topicOf(`${t}_0`)).toBe(`tm_color_${t}_0`);
+    expect(lookupOf(`${t}_0`)).toBe(`ls_color_${t}_0`);
+    expect(topicOf(`${t}_2`)).toBe(`tm_color_${t}_2`);
   });
 });
 

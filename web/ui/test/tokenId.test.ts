@@ -26,20 +26,20 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(parseTokenId(`${UP}.0`)).toEqual({ txid: TX, vout: 0 });
     expect(parseTokenId(`${TX}_3`)).toEqual({ txid: TX, vout: 3 });
     expect(parseTokenId(`${TX}.3`)).toEqual({ txid: TX, vout: 3 });
-    expect(parseTokenId("tm_mandala_" + TX)).toBeNull();
+    expect(parseTokenId("tm_color_" + TX)).toBeNull();
     expect(parseTokenId(TX.slice(2))).toBeNull();
     expect(sameToken(TX, `${TX}_0`)).toBe(true);
     expect(sameToken(`${TX}.0`, `${TX}_0`)).toBe(true);
     expect(sameToken(TX, `${TX}_1`)).toBe(false);
   });
 
-  it("writes every token, Mandala and legacy BSV-21 alike, as <txid>_<vout> (_0 included)", () => {
+  it("writes every token, 1Color and legacy BSV-21 alike, as <txid>_<vout> (_0 included)", () => {
     expect(tokenIdText({ txid: TX, vout: 0 })).toBe(`${TX}_0`);
     expect(tokenIdText({ txid: UP, vout: 0 })).toBe(`${TX}_0`);
     expect(tokenIdText({ txid: TX, vout: 5 })).toBe(`${TX}_5`);
   });
 
-  it("names a Mandala output's token by its wire id: 32 bytes <txid>_0, 36 bytes <txid>_<vout>", () => {
+  it("names a 1Color output's token by its wire id: 32 bytes <txid>_0, 36 bytes <txid>_<vout>", () => {
     const internal = Array.from({ length: 32 }, (_, i) => parseInt(TX.slice(62 - 2 * i, 64 - 2 * i), 16));
     expect(tokenIdOfWire(internal)).toBe(`${TX}_0`);
     expect(tokenIdOfWire([...internal, 7, 0, 0, 0])).toBe(`${TX}_7`);
@@ -65,11 +65,13 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(() => assetIdOf(`${TX}_1`)).toThrow(/32-byte id/);
   });
 
-  it("a topic name gives tm_mandala_<txid>_0 → <txid>_0, tm_mandala_<txid>_<vout> → <txid>_<vout> (BRC-207); the old tm_<txid>_0 is no topic", () => {
-    expect(parseTokenTopic(`tm_mandala_${TX}_0`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
-    expect(parseTokenTopic(`tm_mandala_${TX}`)).toBeNull();
+  it("a topic name gives tm_color_<txid>_0 → <txid>_0, tm_color_<txid>_<vout> → <txid>_<vout> (BRC-207); the old tm_<txid>_0 is no topic", () => {
+    expect(parseTokenTopic(`tm_color_${TX}_0`)).toMatchObject({ kind: "native", tokenId: `${TX}_0` });
+    expect(parseTokenTopic(`tm_color_${TX}`)).toBeNull();
     expect(parseTokenTopic(`tm_${TX}_0`)).toBeNull();
-    expect(parseTokenTopic(`tm_mandala_${TX}_4`)).toMatchObject({ kind: "legacy", tokenId: `${TX}_4` });
+    expect(parseTokenTopic(`tm_color_${TX}_4`)).toMatchObject({ kind: "legacy", tokenId: `${TX}_4` });
+    // The names before BRC-207's wire names (0.10.0, skein-1color 0.10.0): no alias.
+    expect(parseTokenTopic(`tm_mandala_${TX}_0`)).toBeNull();
   });
 });
 
@@ -97,7 +99,7 @@ describe("outpoints are shown <txid>.<vout> (David 2026-10-08)", () => {
     expect(shortId(TX, "token")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}_0`);
     expect(fullId(TX, "txid")).toBe(TX);
     expect(shortId(TX, "txid")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}`);
-    expect(shortId(`tm_mandala_${TX}_1`, "topic")).toBe(`tm_mandala_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
-    expect(fullId(`tm_mandala_${TX}_0`, "topic")).toBe(`tm_mandala_${TX}_0`);
+    expect(shortId(`tm_color_${TX}_1`, "topic")).toBe(`tm_color_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
+    expect(fullId(`tm_color_${TX}_0`, "topic")).toBe(`tm_color_${TX}_0`);
   });
 });

@@ -7,12 +7,12 @@
 //! from memory.
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const ov = @import("skein_overlay");
 
 const bsvz = w.bsvz;
 const Transaction = bsvz.transaction.Transaction;
-const bsv21 = mandala.bsv21;
+const bsv21 = color.bsv21;
 
 /// An outpoint; its text form is BRC-162's `<txid display hex>_<vout>`,
 /// the same string as the validator key ID.

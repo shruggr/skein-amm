@@ -1,20 +1,20 @@
 //! The pool library (src/pool.zig), natively: the Pool contract as the
 //! overlay sees it, on the transactions gen/vectors builds from it
-//! (src/fixtures/vectors.zig) and on broken variants of them. The Mandala
+//! (src/fixtures/vectors.zig) and on broken variants of them. The 1Color
 //! topic admits a pool that fails a pool check (it is a valid token output);
 //! `pool.check`, which amm-lookup and amm-validator run, flags it; a pool
 //! with any validator key passes it. Moved from amm-poc
 //! programs/amm-topic/test.zig (shruggr/skein#120: the token rules and their
-//! tests went to skein-mandala; the pool's stay with the AMM).
+//! tests went to skein-1color; the pool's stay with the AMM).
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const pool = @import("pool");
 const vec = @import("vectors");
 
-const brc162 = mandala.brc162;
-const bsv21 = mandala.bsv21;
-const token = mandala.token;
+const brc162 = color.brc162;
+const bsv21 = color.bsv21;
+const token = color.token;
 const bsvz = w.bsvz;
 const testing = std.testing;
 

@@ -15,7 +15,7 @@
 //! Pure: the bodies and the signature, over a View and an Oracle; tested with a mocked wallet.
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const pool = @import("pool");
 const unlock = @import("unlock.zig");
 const validator = @import("validator.zig");
@@ -53,7 +53,7 @@ pub fn claimOf(a: std.mem.Allocator, v: View, identity: [33]u8, deploy: [32]u8) 
     const t = (try v.tx(a, deploy)) orelse return .{ .refused = "the deploy is not held" };
     if (t.outputs.len == 0 or t.inputs.len == 0) return .{ .refused = "not a pool deploy" };
     const ps = t.outputs[0].locking_script.bytes;
-    const tok = mandala.brc162.decode(ps) orelse return .{ .refused = "not a pool deploy" };
+    const tok = color.brc162.decode(ps) orelse return .{ .refused = "not a pool deploy" };
     const p = (pool.parse(tok.lock) catch null) orelse return .{ .refused = "not a pool deploy" };
     if (!std.mem.eql(u8, &p.identity, &identity)) return .{ .refused = "not our pool" };
     const first = t.inputs[0].previous_outpoint;
@@ -107,7 +107,7 @@ pub fn locate(a: std.mem.Allocator, identity: [33]u8, draft: []const u8) !?Locat
         const st = Transaction.parse(a, e.raw orelse continue) catch continue;
         if (st.outputs.len == 0 or st.inputs.len == 0) continue;
         const ps = st.outputs[0].locking_script.bytes;
-        const tok = mandala.brc162.decode(ps) orelse continue;
+        const tok = color.brc162.decode(ps) orelse continue;
         const p = (pool.parse(tok.lock) catch null) orelse continue;
         if (!std.mem.eql(u8, &p.identity, &identity)) continue;
         const first = st.inputs[0].previous_outpoint;

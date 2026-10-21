@@ -282,7 +282,7 @@ describe("PoolTemplate.planSwap: the commission output", () => {
     expect(plan.next.pool.args.commissionBps).toBe(10n);
   });
 
-  it("tokens in, 10 bps: the commission is a 1-sat Mandala output of the token", () => {
+  it("tokens in, 10 bps: the commission is a 1-sat 1Color output of the token", () => {
     const plan = PoolTemplate.planSwap({ pool: poolUtxo(swap1), amountIn: 50_000n, bsvIn: false, userPkh: pkh(taker), commissionPkh: relay });
     expect(plan.swap.commission).toBe(50n);
     expect(plan.outputs).toHaveLength(5);

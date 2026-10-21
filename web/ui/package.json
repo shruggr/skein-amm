@@ -21,7 +21,9 @@
     "@1sat/types": "^0.0.49",
     "@amm-poc/matching-engine": "file:../engine",
     "@bsv/sdk": "^2.8.10",
+    "@ipld/dag-cbor": "^10.0.2",
     "cbor2": "^2.3.0",
+    "cborg": "^6.1.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

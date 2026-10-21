@@ -46,7 +46,7 @@ describe("inventory", () => {
   const deployTx = new Transaction();
   const deployScript = Mandala.deployValue(100_000n, { lock: ADDR, payload: { sym: "GOLD", dec: 2, icon: { mediaType: "image/png", bytes: PNG } } }).lock();
   deployTx.addOutput({ satoshis: 1, lockingScript: deployScript });
-  // A Mandala token's id is `<txid>_0` (BRC-162 Token identification, David 2026-10-07), as the SDK's Mandala.value takes it.
+  // A 1Color token's id is `<txid>_0` (BRC-162 Token identification, David 2026-10-07), as the SDK's Mandala.value takes it.
   const gold = `${deployTx.id("hex")}_0`;
   const goldSdk = gold;
 
@@ -87,7 +87,7 @@ describe("inventory", () => {
     expect(g).toMatchObject({ sym: "GOLD", dec: 2, deployInWallet: true, encodings: ["mandala"] });
   });
 
-  it("a Mandala deploy's icon is the image embedded in it (nothing to resolve)", () => {
+  it("a 1Color deploy's icon is the image embedded in it (nothing to resolve)", () => {
     const icon = byId.get(gold)!.icon!;
     expect(icon.outpoint).toBe(`${deployTx.id("hex")}_0`);
     expect(icon.image?.contentType).toBe("image/png");
@@ -117,14 +117,14 @@ describe("inventory", () => {
     expect(byId.has(T("2"))).toBe(false);
   });
 
-  it("writes every token id `<txid>_<vout>` (David 2026-10-07, BRC-162 Token identification): Mandala and legacy BSV-21 alike, `_0` included", () => {
-    // a Mandala deploy row: `<txid>_0`
+  it("writes every token id `<txid>_<vout>` (David 2026-10-07, BRC-162 Token identification): 1Color and legacy BSV-21 alike, `_0` included", () => {
+    // a 1Color deploy row: `<txid>_0`
     expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: `${T("3")}_0`, role: "deploy", encoding: "mandala" });
-    // a Mandala value row with a 32-byte id: `<txid>_0`
+    // a 1Color value row with a 32-byte id: `<txid>_0`
     const v32 = decodeTokenRow({ outpoint: `${T("a")}.0`, lockingScript: Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex() })!;
     expect(Mandala.decode(LockingScript.fromHex(Mandala.value(goldSdk, 1n, { lock: ADDR }).lock().toHex()))!.idBytes!.length).toBe(32);
     expect(v32).toMatchObject({ tokenId: gold, role: "value", encoding: "mandala" });
-    // a Mandala value row with a 36-byte (legacy, vout > 0) id: `<txid>_<vout>`
+    // a 1Color value row with a 36-byte (legacy, vout > 0) id: `<txid>_<vout>`
     const legacy36 = `${T("7")}_2`;
     expect(decodeTokenRow({ outpoint: `${T("e")}.0`, lockingScript: Mandala.value(legacy36, 3n, { lock: ADDR }).lock().toHex() })).toMatchObject({ tokenId: legacy36, encoding: "mandala" });
     // a BSV-21 JSON row: `<txid>_<vout>`, `_0` included

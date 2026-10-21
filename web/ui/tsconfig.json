@@ -44,6 +44,12 @@
       "cbor2/*": [
         "./node_modules/cbor2/lib/*.d.ts"
       ],
+      "@ipld/dag-cbor": [
+        "./node_modules/@ipld/dag-cbor/dist/src/index.d.ts"
+      ],
+      "cborg": [
+        "./node_modules/cborg/types/cborg.d.ts"
+      ],
       "@bsv/sdk": [
         "./node_modules/@bsv/sdk/dist/types/mod.d.ts"
       ],

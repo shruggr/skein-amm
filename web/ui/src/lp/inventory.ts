@@ -9,7 +9,7 @@
  * customInstructions are the wallet's index, not consulted for amounts.
  *
  * Metadata (sym/dec/icon) comes from a deploy output the wallet holds. A
- * token without one shows id and balance only. A Mandala (binary) deploy's
+ * token without one shows id and balance only. A 1Color (binary) deploy's
  * icon is the image embedded in it (BRC-162 draft bsv-blockchain/BRCs#308:
  * `[mediaType, bytes]`; the pointer forms are gone); a legacy BSV-21 JSON
  * deploy's icon is an outpoint, resolved as before (`resolveIcon`).
@@ -28,7 +28,7 @@ export type TokenEncoding = "mandala" | "bsv21";
 export interface TokenMetadata {
   sym?: string;
   dec?: number;
-  /** Mandala: the image embedded in the deploy; BSV-21 JSON: a `txid_vout` outpoint (or the raw string). */
+  /** 1Color (binary): the image embedded in the deploy; BSV-21 JSON: a `txid_vout` outpoint (or the raw string). */
   icon?: string | MandalaIcon;
 }
 
@@ -165,7 +165,7 @@ export function resolveIcon(outpoint: string, sources: IconSources): IconRef {
 }
 
 /**
- * The icon of a deploy: a Mandala deploy's embedded image, as it is (nothing to resolve); a
+ * The icon of a deploy: a 1Color deploy's embedded image, as it is (nothing to resolve); a
  * BSV-21 JSON deploy's outpoint, resolved from what the wallet holds.
  */
 export function deployIcon(deploy: TokenOutput, sources: IconSources): IconRef | undefined {

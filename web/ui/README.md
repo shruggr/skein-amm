@@ -1,5 +1,17 @@
 # @amm-poc/market-ui
 
+**skein-amm 0.10.0: 1Color names** (skein-1color 0.10.0, BRC-207's wire
+names; David Case, 2026-10-21): every topic, lookup and program name the
+pages use is the new one — `tm_color_<assetId>` and its `-live`,
+`ls_color_<assetId>`, `ls_color`, `tm_color`, `color-topic` /
+`color-lookup` in root's registers, the token list `/color/tokens` — and the
+1Color pages are linked at `color/` (`COLOR_DEPLOY_HREF`). The words say
+1Color where they said Mandala. The SDK's names stay: `@1sat/templates/mandala`
+(`Mandala`, `MandalaIcon`, `MANDALA_MAX_AMOUNT`), the basket
+`mandala <txid> <vout>` and label `mandala` (`src/lp/wallet.ts`), and this
+package's adapter `src/pool/mandala.ts` over it. The history below is
+written in the current names.
+
 **skein-amm 0.9.0: the Open Exchange, wired** (shruggr/skein#147; David
 Case, 2026-10-08/09). The shell (`src/App.tsx`) is the Open Exchange: a
 landing open to all (the hosted tokens, live prices, symbol search) and,
@@ -26,16 +38,16 @@ RemoveLiquidity, the validator picker, "my pools" by lookup, the token
 deploy form, the Validator page's control). Where the text below
 describes those pages, it is history.
 
-Four pages — **Tokens** (the wallet's tokens, Mandala deploy), **Pools**
+Four pages — **Tokens** (the wallet's tokens, 1Color deploy), **Pools**
 (create a pool, my pools, add and remove liquidity), **Swap**, **Validator** (your
 own instance as a validator) — for the AMM. The header shows the
 connected wallet's identity (short), the overlay's host, and links to the
-Mandala pages the app carries (`mandala/deploy/`, `mandala/tokens/`).
+1Color pages the app carries (`color/deploy/`, `color/tokens/`).
 
 Moved from amm-poc `web/ui` (with its matching engine, `../engine`).
 Changed for skein-amm: the build writes `../../www/` (the app's pages,
-committed; `../../scripts/www.sh` builds them and copies the Mandala pages
-into `www/mandala/`); the base URL is the page's own directory
+committed; `../../scripts/www.sh` builds them and copies the 1Color pages
+into `www/color/`); the base URL is the page's own directory
 (`src/lib/config.ts` `appBaseOf`: `https://<handle>.<host>/amm` or
 `<host>/@<handle>/amm`), `VITE_AMM_OVERLAY` overriding it; pool lookups go to
 the one service `ls_amm` with the token in the query (`{tokenId, …}`); the
@@ -45,7 +57,7 @@ deploy.
 
 **skein-amm 0.4.0: liveness is the runtime's read** (shruggr/skein#120,
 #138). Every page that showed `GET <base>/live` now reads, per token topic,
-`GET <base>/.live/tm_mandala_<txid>_0-live` → `[{sender, at, body, from}]` newest first
+`GET <base>/.live/tm_color_<txid>_0-live` → `[{sender, at, body, from}]` newest first
 (404: the instance keeps no liveness for it), decodes each `body` (dag-cbor
 `{identityKey, peerId}`, the beacon's) and keeps the validators within the
 window (`LIVE_WINDOW_MS`, 40 s; `src/lib/overlay.ts` `fetchLive`,
@@ -65,24 +77,24 @@ submit, `POST <base>/submit`, is plain `fetch`, unsigned ("We shouldn't be
 using authfetch for the submit http method").
 
 **skein-amm 0.8.0: BRC-207 topic names and embedded icons** (David Case,
-2026-10-08; skein-mandala 0.9.0): a token's topic is `tm_mandala_<assetId>`,
-the asset id `<txid>_<vout>`, `_0` included, so a Mandala token's is
-`tm_mandala_<txid>_0` and its liveness topic `tm_mandala_<txid>_0-live`; 0.7.2's
-`tm_<txid>_0` is no topic (no alias). A Mandala deploy's icon is the image
+2026-10-08; skein-1color 0.9.0): a token's topic is `tm_color_<assetId>`,
+the asset id `<txid>_<vout>`, `_0` included, so a 1Color token's is
+`tm_color_<txid>_0` and its liveness topic `tm_color_<txid>_0-live`; 0.7.2's
+`tm_<txid>_0` is no topic (no alias). A 1Color deploy's icon is the image
 embedded in it (BRC-162 draft bsv-blockchain/BRCs#308, `[mediaType,
 bytes]`): the Tokens page shows it, and the deploy form embeds an uploaded
 image or a picked ordinal's bytes (below, "Deploy"). **skein-amm 0.7.2: topic names** (David, 2026-10-08: "that was the decision
-all along"; skein-mandala 0.8.2): a token's topic was `tm_<tokenId>`. The pool deploy
+all along"; skein-1color 0.8.2): a token's topic was `tm_<tokenId>`. The pool deploy
 and the remove-liquidity submit name the token's topic from its full id
 (`src/lp/poolDeploy.ts`, `src/lp/removeLiquidity.ts`), and `parseTokenTopic`
-(`src/lib/overlay.ts`) takes `tm_mandala_<txid>_<vout>` only.
+(`src/lib/overlay.ts`) takes `tm_color_<txid>_<vout>` only.
 
 **skein-amm 0.7.1: one token id form** (David, 2026-10-07, shruggr/skein#120;
-supersedes 0.6.3's bare txid): every token id, Mandala and legacy BSV-21
+supersedes 0.6.3's bare txid): every token id, 1Color and legacy BSV-21
 alike, is `<txid>_<vout>`, `_0` included, as BRC-162 "Token identification"
 writes it; the bare 32-byte txid is the wire form only. The pages, the
 wallet's filings and `ls_amm` queries carry the same string
-(`src/lib/tokenId.ts`), so the pages no longer read `/mandala/tokens` to
+(`src/lib/tokenId.ts`), so the pages no longer read `/color/tokens` to
 learn a token's origin.
 
 **skein-amm 0.8.1: market and validator always; the page base at the
@@ -111,7 +123,7 @@ messages and reads; read "the owner" below as root. Gone: the genesis
 David, 2026-10-07: "this shouldn't have been a config in the manifest. This
 should be a setting that the user is configuring"). The manifest sets
 neither; the owner turns each on with the Market and Validator switches on
-the Token topics page (`mandala/tokens/`, skein-mandala 0.7.3: `{fn:
+the Token topics page (`color/tokens/`, skein-1color 0.7.3: `{fn:
 "market" | "validator", …}` to `amm/register`), or `--config` at install.
 The Validator page's Policy shows the roles in effect, read as the engine
 reads them: the switch kept in `amm/topics` over the app record's
@@ -123,7 +135,7 @@ market on".
 David 2026-10-06 evening). Registering a token's topic (the Tokens page) is
 the one act: with `config.overlay.market {window}` the engine asks for the
 topic's liveness, with `config.overlay.validator {every}` it beacons
-`tm_mandala_<txid>_0-live`, and amm-validator signs for every registered token. The
+`tm_color_<txid>_0-live`, and amm-validator signs for every registered token. The
 beat has no body: `parseLiveBeats` takes the validator's identity from each
 entry's `sender` and its peer ID from `from`. The Validator page has no
 buttons any more — no "Start / Stop heartbeat" (amm-p2p takes no start or
@@ -187,7 +199,7 @@ untracked, or the environment):
 | variable | default | what |
 |---|---|---|
 | `VITE_AMM_OVERLAY` | the page's own directory (`appBaseOf`) | the AMM app's base URL (every page); its origin is the instance (messagebox, `/.well-known/auth`, `/explore`). Set it for a dev server on another origin |
-| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_mandala_<txid>_0-live` reads (0.4.0); unset disables |
+| `VITE_AMM_PEER_OVERLAY` | (none) | another node's AMM base URL: the Validator page reads this instance's liveness and peer ID from its `.live/tm_color_<txid>_0-live` reads (0.4.0); unset disables |
 | `VITE_AMM_REFRESH_MS` | `10000` | the Swap page's refresh |
 | `VITE_FEE_RATE` | `100` | the swap's miner fee rate, sats per 1000 bytes: the funding output carries `ceil(size × rate / 1000)` for the final swap (below, "Funding") |
 
@@ -287,7 +299,7 @@ and matching engine", "UI and deployment", "Commission fee (decided
 ```
 npm ci
 npm run dev        # local dev server
-npm run build       # typecheck, then ../../www/ (the Mandala pages: ../../scripts/mandala-pages.sh after it)
+npm run build       # typecheck, then ../../www/ (the 1Color pages: ../../scripts/color-pages.sh after it)
 npm test            # vitest run
 npm run typecheck
 ```
@@ -314,11 +326,11 @@ server on another origin calls it cross-origin. Plain
 `LookupResolver` drops freeform answers and `TopicBroadcaster` refuses topic
 names like `tm_<64 hex>` before sending anything.
 
-Names (skein-mandala docs/MANDALA.md): a token's topic is `tm_mandala_<assetId>`,
-the asset id `<txid>_<vout>` always (0.8.0, skein-mandala 0.9.0, BRC-207;
+Names (skein-1color docs/1COLOR.md): a token's topic is `tm_color_<assetId>`,
+the asset id `<txid>_<vout>` always (0.8.0, skein-1color 0.9.0, BRC-207;
 David Case 2026-10-08): a token deployed at output 0 is topic
-`tm_mandala_<txid>_0`, a BRC-161 token deployed at a non-zero output
-`tm_mandala_<txid>_<vout>`; the old `tm_<txid>_<vout>` is no topic. The pages write
+`tm_color_<txid>_0`, a BRC-161 token deployed at a non-zero output
+`tm_color_<txid>_<vout>`; the old `tm_<txid>_<vout>` is no topic. The pages write
 every token id `<txid>_<vout>`, `_0` included (BRC-162 "Token
 identification"; 0.7.1, David 2026-10-07), and
 show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
@@ -364,7 +376,7 @@ the ones the owner registered with the engine (`/listTopicManagers`).
      three fees, amount out).
    - **Commission.** `ceil(amountIn × CommissionBps / 10000)` in the input
      asset (sats in: a P2PKH output of that many sats; tokens in: a 1-sat
-     Mandala output), the last output, paid to `commissionPkh`. The relay's
+     1Color output), the last output, paid to `commissionPkh`. The relay's
      pkh when it names one. When it names none (a user running their own
      overlay) and the pool's CommissionBps is nonzero, the commission is the
      taker's own: a key derived as for a payout in that asset — sats: a
@@ -379,7 +391,7 @@ the ones the owner registered with the engine (`/listTopicManagers`).
      keyID: "<tokenId>-<hex>", counterparty: "self", forSelf: true})`. Sats
      out: `getPublicKey({identityKey: true})`, then the BRC-29 key
      ("BRC-29 payouts" below).
-   - Token → sats only: token inputs are Mandala value outputs of the token
+   - Token → sats only: token inputs are 1Color value outputs of the token
      from the `bsv21` basket adding up to **exactly** the leg's amount (else
      "Not built: token split"); `listOutputs({basket: "mandala <txid> 0",
      include: "entire transactions"})` and `listOutputs({basket: "bsv21",
@@ -387,7 +399,7 @@ the ones the owner registered with the engine (`/listTopicManagers`).
      source transactions.
    - **Funding.** The exact amount is Σ contract outputs − pool sats − token
      inputs' sats (sats in: amount in + 1 sat for the token payout, the fees
-     and the commission being part of amount in; tokens in: 1 sat per Mandala
+     and the commission being part of amount in; tokens in: 1 sat per 1Color
      fee or commission output − the token inputs' sats) plus the miner fee: the final swap's size (pool input at
      `PoolTemplate.maxCallUnlockLength`, i.e. with the validator's
      signature; 108 bytes per P2PKH input; the contract's outputs; no change)
@@ -533,7 +545,7 @@ src/
   pool/
     pool.artifact.json  Pool contract artifact, dumped from pool/dump_test.go (see below)
     template.ts          PoolTemplate: decode, lockDeploy, swap / addLiquidity / removeLiquidity, signPoolInput
-    mandala.ts          the Mandala prefix for template.ts, a thin adapter over 1sat-sdk's Mandala
+    mandala.ts          the 1Color prefix for template.ts, a thin adapter over 1sat-sdk's Mandala
     artifact.ts          the artifact typed as runar-sdk's RunarArtifact, method indices
     runar-ir-schema.ts   runar-ir-schema's barrel minus its node-only validators (see below)
     index.ts             the module's exports
@@ -542,7 +554,7 @@ src/
     inventory.ts        decode (Mandala, else BSV21 JSON), group by token id, sum, icons
     ordinals.ts         image ordinals as icon candidates (the outpoint holding the bytes)
     images.ts           image bytes from an inscription or a B file
-    deploy.ts           the Mandala deploy createAction (keys, outputs, tags, customInstructions)
+    deploy.ts           the 1Color deploy createAction (keys, outputs, tags, customInstructions)
     amounts.ts          decimals formatting / parsing
     validators.ts       validator picker model: liveness-read rows, BRC-169 handle resolution, raw keys
     poolRows.ts         how a pool held as LP is filed in bsv21 (and why it is no balance / token input)
@@ -578,7 +590,7 @@ src/
 test/
   keys.test.ts          LP/validator key derivation, pinned vector
   pool.test.ts          decode every fixture pool, rebuild the fixture swaps / removal byte for byte, builder refusals
-  mandala.test.ts      Mandala prefix encode/decode
+  mandala.test.ts      1Color prefix encode/decode
   lp.test.ts            inventory grouping, icon resolution, ordinals picker, deploy outputs and
                         customInstructions per icon choice, the wallet calls, decimals
   fixtures/amm-topic-vectors.json  programs/amm-topic fixture transactions (copied, see its _source)
@@ -627,14 +639,14 @@ no overlay is queried and nothing is submitted to one.
 
 - `listOutputs({basket: "bsv21", include: "locking scripts", includeTags,
   includeCustomInstructions})`, and the same for each token's own basket
-  `mandala <txid> <vout>` (where 1sat-sdk files a Mandala token's outputs),
+  `mandala <txid> <vout>` (where 1sat-sdk files a 1Color token's outputs),
   the baskets named by the per-token labels of `listActions({labels:
   ["mandala"], includeLabels: true})`; each script decoded with `Mandala.decode`,
   else the BSV21 inscription template (legacy JSON); grouped by token id,
   amounts summed. The script decides id and amount, not the tags.
-- A deploy output in the wallet gives sym / dec / icon (Mandala payload, or
+- A deploy output in the wallet gives sym / dec / icon (1Color payload, or
   the JSON deploy's fields). Tokens without one show id and balance only.
-- Icons (0.8.0): a Mandala deploy's icon is the image embedded in its
+- Icons (0.8.0): a 1Color deploy's icon is the image embedded in its
   payload (`[mediaType, bytes]`, BRC-162 draft BRCs#308; the pointer forms
   are gone), rendered as it is (an image media type only). A legacy BSV-21
   JSON deploy's icon is an outpoint, looked up as before in the ordinals
@@ -661,7 +673,7 @@ wallet broadcasts). `randomizeOutputs: false`.
   `{amt, op: "deploy+mint" | "deploy+auth", sym, dec, protocolID,
   keyID}`, no `id` (the token id is this outpoint, `<txid>_0`), as
   `deployBsv21Mint` / `deployBsv21Auth` file it.
-- The icon (0.8.0, skein-mandala 0.9.0; BRC-162 draft BRCs#308): embedded in
+- The icon (0.8.0, skein-1color 0.9.0; BRC-162 draft BRCs#308): embedded in
   the payload, `icon: {mediaType, bytes}` (the template writes
   `[mediaType, bytes]`), an uploaded image or a picked ordinal's bytes, at
   most `MAX_INSCRIPTION_BYTES`. One output: no icon output 1, no `icon` in
@@ -706,7 +718,7 @@ peer `16Uiu2HAm6mP7…GwGqq`. Each router resolves only its own instances
 
 **Create a pool** (`poolDeploy.ts`).
 
-- Tokens: Mandala outputs of the token rows (`bsv21` and the `mandala <txid> <vout>` baskets) with a 32-byte id whose
+- Tokens: 1Color outputs of the token rows (`bsv21` and the `mandala <txid> <vout>` baskets) with a 32-byte id whose
   customInstructions name the wallet key — value outputs, and a fixed-supply
   deploy output (amm-topic's fixture pool deploy spends the deploy output
   itself). Legacy tokens (BRC-161 deploy: 36-byte id or JSON form) are hidden
@@ -794,7 +806,7 @@ counterparty: "self", amm: {role: "lp", validatorIdentity, lpFeeBps,
 validatorFeeBps, commissionBps}}` with **no `amt`**: 1sat-sdk's `sendBsv21` selection and
 its balances skip rows without an amount (with `amt: "0"` sendBsv21 would
 still select it), so the pool is never spent as an ordinary token. The
-script starts with a Mandala value prefix, so this page's own inventory,
+script starts with a 1Color value prefix, so this page's own inventory,
 `tokenInputsOf` (Swap) and the pool form skip `amm-pool` rows explicitly
 (`src/lp/poolRows.ts`). Token change: `bsv21`, `bsv21:<tokenId>`, transfer
 customInstructions (as 1sat-sdk's transferBsv21 files a self output).
@@ -826,14 +838,14 @@ it, so the funding is broadcast at once (no nosend):
    <pool outpoint>, expires}}}], options: {randomizeOutputs: false,
    acceptDelayedBroadcast: false}})`: the wallet signs and broadcasts it.
    Exact amount (`swapFunding` over the plan): Σ contract outputs − pool
-   sats (1 per Mandala token withdrawal) + the remove's fee at the rate.
+   sats (1 per 1Color token withdrawal) + the remove's fee at the rate.
 4. **Remove**, built by the page: inputs pool (`callUnlock`, `_changeAmount
    = 0`; LP slot via `createSignature` under the LP key, `signPoolInput`),
    funding (`createSignature` + `getPublicKey`); outputs exactly the
    contract's. Both inputs checked with `Spend`. The sats withdrawal is
    recorded under Pending payouts before submitting.
 5. `POST <base>/submit`, body the remove's AtomicBEEF (the funding as its
-   unproven parent, the pool's ancestry), `x-topics: tm_mandala_<txid>_0`; plain
+   unproven parent, the pool's ancestry), `x-topics: tm_color_<txid>_0`; plain
    `fetch`, unsigned (0.6.3: AuthFetch refuses `x-topics`; the front door
    takes the submit unsigned).
 6. `internalizeAction({tx: that BEEF, outputs: [continuation (basket
@@ -890,7 +902,7 @@ and after.
    {signAndProcess: false, randomizeOutputs: false, noSend: true}})`,
    `signAction({reference, spends: {}, options: {noSend: true}})`. Exact
    amount (`swapFunding` over the plan): addBsv − the token inputs' sats (no
-   Mandala output besides the pool, so their 1 sat each goes to the miner) +
+   1Color output besides the pool, so their 1 sat each goes to the miner) +
    ceil(size × `VITE_FEE_RATE` / 1000), the size with the validator's
    signature in. `expires` = now + 2 min.
 4. **Add**, built by the page: inputs pool (`callUnlock`, `_changeAmount =
@@ -1022,7 +1034,7 @@ page says so with the lookup's pool count.
 **Peers.** The validators this node sees on its own `/amm/live`, the
 validator picker's table (`src/pages/LiveTable.tsx`, shared).
 
-## Mandala from the local 1sat-sdk checkout
+## The `Mandala` template from the local 1sat-sdk checkout
 
 `Mandala` (BRC-162) was not in a published `@1sat/templates` when amm-poc
 was written (draft PR b-open-io/1sat-sdk#82). Like
@@ -1037,7 +1049,14 @@ unpublished embedded icon, b-open-io/1sat-sdk#92 (branch
 `vite build` and the tests, and the typecheck with `paths` pointed there
 (a temporary tsconfig extending this one; `tsconfig.json` itself still names
 `~/Work/bsv/1sat-sdk`). Before 0.8.0, with its master at 183c0ce3. Its DAG-CBOR payload code imports `cbor2`, a dependency
-here, deduped with `@bsv/sdk` so the checkout needs no `node_modules`.
+here, deduped with `@bsv/sdk` so the checkout needs no `node_modules`; since
+0.10.0 also `@ipld/dag-cbor` and `cborg` (the template imports them at
+aff025c3 and on master), dependencies here, deduped (vite.config.ts) and
+mapped (tsconfig.json `paths`) the same way. 0.10.0's `www/` and tests used
+that commit again, from a detached worktree of it (`git worktree add
+--detach <dir> aff025c3`, `ONESAT_SDK_DIR=<dir>`); 1sat-sdk master
+(20947539) takes the icon as an outpoint, not `[mediaType, bytes]`, so
+`test/lp.test.ts`'s embedded-icon cases and the typecheck fail against it.
 `src/pool/mandala.ts` adapts it for the pool template; there is no second
 decoder. Once published, drop the alias and import from `@1sat/templates`.
 
@@ -1085,7 +1104,7 @@ tree-shakes it out.
 
 `PoolTemplate` (src/pool/template.ts), independent of React:
 
-- `decode(script)`: the Mandala value prefix (32-byte id, no payload), the
+- `decode(script)`: the 1Color value prefix (32-byte id, no payload), the
   artifact match with its constructor slots (runar-sdk `matchesArtifact`,
   `extractConstructorArgs`), the state (`extractStateFromScript`); requires
   prefix id == assetId and prefix amount == TokenReserve. Null otherwise.
@@ -1106,9 +1125,9 @@ tree-shakes it out.
   last (pool/pool_test.go, programs/amm-topic/gen).
 
 `RunarContract.prepareCall` is not used: it needs a Provider to pick funding,
-sets the fee from a rate, and builds the continuation without the Mandala
-prefix. `mandala.ts` adapts 1sat-sdk's `Mandala` (above, "Mandala from the
-local 1sat-sdk checkout").
+sets the fee from a rate, and builds the continuation without the 1Color
+prefix. `mandala.ts` adapts 1sat-sdk's `Mandala` (above, "The `Mandala` template from
+the local 1sat-sdk checkout").
 
 ## `pool.artifact.json`
 

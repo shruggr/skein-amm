@@ -109,7 +109,7 @@ describe("pool deploy: plan", () => {
     expect(plan.lpKeyId).toBe(`YW1tLWxw ${Utils.toBase64(Utils.toArray(`${DEPLOY_TXID}_0`, "utf8"))}`);
     expect(legacyLpKeyId(`${DEPLOY_TXID}.0`)).toBe(`amm-lp-${DEPLOY_TXID}_0`);
     expect(plan.args.assetId).toBe(Utils.toHex(tokenDeploy.hash() as number[]));
-    expect(plan.topic).toBe(`tm_mandala_${DEPLOY_TXID}_0`);
+    expect(plan.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
     expect(plan.price).toBe("0.2");
     expect(PoolTemplate.decode(plan.lockingScript)!.state).toEqual(plan.state);
   });
@@ -143,7 +143,7 @@ describe("pool deploy: plan", () => {
   it("legacy tokens are hidden; pool rows are never token inputs nor balance", () => {
     const legacyId = Array.from({ length: 36 }, (_, i) => i);
     const lock = new P2PKH().lock(lpKey.toAddress()).toHex();
-    // Mandala value prefix with a 36-byte id: <push36 id> <push amount 5> OP_2DROP.
+    // 1Color value prefix with a 36-byte id: <push36 id> <push amount 5> OP_2DROP.
     const legacy: BasketRow = { outpoint: `${"cd".repeat(32)}.1`, satoshis: 1, lockingScript: "24" + Utils.toHex(legacyId) + "55" + "6d" + lock, customInstructions: JSON.stringify({ protocolID: P1SAT, keyID: "k" }) };
     const poolRow: BasketRow = {
       outpoint: `${poolDeploy.id("hex")}.0`,
@@ -595,7 +595,7 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
     expect(s.tokenAmount).toBe(base.state.tokenReserve);
     expect(s.payout).toEqual({ outputIndex: 0, satoshis: Number(sats), lockingScript: tx.outputs[0]!.lockingScript.toHex(), remittance: { derivationPrefix, derivationSuffix, senderIdentityKey: side.identityKey } });
     expect(JSON.parse(s.tokens.customInstructions)).toMatchObject({ id: SDK_ID, amt: String(base.state.tokenReserve), op: "transfer", protocolID: BRC29, keyID: lpRef.keyID });
-    expect(s.topic).toBe(`tm_mandala_${DEPLOY_TXID}_0`);
+    expect(s.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
 
     const before = calls.length;
     const c = await completeClose(wallet, s, `${DEPLOY_TXID}.0`);
@@ -637,7 +637,7 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
     expect(b.calls).toEqual([]);
   });
 
-  it("the submit (BRC-22, plain fetch): the STEAK, or nothing decided (503); awaitAdmitted asks ls_mandala", async () => {
+  it("the submit (BRC-22, plain fetch): the STEAK, or nothing decided (503); awaitAdmitted asks ls_color", async () => {
     const { wallet } = fakeWallet(3, honest());
     const s = await prepareClose({ wallet, tokenId: TOKEN_ID, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: 1_000n, satsPerKb: RATE });
     const STEAK = { [s.topic]: { outputsToAdmit: [1], coinsToRetain: [], coinsRemoved: [0] } };
@@ -646,7 +646,7 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
       seen.push({ url, init });
       if (url.endsWith("/submit")) return new Response(JSON.stringify(STEAK), { status: 200 });
       const q = JSON.parse(init.body as string) as { service: string; query: { txid: string; outputIndex: number } };
-      const found = q.service === "ls_mandala" && q.query.txid === s.txid && seen.length > 2;
+      const found = q.service === "ls_color" && q.query.txid === s.txid && seen.length > 2;
       return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: q.query.outputIndex }] : [] }), { status: 200 });
     }) as unknown as SignedFetch["fetch"];
     const r = await submitToOverlay("http://x/amm", s.topic, s.beef, fetchFn as never);
@@ -660,8 +660,8 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
   });
 });
 
-describe("token rows: the token's own basket (1sat-sdk's Mandala filing) and bsv21", () => {
-  it("loadWalletAssets lists every `mandala <txid> <vout>` basket named by a `mandala`-labelled action; a fresh Mandala deploy is poolable", async () => {
+describe("token rows: the token's own basket (1sat-sdk's 1Color filing) and bsv21", () => {
+  it("loadWalletAssets lists every `mandala <txid> <vout>` basket named by a `mandala`-labelled action; a fresh 1Color deploy is poolable", async () => {
     const asked: unknown[] = [];
     const ownRow = { ...deployRow, outpoint: `${DEPLOY_TXID}.0` };
     const wallet = {

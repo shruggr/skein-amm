@@ -2,13 +2,13 @@
 //! recognising a pool, parsing its readonly args and state, and the pool
 //! checks. A shared library of this app's programs (shruggr/skein#120: it
 //! moved here from amm-poc's amm-topic, whose token rules became
-//! skein-mandala's topic manager). The Mandala topic does NOT run these checks
+//! skein-1color's topic manager). The 1Color topic does NOT run these checks
 //! (decided 2026-10-01: the topic is the token's topic, and a malformed pool
 //! is still a valid token output, admitted when the BSV-21 rules allow it).
 //! amm-lookup runs `check` in its `admitted` hook and indexes only the
 //! pools that pass; amm-validator runs it before signing; amm-p2p's relay
 //! checks a pair with it. The parser and the rules (`brc162`, `bsv21`) are
-//! skein-mandala's `mandala` module, re-exported below.
+//! skein-1color's `1color` module, re-exported below.
 //!
 //! A pool is a BRC-162 value output whose lock (the script after the prefix)
 //! is the compiled Pool code followed by `OP_RETURN` and the state:
@@ -37,12 +37,12 @@
 //! functions.
 const std = @import("std");
 const c = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const artifact = @import("fixtures/pool_artifact.zig");
 
-/// The decoder and the rules this file is written over (skein-mandala's `mandala` module).
-pub const brc162 = mandala.brc162;
-pub const bsv21 = mandala.bsv21;
+/// The decoder and the rules this file is written over (skein-1color's `1color` module).
+pub const brc162 = color.brc162;
+pub const bsv21 = color.bsv21;
 
 const bsvz = c.bsvz;
 

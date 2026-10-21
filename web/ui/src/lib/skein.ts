@@ -4,14 +4,14 @@
  *
  * - **A message to a box** (`sendMessage`): the BRC-104-signed `POST
  *   <instance>/sendMessage`, BRC-231 CBOR `{message: {recipient, messageBox,
- *   body}}` — what `skein send`, skein-mandala's Token topics page and any
+ *   body}}` — what `skein send`, skein-1color's Token topics page and any
  *   BRC-100 wallet send (skein docs/MESSAGES.md "The messagebox"). `body` is
  *   dag-cbor. The instance is the AMM base's origin (or its `/@<handle>`
  *   prefix); the recipient its identity key. Root's register messages
  *   (`amm/register`) and a holder's listing request (`amm/requests`).
  * - **The reads** (no signature; nothing logged): `GET <base>/requests` (the
  *   holders' listing requests), `GET <base>/spends?outpoint=` (the chain
- *   state of an outpoint), `GET <base>/mandala/tokens` (the token list), and
+ *   state of an outpoint), `GET <base>/color/tokens` (the token list), and
  *   the liveness read `GET <base>/.live/<topic>` (each sender's latest beat:
  *   a lookup service's beat body is its own, skein-overlay 0.12.0).
  */
@@ -91,7 +91,7 @@ export async function readSpend(base: string, outpoint: string, fetchFn: typeof 
   return (await getJson(`${base}/spends?outpoint=${encodeURIComponent(outpoint)}`, fetchFn)) as Spend;
 }
 
-/** A token of the list (`GET <base>/mandala/tokens`, skein-mandala): its id, topic and metadata. */
+/** A token of the list (`GET <base>/color/tokens`, skein-1color): its id, topic and metadata. */
 export interface ListedToken {
   tokenId: string;
   topic: string;
@@ -101,13 +101,13 @@ export interface ListedToken {
 }
 
 export async function readTokenList(base: string, fetchFn: typeof fetch = fetch): Promise<ListedToken[]> {
-  const a = await getJson(`${base}/mandala/tokens?limit=1000`, fetchFn);
+  const a = await getJson(`${base}/color/tokens?limit=1000`, fetchFn);
   const list = Array.isArray(a) ? a : a && typeof a === "object" && Array.isArray((a as { tokens?: unknown }).tokens) ? (a as { tokens: unknown[] }).tokens : [];
   return (list as Record<string, unknown>[])
     .filter((t) => typeof t.tokenId === "string")
     .map((t) => ({
       tokenId: String(t.tokenId),
-      topic: typeof t.topic === "string" ? t.topic : `tm_mandala_${String(t.tokenId)}`,
+      topic: typeof t.topic === "string" ? t.topic : `tm_color_${String(t.tokenId)}`,
       ...(typeof t.sym === "string" ? { sym: t.sym } : {}),
       ...(typeof t.dec === "number" ? { dec: t.dec } : typeof t.dec === "string" && /^\d+$/.test(t.dec) ? { dec: Number(t.dec) } : {}),
       ...(typeof t.icon === "string" ? { icon: t.icon } : {}),

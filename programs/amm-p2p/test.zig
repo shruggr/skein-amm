@@ -129,7 +129,7 @@ test "proofs by block: the direct call's request and reply; one BUMP per block" 
     }));
 
     // Restricted to the topic: only t1.
-    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_mandala_" ++ "ab" ** 32 ++ "_0" })))).?;
+    const rt = (try proofs.decodeReply(a, try proofs.serve(a, f.held(), try proofs.encodeRequest(a, .{ .block_hash = f.hash, .topic = "tm_color_" ++ "ab" ** 32 ++ "_0" })))).?;
     const pt = try w.merkle.MerklePath.parse(a, rt);
     try testing.expect(w.beef.bumpHas(pt, t[1]));
     try testing.expect(!w.beef.bumpHas(pt, t[3]));
@@ -158,8 +158,8 @@ test "catch-up plan" {
 
 }
 
-test "names: tm_mandala_<txid>_0 and tm_mandala_<txid>_0-live (BRC-207), parsed here" {
-    const o = "tm_mandala_" ++ "ab" ** 32 ++ "_0";
+test "names: tm_color_<txid>_0 and tm_color_<txid>_0-live (BRC-207), parsed here" {
+    const o = "tm_color_" ++ "ab" ** 32 ++ "_0";
     const t = names.parse(o).?;
     try testing.expectEqual(names.Kind.overlay, t.kind);
     try testing.expectEqualSlices(u8, &([_]u8{0xab} ** 32), &t.id);
@@ -174,17 +174,20 @@ test "names: tm_mandala_<txid>_0 and tm_mandala_<txid>_0-live (BRC-207), parsed 
     try testing.expect(names.parse(o ++ "-admit") == null);
     try testing.expect(names.parse("tm_amm_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse(o ++ "_live") == null);
-    try testing.expect(names.parse("tm_mandala_" ++ "AB" ** 32 ++ "_0") == null);
+    try testing.expect(names.parse("tm_color_" ++ "AB" ** 32 ++ "_0") == null);
     try testing.expect(names.parse(o ++ "_0") == null);
-    // The old `tm_<txid>_0` is no topic (skein-mandala 0.9.0: no alias), nor its `-live`; nor the
+    // The old `tm_<txid>_0` is no topic (skein-1color 0.9.0: no alias), nor its `-live`; nor the
     // discovery topic, nor the bare `tm_<txid>`.
     try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "_0") == null);
     try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "_0-live") == null);
-    try testing.expect(names.parse("tm_mandala") == null);
-    try testing.expect(names.parse("tm_mandala_" ++ "ab" ** 32) == null);
+    try testing.expect(names.parse("tm_color") == null);
+    try testing.expect(names.parse("tm_color_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse("tm_" ++ "ab" ** 32) == null);
     try testing.expect(names.parse("tm_" ++ "ab" ** 32 ++ "-live") == null);
     try testing.expect(names.parse("tm_abcd-live") == null);
+    // The names before BRC-207's wire names (skein-1color 0.10.0, 2026-10-21): no alias.
+    try testing.expect(names.parse("tm_mandala_" ++ "ab" ** 32 ++ "_0") == null);
+    try testing.expect(names.parse("tm_mandala_" ++ "ab" ** 32 ++ "_0-live") == null);
     try testing.expectEqualStrings("/amm/proofs/1.0.0", names.proofs_protocol);
 }
 
@@ -293,7 +296,7 @@ const scbor = @import("sdk_cbor");
 const dagjson = @import("dagjson");
 const message = @import("message");
 const manifest_json = @import("app_manifest").json;
-const mandala = @import("mandala");
+const color = @import("1color");
 const pool_lib = @import("pool");
 const vec = @import("vectors");
 const Transaction = bsvz.transaction.Transaction;
@@ -422,7 +425,7 @@ fn buildPairWith(a: Allocator, o: PairOpts) !Pair {
     } });
     s.inputs = sins;
     s.outputs = outs;
-    const lock = mandala.brc162.decode(pd.outputs[0].locking_script.bytes).?.lock;
+    const lock = color.brc162.decode(pd.outputs[0].locking_script.bytes).?.lock;
     const pre = try bsvz.transaction.sighash.formatPreimage(a, &s, 0, Script.init(lock[2..]), @intCast(pool_sats), 0x41);
     // The pool call, push by push (_codePart, validatorSig, nextValidatorPubKey, amountIn, bsvIn, userPkh,
     // commissionPkh, _changePKH, _changeAmount, txPreimage, methodIndex): the slot empty, the commission's pkh,
@@ -432,7 +435,7 @@ fn buildPairWith(a: Allocator, o: PairOpts) !Pair {
     var i: usize = 0;
     var script: std.ArrayList(u8) = .empty;
     while (pos < u.len) : (i += 1) {
-        const p = mandala.brc162.readPush(u, pos).?;
+        const p = color.brc162.readPush(u, pos).?;
         const raw = u[pos..p.next];
         try script.appendSlice(a, switch (i) {
             1 => &.{0}, // validatorSig: the slot, empty
@@ -493,7 +496,7 @@ test "relay: a pair from the fixtures (the funding transaction pays the swap's i
     // A pool charging no commission has no commission output: our check passes.
     {
         var s = try Transaction.parse(a, other.swap);
-        const lock = mandala.brc162.decode(s.outputs[0].locking_script.bytes).?.lock;
+        const lock = color.brc162.decode(s.outputs[0].locking_script.bytes).?.lock;
         // CommissionBps (template offset 626) sits at 627 in the lock (the pool test of the slot, test.zig), as OP_10.
         const at = s.outputs[0].locking_script.bytes.len - lock.len + 627;
         try testing.expectEqual(@as(u8, 0x5a), s.outputs[0].locking_script.bytes[at]);
@@ -1068,14 +1071,14 @@ fn lpPkh() ![20]u8 {
 
 /// A pool output: the fixture pool's code and fees, its state replaced (reserve, ValidatorPubKey), the prefix rewritten to match.
 fn poolScript(a: Allocator, fixture: []const u8, reserve: u64, validator_key: [33]u8) ![]u8 {
-    const tok = mandala.brc162.decode(fixture).?;
+    const tok = color.brc162.decode(fixture).?;
     const lock = try a.dupe(u8, tok.lock);
     const st = lock[lock.len - pool_lib.state_len ..];
     std.mem.writeInt(u64, st[0..8], reserve, .little);
     @memcpy(st[8 + 33 ..][0..33], &validator_key);
     var ib: [37]u8 = undefined;
     var ab: [10]u8 = undefined;
-    return std.mem.concat(a, u8, &.{ mandala.brc162.pushId(&ib, tok.id.?), mandala.brc162.pushAmount(&ab, reserve), &.{0x6d}, lock });
+    return std.mem.concat(a, u8, &.{ color.brc162.pushId(&ib, tok.id.?), color.brc162.pushAmount(&ab, reserve), &.{0x6d}, lock });
 }
 
 fn rawEntry(raw: []const u8) w.beef.Entry {
@@ -1210,10 +1213,10 @@ test "pool relay: a deploy from the fixtures (the funding pays the pool's sats e
     {
         var t = try Transaction.parse(a, d.deploy);
         const outs = try a.dupe(bsvz.transaction.Output, t.outputs);
-        const tok = mandala.brc162.decode(outs[0].locking_script.bytes).?;
+        const tok = color.brc162.decode(outs[0].locking_script.bytes).?;
         var ib: [37]u8 = undefined;
         var ab: [10]u8 = undefined;
-        outs[0].locking_script = Script.init(try std.mem.concat(a, u8, &.{ mandala.brc162.pushId(&ib, tok.id.?), mandala.brc162.pushAmount(&ab, 999), &.{0x6d}, tok.lock }));
+        outs[0].locking_script = Script.init(try std.mem.concat(a, u8, &.{ color.brc162.pushId(&ib, tok.id.?), color.brc162.pushAmount(&ab, 999), &.{0x6d}, tok.lock }));
         t.outputs = outs;
         const raw = try t.serialize(a);
         const b = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{ rawEntry(d.pool_deploy), rawEntry(d.funding), rawEntry(raw) }) });
@@ -1508,10 +1511,11 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
     for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
     try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
-    try testing.expectEqualStrings("mandala-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
+    try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
     try testing.expectEqualStrings("amm-p2p.requests", scbor.Value.str(filters.get("requests")).?);
     try testing.expectEqualStrings("amm-p2p.spends", scbor.Value.str(filters.get("spends")).?);
     var seen: u8 = 0;
+    var seen_tokens = false;
     for (m.get("routes").?.array) |r| {
         try testing.expect(r.get("sender") == null and r.get("program") == null);
         const t = scbor.Value.str(r.get("transport")) orelse "mailbox";
@@ -1552,8 +1556,15 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
         }
         // No addLiquidity (0.9.0).
         try testing.expect(!std.mem.eql(u8, addr, "/amm-validator/1/addLiquidity"));
+        // The token list is /color/tokens (0.10.0, skein-1color 0.10.0); no /mandala/tokens.
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/color/tokens")) {
+            try testing.expectEqualStrings("tokens", scbor.Value.str(r.get("filters").?.array[0]).?);
+            seen_tokens = true;
+        }
+        try testing.expect(!std.mem.eql(u8, addr, "/mandala/tokens"));
     }
     try testing.expectEqual(@as(u8, 255), seen);
+    try testing.expect(seen_tokens);
     try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
 }
 
@@ -1583,7 +1594,7 @@ test "listing requests (0.9.0): a holder's request is recorded (the latest per t
     try testing.expectEqualSlices(u8, &other, all[0].from);
     try testing.expectEqualStrings(t2 ++ "_0", all[1].token_id);
     // Registered: settled, not listed.
-    const left = try reads.list(a, s, rec, &.{"tm_mandala_" ++ t1 ++ "_0"});
+    const left = try reads.list(a, s, rec, &.{"tm_color_" ++ t1 ++ "_0"});
     try testing.expectEqual(@as(usize, 1), left.len);
     try testing.expectEqualStrings(t2 ++ "_0", left[0].token_id);
     const json = try reads.requestsJson(a, left);

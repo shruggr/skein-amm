@@ -3,7 +3,7 @@
  * copy button that copies the whole value. David, 2026-10-08: "anytime we
  * show a token ID or a transaction ID anywhere in the site ever, it has to be
  * expandable so we can copy the whole thing or needs to have an explicit copy
- * button." As skein-mandala 0.7.4's `<Id>` (its pages in www/mandala/): each
+ * button." As skein-1color 0.7.4's `<Id>` (its pages in www/color/): each
  * txid shortened to its first and last 8; "copied" for 1.5 s, on a refused
  * clipboard "not copied" and the id shown whole; no alert. Outpoints show and
  * copy as `<txid>.<vout>`, token ids as `<txid>_<vout>` (src/lib/tokenId.ts).
@@ -14,7 +14,7 @@ import { useState } from "react";
 import { outpointText, parseTokenId, sdkTokenId, shortOutpoint, shortTokenId } from "../lib/tokenId";
 
 /**
- * A topic is a name carrying a token's id (`tm_mandala_<txid>_<vout>`, `tm_mandala_<txid>_0` included).
+ * A topic is a name carrying a token's id (`tm_color_<txid>_<vout>`, `tm_color_<txid>_0` included).
  * A key is an identity or validator key (66 hex), shortened to its first and last 8.
  */
 export type IdKind = "txid" | "token" | "outpoint" | "topic" | "key";

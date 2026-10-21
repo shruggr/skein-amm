@@ -2,8 +2,8 @@
 
 The AMM pool liquidity lookup service, `ls_amm`: a lookup service on
 skein-overlay 0.6.0's lookup contract (the `lookup` module). One service over
-every Mandala token topic the overlay serves (`tm_mandala_<txid>_<vout>`, judged by
-skein-mandala's topic manager: plain BRC-162 rules, no AMM knowledge). It
+every 1Color token topic the overlay serves (`tm_color_<txid>_<vout>`, judged by
+skein-1color's topic manager: plain BRC-162 rules, no AMM knowledge). It
 judges which admitted outputs are pools worth indexing by running the pool
 checks (`src/pool.zig`, the `pool` module), keeps an index of the unspent
 ones that pass, per token, and answers the matching engine's inventory
@@ -36,13 +36,13 @@ A pool is **listed** only while both its contract output and its claim output ar
 
 ## Names
 
-A query names its token with `tokenId`, in any of skein-mandala 0.4.0's forms
-(the `mandala` module's `name.tokenIdOfString`): `<txid>`, `<txid>_<vout>` or
+A query names its token with `tokenId`, in any of skein-1color 0.4.0's forms
+(the `1color` module's `name.tokenIdOfString`): `<txid>`, `<txid>_<vout>` or
 `<txid>.<vout>`. `<txid>`, `<txid>_0` and `<txid>.0` all name the token at
-output 0 and its topic `tm_mandala_<txid>_0` (skein-mandala 0.8.2: the topic is
-`tm_mandala_<assetId>`, `_0` included); `<txid>_<vout>` with a non-zero vout
-names `tm_mandala_<txid>_<vout>` (a BRC-161 token). Any other id is refused. A hook
-for a topic that is not a token's (`tm_mandala`) does nothing. A pool
+output 0 and its topic `tm_color_<txid>_0` (skein-1color 0.8.2: the topic is
+`tm_color_<assetId>`, `_0` included); `<txid>_<vout>` with a non-zero vout
+names `tm_color_<txid>_<vout>` (a BRC-161 token). Any other id is refused. A hook
+for a topic that is not a token's (`tm_color`) does nothing. A pool
 exists only for a token whose binary id is 32 bytes (a token deployed at
 output 0): the Pool contract hard-codes a 32-byte id push.
 
@@ -136,7 +136,7 @@ lowercase hex text.
 `setLiveJoin` / `liveOf` merge `lastSeen` from a `live` map
 (`identityKey → {peerId, at}`) when one is wired; nothing wires one in
 `main.zig` (since skein-amm 0.4.0 liveness is the runtime's read, `GET
-/amm/.live/tm_mandala_<txid>_0-live`, which the page joins itself; no map is kept in
+/amm/.live/tm_color_<txid>_0-live`, which the page joins itself; no map is kept in
 the graph). Without a join, `lastSeen` is left out.
 
 ## Tests

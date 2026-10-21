@@ -13,7 +13,7 @@
 const std = @import("std");
 const w = @import("chain");
 const wire = @import("wallet").wire;
-const mandala = @import("mandala");
+const color = @import("1color");
 const validator = @import("src/validator.zig");
 const messages = @import("src/messages.zig");
 const unlock = @import("src/unlock.zig");
@@ -33,7 +33,7 @@ const Value = cbor.Value;
 const Transaction = bsvz.transaction.Transaction;
 const vec = @import("vectors");
 const pool = @import("pool");
-const brc162 = mandala.brc162;
+const brc162 = color.brc162;
 const Outpoint = view_mod.Outpoint;
 const testing = std.testing;
 
@@ -81,7 +81,7 @@ const MemView = struct {
         const tx = try Transaction.parse(self.a, raw);
         const txid = w.beef.txidOf(raw);
         const prev = try self.coins(tx, txid);
-        const ins = try self.a.alloc(mandala.bsv21.Input, tx.inputs.len);
+        const ins = try self.a.alloc(color.bsv21.Input, tx.inputs.len);
         for (tx.inputs, ins) |in, *x| {
             x.* = .{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index, .unlocking_script = in.unlocking_script.bytes };
             if (self.txs.get(x.txid)) |src| {
@@ -89,9 +89,9 @@ const MemView = struct {
                 x.source = .{ .script = s.outputs[x.vout].locking_script.bytes, .satoshis = @intCast(s.outputs[x.vout].satoshis) };
             }
         }
-        const outs = try self.a.alloc(mandala.bsv21.Output, tx.outputs.len);
+        const outs = try self.a.alloc(color.bsv21.Output, tx.outputs.len);
         for (tx.outputs, outs) |o, *x| x.* = .{ .script = o.locking_script.bytes, .satoshis = @intCast(o.satoshis) };
-        const v = try mandala.token.judge(self.a, validator.tokenId(self.id), .{ .txid = txid, .inputs = ins, .outputs = outs }, prev);
+        const v = try color.token.judge(self.a, validator.tokenId(self.id), .{ .txid = txid, .inputs = ins, .outputs = outs }, prev);
         try testing.expect(v.rejected == null);
         for (v.outputs_to_admit) |o| try self.admitted.put(key(.{ .txid = txid, .vout = o }), {});
         for (tx.inputs) |in| try self.spent.put(key(.{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index }), txid);
@@ -342,23 +342,23 @@ fn txsOf(a: std.mem.Allocator, ev: Value) ![]const []const u8 {
     return out;
 }
 
-/// Mandala's own `identify` (skein-mandala src/mandala_topic.zig), over the
+/// 1Color's own `identify` (skein-1color src/color_topic.zig), over the
 /// topic contract: the judgement `submit.route` asks the topic's program for
 /// (the BSV-21 rules alone, `token.judge`).
 fn tokenIdentify(a: std.mem.Allocator, call: sktopic.Call) anyerror!sktopic.Instructions {
-    const id = mandala.token.tokenIdOf(call.topic) orelse return error.UnknownTopic;
-    const ins = try a.alloc(mandala.bsv21.Input, call.tx.inputs.len);
+    const id = color.token.tokenIdOf(call.topic) orelse return error.UnknownTopic;
+    const ins = try a.alloc(color.bsv21.Input, call.tx.inputs.len);
     for (call.tx.inputs, ins, 0..) |in, *x, i| {
         x.* = .{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index, .unlocking_script = in.unlocking_script.bytes };
         if (call.sourceOutput(i)) |o| x.source = .{ .script = o.locking_script.bytes, .satoshis = @intCast(o.satoshis) };
     }
-    const outs = try a.alloc(mandala.bsv21.Output, call.tx.outputs.len);
+    const outs = try a.alloc(color.bsv21.Output, call.tx.outputs.len);
     for (call.tx.outputs, outs) |o, *x| x.* = .{ .script = o.locking_script.bytes, .satoshis = @intCast(o.satoshis) };
-    const v = try mandala.token.judge(a, id, .{ .txid = call.txid, .inputs = ins, .outputs = outs }, call.previous_coins);
+    const v = try color.token.judge(a, id, .{ .txid = call.txid, .inputs = ins, .outputs = outs }, call.previous_coins);
     return .{ .outputs_to_admit = v.outputs_to_admit, .coins_to_retain = v.coins_to_retain };
 }
 
-const topic_program = "cid:mandala-topic";
+const topic_program = "cid:color-topic";
 /// The submission thread's origin, as the engine's step names it (`Ctx.thread`).
 const submission_thread = "cid:submission-thread";
 
@@ -414,10 +414,10 @@ const Node = struct {
         const in: Value = .{ .map = try a.dupe(cbor.Entry, &.{
             .{ .key = "defaults", .value = .{ .map = try a.dupe(cbor.Entry, &.{
                 .{ .key = "walletNetwork", .value = .{ .text = "regtest" } },
-                .{ .key = "overlayTopics", .value = .{ .text = try std.fmt.allocPrint(a, "{{\"{s}\":\"mandala-topic\"}}", .{topic}) } },
+                .{ .key = "overlayTopics", .value = .{ .text = try std.fmt.allocPrint(a, "{{\"{s}\":\"color-topic\"}}", .{topic}) } },
             }) } },
             .{ .key = "programs", .value = .{ .map = try a.dupe(cbor.Entry, &.{
-                .{ .key = "mandala-topic", .value = .{ .cid = topic_program } },
+                .{ .key = "color-topic", .value = .{ .cid = topic_program } },
             }) } },
             .{ .key = "app", .value = .{ .text = "amm" } },
         }) };
@@ -696,7 +696,7 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitte
     try testing.expectEqual(@as(usize, 1), f.oracle.calls); // one signature, nothing else
     // Not submitted here (spend never routes): what the submission needs.
     try testing.expectEqualStrings(try validator.topicOf(a, f.id), r.ok.submission.?.topic);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_mandala_{s}_0", .{&w.header.toHex(f.id)}), r.ok.submission.?.topic);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_color_{s}_0", .{&w.header.toHex(f.id)}), r.ok.submission.?.topic);
     try testing.expect(r.ok.submission.?.pool.eql(op));
 
     // The same request as the direct call's step makes it, on a real node
@@ -982,7 +982,7 @@ test "the validated topics (0.3.2; 0.8.1: the registered set, always): in it, a 
     var none = f.cfg;
     none.validated = &.{};
     var other = f.cfg;
-    other.validated = &.{"tm_mandala_" ++ "00" ** 32 ++ "_0"};
+    other.validated = &.{"tm_color_" ++ "00" ** 32 ++ "_0"};
     for ([_]validator.Config{ none, other }) |cfg| {
         const r = try validator.spend(a, .swap, .{ .tx = req, .pool = op }, cfg, f.mem.view(), f.oracle.oracle());
         try expectRefused(r, .not_validating);

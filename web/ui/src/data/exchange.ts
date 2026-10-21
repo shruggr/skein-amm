@@ -25,12 +25,12 @@
  *   (src/lp/close.ts, `POST /submit`).
  * - **Your tokens**: the wallet's token rows (src/lp/wallet.ts,
  *   inventory.ts); `requestListing` a message to the box `<app>/requests`.
- * - **Settings** (root): the token list (`/mandala/tokens`) and the
+ * - **Settings** (root): the token list (`/color/tokens`) and the
  *   registered topics; root's messages to `<app>/register`; the holders'
  *   requests (`GET <base>/requests`). `isRoot` is a stub (no grants read).
  *
  * Ids (David, 2026-10-09): every token id is the BRC-207 assetId
- * `<txid>_<vout>`, `_0` included for a Mandala token (src/lib/tokenId.ts);
+ * `<txid>_<vout>`, `_0` included for a 1Color token (src/lib/tokenId.ts);
  * an outpoint is `<txid>.<vout>`. Amounts are bigints in base units; prices
  * are numbers: sats per whole token.
  *
@@ -230,7 +230,7 @@ export interface CloseResult {
   tokens: bigint;
 }
 
-/** One of the user's own Mandala tokens. */
+/** One of the user's own 1Color tokens. */
 export interface WalletToken {
   tokenId: TokenId;
   sym: string;
@@ -245,7 +245,7 @@ export interface WalletToken {
   requested: boolean;
 }
 
-/** A token seen on the discovery topic (`tm_mandala`). */
+/** A token seen on the discovery topic (`tm_color`). */
 export interface DiscoveryToken {
   tokenId: TokenId;
   sym: string;
@@ -283,8 +283,8 @@ export interface Session {
 // Links
 // ---------------------------------------------------------------------------
 
-/** The Mandala deploy page the app carries (www/mandala/deploy/, skein-mandala). */
-export const MANDALA_DEPLOY_HREF = "mandala/deploy/";
+/** The 1Color deploy page the app carries (www/color/deploy/, skein-1color). */
+export const COLOR_DEPLOY_HREF = "color/deploy/";
 /** The skein's management site, at its own app path (skein#147). */
 export const SITE_HREF = "/site/";
 
@@ -334,7 +334,7 @@ function app(): string {
   return appName(context.base) ?? "amm";
 }
 
-/** The token list's metadata by token id (`/mandala/tokens`); empty when the read fails. */
+/** The token list's metadata by token id (`/color/tokens`); empty when the read fails. */
 async function tokenMeta(): Promise<Map<string, ListedToken>> {
   const m = new Map<string, ListedToken>();
   try {
@@ -448,7 +448,7 @@ async function pricesNow(topics: TokenTopic[], meta: Map<string, ListedToken>): 
   return out;
 }
 
-/** The tokens this overlay hosts (registered here: Mandala tokens at output 0), each priced. No wallet needed. */
+/** The tokens this overlay hosts (registered here: 1Color tokens at output 0), each priced. No wallet needed. */
 export async function hostedTokens(): Promise<HostedToken[]> {
   const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
   const native = topics.filter((t) => t.kind === "native");
@@ -513,7 +513,7 @@ export function useHostedTokens(): { tokens: HostedToken[] | null; error: string
 
 /** A token's listed pools on this skein, each with its validator's liveness. */
 export async function tokenPools(tokenId: TokenId): Promise<PoolView[]> {
-  const topic = `tm_mandala_${sdkTokenId(tokenId)}`;
+  const topic = `tm_color_${sdkTokenId(tokenId)}`;
   const [pools, live] = await Promise.all([queryPools(context.af, context.base, tokenId), fetchLive(context.base, topic)]);
   return pools.map((p) => ({
     outpoint: outpointText(p.outpoint),
@@ -541,7 +541,7 @@ const planned = new WeakMap<Quote, Planned>();
 /** A quote for one token: the matching engine's plan over this skein's listed pools whose validator is live. */
 export async function quoteSwap(req: QuoteRequest): Promise<Quote> {
   if (req.amountIn <= 0n) throw new Error("Enter an amount");
-  const topic = `tm_mandala_${sdkTokenId(req.tokenId)}`;
+  const topic = `tm_color_${sdkTokenId(req.tokenId)}`;
   const [pools, live, meta] = await Promise.all([queryPools(context.af, context.base, req.tokenId), fetchLive(context.base, topic), tokenMeta()]);
   const dec = meta.get(req.tokenId)?.dec ?? 0;
   const buy = req.side === "buy";
@@ -692,7 +692,7 @@ export async function myPositions(): Promise<Position[]> {
     }
     if (!pos.current || !pos.pool || pos.sats === undefined) continue;
     loaded.set(pos.current, pos);
-    const topic = `tm_mandala_${sdkTokenId(row.tokenId)}`;
+    const topic = `tm_color_${sdkTokenId(row.tokenId)}`;
     if (!lives.has(topic)) lives.set(topic, fetchLive(context.base, topic).catch(() => null));
     const live = await lives.get(topic)!;
     const m = meta.get(row.tokenId);
@@ -751,7 +751,7 @@ export async function deployPosition(req: DeployRequest): Promise<DeployResult> 
   const m = meta.get(req.tokenId);
   const { tokens } = poolableTokens(assets.tokenRows, new Map(m ? [[req.tokenId, { sym: m.sym, dec: m.dec }]] : []));
   const token = tokens.find((t) => sameToken(t.tokenId, req.tokenId));
-  if (!token) throw new Error("Your wallet holds none of that token as a Mandala output");
+  if (!token) throw new Error("Your wallet holds none of that token as a 1Color output");
   const sel = selectDepositInputs(token.inputs, req.tokens);
   if (!sel) throw new Error(`Your wallet holds fewer than ${formatAmount(req.tokens + 1n, m?.dec ?? 0)} of that token (the deposit and the validator's one-unit claim)`);
   const prepared = await preparePoolDeploy({
@@ -810,7 +810,7 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
 // Your tokens
 // ---------------------------------------------------------------------------
 
-/** The connected wallet's Mandala tokens with a balance, each marked on this exchange (registered) and requested. */
+/** The connected wallet's 1Color tokens with a balance, each marked on this exchange (registered) and requested. */
 export async function myTokens(): Promise<WalletToken[]> {
   const { wallet } = needWallet();
   const [assets, topics, meta, requests] = await Promise.all([
@@ -853,7 +853,7 @@ export async function requestListing(tokenId: TokenId): Promise<void> {
 // Settings (root)
 // ---------------------------------------------------------------------------
 
-/** The tokens the discovery topic knows (`/mandala/tokens`) that this exchange does not serve yet. */
+/** The tokens the discovery topic knows (`/color/tokens`) that this exchange does not serve yet. */
 export async function discoveryTokens(): Promise<DiscoveryToken[]> {
   const [list, topics] = await Promise.all([readTokenList(context.base), listTokenTopics(context.base)]);
   const registered = new Set(topics.map((t) => t.tokenId));
@@ -877,12 +877,12 @@ export async function registeredTokens(): Promise<RegisteredToken[]> {
 
 /** The topic a token's pools are admitted under (BRC-207; skein-amm 0.8.0): derived, never typed. */
 export function topicOf(tokenId: TokenId): string {
-  return `tm_mandala_${sdkTokenId(tokenId)}`;
+  return `tm_color_${sdkTokenId(tokenId)}`;
 }
 
 /** The lookup service of a token (BRC-207): derived, never typed. */
 export function lookupOf(tokenId: TokenId): string {
-  return `ls_mandala_${sdkTokenId(tokenId)}`;
+  return `ls_color_${sdkTokenId(tokenId)}`;
 }
 
 /** The AMM lookup's service: registered so it beats its prices on `ls_amm-live` (skein-overlay 0.12: a registered lookup beats). */
@@ -890,7 +890,7 @@ export const AMM_LOOKUP = "ls_amm";
 
 /**
  * Registers a token: root's messages to `<app>/register` — its topic
- * (`mandala-topic`), its lookup (`mandala-lookup`), and `ls_amm`
+ * (`color-topic`), its lookup (`color-lookup`), and `ls_amm`
  * (`amm-lookup`, idempotent: the same again changes nothing) so the AMM
  * lookup's beat (the prices) is declared.
  */
@@ -899,8 +899,8 @@ export async function registerToken(tokenId: TokenId): Promise<void> {
   const me = (await rawTerms()).validator;
   const box = `${app()}/register`;
   const topic = topicOf(tokenId);
-  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "mandala-topic" } });
-  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: lookupOf(tokenId), program: "mandala-lookup", topics: [topic] } });
+  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "color-topic" } });
+  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: lookupOf(tokenId), program: "color-lookup", topics: [topic] } });
   await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: AMM_LOOKUP, program: "amm-lookup" } });
   emit();
 }

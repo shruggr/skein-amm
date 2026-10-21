@@ -1,7 +1,7 @@
 {
   "name": "Open Exchange",
   "short_name": "Open Exchange",
-  "description": "Swap Mandala tokens against the pools on this exchange, and deploy and close liquidity positions.",
+  "description": "Swap 1Color tokens against the pools on this exchange, and deploy and close liquidity positions.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

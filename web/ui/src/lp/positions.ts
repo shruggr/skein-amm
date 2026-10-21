@@ -11,8 +11,8 @@
  *     the listing — the page asks the LP to Close.
  *
  * The listing (`ls_amm`) answers listed pools only, so the current output's
- * BEEF comes from the token's Mandala lookup (`ls_mandala {txid,
- * outputIndex}`, skein-mandala: an unspent admitted output with its BEEF).
+ * BEEF comes from the token's 1Color lookup (`ls_color {txid,
+ * outputIndex}`, skein-1color: an unspent admitted output with its BEEF).
  */
 import { Transaction, type WalletProtocol } from "@bsv/sdk";
 import { PoolTemplate, type Pool } from "../pool";
@@ -77,13 +77,13 @@ export function positionRowsOf(rows: BasketRow[]): PositionRow[] {
   return out;
 }
 
-/** An unspent Mandala output with its BEEF: `ls_mandala {txid, outputIndex}`. */
-export async function mandalaOutput(af: SignedFetch | null, base: string, outpoint: string): Promise<LookupOutput> {
+/** An unspent 1Color output with its BEEF: `ls_color {txid, outputIndex}`. */
+export async function colorOutput(af: SignedFetch | null, base: string, outpoint: string): Promise<LookupOutput> {
   const op = parseOutpoint(outpoint);
   if (!op) throw new Error(`not an outpoint: ${outpoint}`);
-  const outs = parseOutputList(await lookup(af, base, "ls_mandala", { txid: op.txid, outputIndex: op.vout }));
+  const outs = parseOutputList(await lookup(af, base, "ls_color", { txid: op.txid, outputIndex: op.vout }));
   const o = outs.find((x) => x.outputIndex === op.vout) ?? outs[0];
-  if (!o) throw new Error(`ls_mandala: no unspent output ${outpoint}`);
+  if (!o) throw new Error(`ls_color: no unspent output ${outpoint}`);
   return o;
 }
 
@@ -106,7 +106,7 @@ export async function loadPosition(
   base: string,
   row: PositionRow,
   spendOf: (outpoint: string) => Promise<Spend> = (o) => readSpend(base, o),
-  outputOf: (outpoint: string) => Promise<LookupOutput> = (o) => mandalaOutput(af, base, o),
+  outputOf: (outpoint: string) => Promise<LookupOutput> = (o) => colorOutput(af, base, o),
 ): Promise<LoadedPosition> {
   const s = await spendOf(row.deployOutpoint);
   const deployTxid = row.deployOutpoint.split(".")[0]!;

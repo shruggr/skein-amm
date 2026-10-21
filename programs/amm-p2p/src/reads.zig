@@ -14,7 +14,7 @@
 //!   app's `chain/state` (its `spent` map), read only, as the overlay reads it.
 const std = @import("std");
 const w = @import("chain");
-const mandala = @import("mandala");
+const color = @import("1color");
 const pool = @import("pool");
 
 const cbor = w.cbor;
@@ -30,7 +30,7 @@ pub const requests_kind = "amm-requests";
 
 /// A token id as the pages write it: `<txid>_<vout>` (BRC-207's assetId), any form parsed.
 pub fn tokenIdText(a: Allocator, text: []const u8) ![]const u8 {
-    const id = mandala.name.tokenIdOfString(text) orelse return error.BadTokenId;
+    const id = color.name.tokenIdOfString(text) orelse return error.BadTokenId;
     return std.fmt.allocPrint(a, "{s}_{d}", .{ &w.header.toHex(id.txid), id.vout });
 }
 
@@ -68,7 +68,7 @@ pub fn list(a: Allocator, s: w.store.Store, rec: ?Value, registered: []const []c
         if (kv.value != .cid) continue;
         const r = try s.getValue(a, kv.value.cid);
         const id = r.getText("tokenId") orelse continue;
-        const topic = try std.fmt.allocPrint(a, "tm_mandala_{s}", .{id});
+        const topic = try std.fmt.allocPrint(a, "tm_color_{s}", .{id});
         const settled = for (registered) |t| {
             if (eql(u8, t, topic)) break true;
         } else false;
@@ -144,7 +144,7 @@ pub const Spend = struct {
 };
 
 fn isPool(script: []const u8) bool {
-    const tok = mandala.brc162.decode(script) orelse return false;
+    const tok = color.brc162.decode(script) orelse return false;
     if (tok.role != .value) return false;
     return (pool.parse(tok.lock) catch null) != null;
 }

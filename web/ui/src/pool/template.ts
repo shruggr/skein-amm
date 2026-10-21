@@ -1,7 +1,7 @@
 /**
  * The AMM Pool script template (pool/Pool.runar.go) over runar-sdk.
  *
- * On chain a pool output is a BRC-162 (Mandala) value output wrapped around the
+ * On chain a pool output is a BRC-162 (1Color) value output wrapped around the
  * Rúnar contract:
  *
  *   0x20 <assetId:32> <push tokenReserve> OP_2DROP || code || OP_RETURN || state
@@ -112,7 +112,7 @@ export interface BuilderInput {
   sourceTransaction?: Transaction;
   /**
    * Signs this input once the transaction is final (e.g. `new P2PKH().unlock(key,
-   * "all", false, satoshis, lockingScript)`; a Mandala token on P2PKH unlocks the
+   * "all", false, satoshis, lockingScript)`; a 1Color token on P2PKH unlocks the
    * same way). Omitted: the input is left unsigned for a wallet to sign, and
    * `estimatedUnlockLength` (default 107, a P2PKH) sizes the fee.
    */
@@ -254,7 +254,7 @@ function tokenPrefixHex(assetId: string, amount: bigint): string {
   return toHex(mandalaValuePrefix(fromHex(assetId), amount));
 }
 
-/** `tokenP2pkh` in Pool.runar.go: a Mandala value output of `amount` to `pkh`. */
+/** `tokenP2pkh` in Pool.runar.go: a 1Color value output of `amount` to `pkh`. */
 function tokenP2pkhHex(assetId: string, amount: bigint, pkh: string): string {
   return tokenPrefixHex(assetId, amount) + p2pkhHex(pkh);
 }
@@ -286,7 +286,7 @@ function isHex(s: unknown, bytes: number): s is string {
 
 export class PoolTemplate {
   /**
-   * Decodes a pool locking script: a Mandala value prefix with a 32-byte id and
+   * Decodes a pool locking script: a 1Color value prefix with a 32-byte id and
    * no payload, then the Pool artifact (template bytes between the constructor
    * slots), then the state. Also requires prefix id == assetId and prefix
    * amount == TokenReserve (the admission check of Pool.runar.go's doc).
@@ -326,7 +326,7 @@ export class PoolTemplate {
   }
 
   /**
-   * The pool locking script for `args` and `state`: the Mandala prefix for
+   * The pool locking script for `args` and `state`: the 1Color prefix for
    * TokenReserve (which the contract writes itself on every continuation, but
    * nothing on chain writes for a deploy) in front of runar-sdk's locking
    * script for the constructor args.
@@ -353,7 +353,7 @@ export class PoolTemplate {
    * Swap (method 0). Outputs: 0 pool, 1 the taker's payout, then the LP fee,
    * the validator fee and the commission (each only when nonzero, each in
    * the input asset), then change. Token payouts and token fees are 1-sat
-   * Mandala outputs; BSV ones are P2PKH. The validator's slot is left empty.
+   * 1Color outputs; BSV ones are P2PKH. The validator's slot is left empty.
    */
   static async swap(p: SwapParams): Promise<PoolCall> {
     const plan = PoolTemplate.planSwap(p);
@@ -823,7 +823,7 @@ async function buildCall(o: {
   };
 }
 
-/** A P2PKH unlocker for a builder input (also a Mandala token held on P2PKH). */
+/** A P2PKH unlocker for a builder input (also a 1Color token held on P2PKH). */
 export function p2pkhUnlock(key: PrivateKey, satoshis: number, lockingScript: string | LockingScript): BuilderInput["unlock"] {
   return new P2PKH().unlock(key, "all", false, satoshis, typeof lockingScript === "string" ? LockingScript.fromHex(lockingScript) : lockingScript);
 }

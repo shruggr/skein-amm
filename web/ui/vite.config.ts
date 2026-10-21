@@ -12,17 +12,18 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 // tsconfig.json's `paths` mirror these aliases for the type checker.
 const runarDir = resolve(here, process.env.RUNAR_DIR ?? "../../../../bsv/runar");
 
-// The Mandala (BRC-162) script template, `Mandala`, comes the same way from the
-// local 1sat-sdk checkout's sources (branch feat/onecolor-template, draft PR
-// b-open-io/1sat-sdk#82; README.md, "Mandala from the local 1sat-sdk
-// checkout") until @1sat/templates publishes it. ONESAT_SDK_DIR overrides
-// where that checkout is; the default is ~/Work/bsv/1sat-sdk.
+// The 1Color (BRC-162) script template, the SDK's `Mandala`, comes the same way
+// from the local 1sat-sdk checkout's sources (README.md, "The `Mandala`
+// template from the local 1sat-sdk checkout") until @1sat/templates publishes
+// it; the SDK has not renamed it, so the import stays `@1sat/templates/mandala`.
+// ONESAT_SDK_DIR overrides where that checkout is; the default is
+// ~/Work/bsv/1sat-sdk.
 const oneSatSdkDir = resolve(here, process.env.ONESAT_SDK_DIR ?? "../../../../bsv/1sat-sdk");
 
 // Build output (`npm run build` -> ../../www/) is the app's `www/`, committed:
 // the tree a skein serves under /<app>/ (nothing is built on the skein). The
-// Mandala pages are copied into www/mandala/ afterwards
-// (../../scripts/mandala-pages.sh), so a build empties www/ and the whole
+// 1Color pages are copied into www/color/ afterwards
+// (../../scripts/color-pages.sh), so a build empties www/ and the whole
 // sequence is ../../scripts/www.sh. Relative base so the pages work under
 // /<app>/ on any instance, and under a host's "/@<handle>/<app>/" dev form.
 export default defineConfig({
@@ -44,9 +45,10 @@ export default defineConfig({
         replacement: resolve(oneSatSdkDir, "packages/templates/src/mandala/mandala.ts"),
       },
     ],
-    // runar-sdk's and Mandala's sources import @bsv/sdk (and Mandala cbor2)
-    // from outside this package: resolve them from here, one copy each.
-    dedupe: ["@bsv/sdk", "cbor2"],
+    // runar-sdk's and the template's sources import @bsv/sdk (and the template
+    // cbor2, @ipld/dag-cbor and cborg) from outside this package: resolve them
+    // from here, one copy each, so the checkout needs no node_modules.
+    dedupe: ["@bsv/sdk", "cbor2", "@ipld/dag-cbor", "cborg"],
   },
   build: {
     outDir: resolve(here, "../../www"),

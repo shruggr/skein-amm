@@ -11,7 +11,7 @@
  * token's marginal price, Σsats / Σtokens across the LIVE validators:
  *
  * - a validator is live when its own beat is held — on `ls_amm-live` or on
- *   the token's topic `tm_mandala_<assetId>-live` (every skein is a
+ *   the token's topic `tm_color_<assetId>-live` (every skein is a
  *   validator, beating its topics);
  * - one report per validator: its own beat's (the sender is the validator),
  *   else the newest beat naming it (several skeins may index the same pools);

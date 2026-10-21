@@ -1,0 +1,37 @@
+{
+  "install": [
+    {
+      "url": "https://github.com/shruggr/skein-chain/archive/refs/tags/v0.6.0.tar.gz",
+      "hash": "13a517e964c4785330d8b7ef77796e149657cbbb"
+    },
+    ".."
+  ],
+  "routes": [
+    {
+      "transport": "http",
+      "address": "/submit",
+      "filters": [
+        "kernel.beef"
+      ],
+      "program": "amm.overlay",
+      "fn": "submit"
+    },
+    {
+      "transport": "http",
+      "address": "/lookup",
+      "filters": [
+        "amm.lookup"
+      ]
+    },
+    {
+      "transport": "http",
+      "address": "/",
+      "prefix": true,
+      "filters": [
+        "amm.page"
+      ],
+      "root": "www",
+      "index": "index.html"
+    }
+  ]
+}

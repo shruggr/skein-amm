@@ -10,7 +10,7 @@
  *      relay names none and the pool's CommissionBps is nonzero, to a key of
  *      the taker's own (see "the commission" below). The funding amount is
  *      exact: what the contract's outputs take beyond the pool's and the
- *      token inputs' sats (amount in + 1 sat per Mandala output the taker
+ *      token inputs' sats (amount in + 1 sat per 1Color output the taker
  *      pays for), plus the miner fee of the final swap (`swapFunding`).
  *   2. **Funding transaction**: `createAction` (`signAndProcess: false`,
  *      `noSend`) with one output of that amount, P2PKH to a P1SAT key
@@ -88,7 +88,7 @@ export class LegShapeError extends Error {
 // Token inputs (token → sats)
 // ---------------------------------------------------------------------------
 
-/** A `bsv21` basket output the wallet can sign: a Mandala value output of the token, with its key. */
+/** A `bsv21` basket output the wallet can sign: a 1Color value output of the token, with its key. */
 export interface TokenInput {
   /** `txid.vout` (BRC-100 outpoint form). */
   outpoint: string;
@@ -110,7 +110,7 @@ export function assetIdOf(tokenId: string): string {
 }
 
 /**
- * The basket rows usable as token inputs for `tokenId`: Mandala value outputs
+ * The basket rows usable as token inputs for `tokenId`: 1Color value outputs
  * with this 32-byte id (the pool template counts only those) whose
  * customInstructions name the key (protocolID, keyID).
  */
@@ -121,7 +121,7 @@ export function tokenInputsOf(
   const assetId = assetIdOf(tokenId);
   const out: TokenInput[] = [];
   for (const r of rows) {
-    // A pool the wallet holds as LP carries the same Mandala prefix; it is not a token input.
+    // A pool the wallet holds as LP carries the same 1Color prefix; it is not a token input.
     if (!r.lockingScript || isPoolRow(r)) continue;
     const t = decodeMandala(Utils.toArray(r.lockingScript, "hex"));
     if (!t || t.role !== "value" || !t.idBytes || toHex(Array.from(t.idBytes)) !== assetId) continue;
@@ -183,7 +183,7 @@ export function poolUtxoFrom(poolOutput: LookupOutput): PoolUtxo {
 }
 
 /**
- * A P2PKH (or Mandala-on-P2PKH) input signed by the wallet: BIP-143 over
+ * A P2PKH (or 1Color-on-P2PKH) input signed by the wallet: BIP-143 over
  * the finished transaction under `scope` (ALL|FORKID; a delivered deploy's
  * SINGLE|FORKID, 0.9.0), `createSignature` with `hashToDirectlySign`
  * (1sat-sdk's `signP2PKHInputWallet`).
@@ -255,7 +255,7 @@ export interface SwapFunding {
 /**
  * The exact funding: Σ contract outputs − pool sats − token inputs' sats
  * (sats in: amount in + 1 for the token payout, the fees and the commission
- * being part of amount in; tokens in: 1 per Mandala fee or commission output
+ * being part of amount in; tokens in: 1 per 1Color fee or commission output
  * − the token inputs' sats), plus
  * ceil(size × rate / 1000) for the final swap.
  */

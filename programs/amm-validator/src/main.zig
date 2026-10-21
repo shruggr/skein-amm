@@ -23,7 +23,7 @@
 //! - `{verdict: "accept", body: <reply>}` at once: a refusal; a transaction
 //!   judged or rejected before (from the state);
 //! - `{wait: true}` for a signed spend or a consented deploy, after sending
-//!   `{fn: "submit", args: {beef, topics: [tm_mandala_<txid>_0]}}` to this instance,
+//!   `{fn: "submit", args: {beef, topics: [tm_color_<txid>_0]}}` to this instance,
 //!   box `<app>/submit`, and `await`ing that message — or, for a resubmission while
 //!   the first one is with the chain app, after `await`ing that submission's
 //!   thread (the overlay's `pending` record names it: the engine answers a
@@ -46,7 +46,7 @@
 //! The validator role (0.6.0, shruggr/skein#120, David 2026-10-06 evening; 0.8.1, skein-overlay
 //! 0.12.0, David 2026-10-09: "every skein is marketplace AND validator from install, always" — the
 //! owner's switch of 0.6.2 is gone): a swap, addLiquidity or deploy is signed only when the token's
-//! topic `tm_mandala_<txid>_0` is in the engine's registered set (the head `<app>/topics`, written by the
+//! topic `tm_color_<txid>_0` is in the engine's registered set (the head `<app>/topics`, written by the
 //! owner's `register` / `deregister`); else refused `not_validating`. "The validator program signs
 //! for any registered token." (0.3.2–0.5.0: amm-p2p's validated set,
 //! `validate` / `unvalidate` in box `amm/validate`; gone.)
