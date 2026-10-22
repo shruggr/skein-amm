@@ -16,15 +16,20 @@
  * - **Swap** (`quoteSwap`, `executeSwap`): the matching engine's plan over
  *   this skein's listed pools whose validator is live (src/market/plan.ts),
  *   each leg built, relayed and settled as before (src/market/swapAction.ts,
- *   swapFlow.ts; `amm.swap.submit` on `/call`).
- * - **Liquidity**: `myPositions` from the wallet's pool rows and the chain
- *   state by outpoint (src/lp/positions.ts: the pool followed to its current
- *   output, the claim spent = rescinded); `deployPosition` delivers the
- *   deploy to this skein's validator (src/lp/poolDeploy.ts, deployFlow.ts;
- *   `amm.pool.terms`, `amm.pool.submit`); `closePosition` closes it
+ *   swapFlow.ts; `amm.swap.submit` on `/call`). A tokens-in swap first
+ *   tops up the active swap basket `amm-swap` with one module send
+ *   (src/market/activeSwap.ts, 0.12.0); its legs spend from there.
+ * - **Liquidity**: `myPositions` from the wallet's pool rows (`amm-pools`)
+ *   and the chain state by outpoint (src/lp/positions.ts: the pool followed
+ *   to its current output); `deployPosition` asks this skein's validator to
+ *   affirm the pool (`amm.pool.terms`, `amm.pool.affirm`) and has the
+ *   wallet's BRC-207 module build, sign and broadcast the deploy in one
+ *   createAction (src/lp/poolDeploy.ts, 0.12.0); `closePosition` closes it
  *   (src/lp/close.ts, `POST /submit`).
- * - **Your tokens**: the wallet's token rows (src/lp/wallet.ts,
- *   inventory.ts); `requestListing` a message to the box `<app>/requests`.
+ * - **Your tokens**: the wallet's BRC-207 module (`p color assets`, `p color
+ *   balance <assetTag>`; src/wallet/color.ts) and the active swap basket
+ *   (`moveBackTokens`); `requestListing` a message to the box
+ *   `<app>/requests`.
  * - **Settings** (root): the token list (`/color/tokens`) and the
  *   registered topics; root's messages to `<app>/register`; the holders'
  *   requests (`GET <base>/requests`). `isRoot` is a stub (no grants read).
@@ -39,27 +44,28 @@
  * themselves.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AuthFetch, Utils, type WalletInterface } from "@bsv/sdk";
+import { AuthFetch, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
 import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
-import { outpointText, parseOutpoint, sameToken, sdkTokenId, tokenIdText } from "../lib/tokenId";
+import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName } from "../lib/config";
-import { fetchLive, listTokenTopics, lookupPoolOutput, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
+import { fetchLive, listTokenTopics, lookup, lookupPoolOutput, parseOutputList, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { readBeats, readRequests, readTokenList, sendMessage, type Beat, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
 import { callApp, readBytes, swapTerms, type AuthFetchLike } from "../market/relay";
-import { pendingSwapPayouts, prepareSwap, selectExactTokenInputs, tokenInputsOf, type TokenInput } from "../market/swapAction";
+import { pendingSwapPayouts, prepareSwap, selectExactTokenInputs, type TokenInput } from "../market/swapAction";
+import { moveBack, sendToSwapBasket, swapHoldingBeef, swapHoldings, swapTotals } from "../market/activeSwap";
 import { relaySwap, type SwapOutcome } from "../market/swapFlow";
 import { PendingPayoutStore } from "../wallet/pendingPayouts";
 import { formatAmount } from "../lp/amounts";
-import { loadWalletAssets } from "../lp/wallet";
-import { buildInventory } from "../lp/inventory";
+import { basketRows } from "../lp/wallet";
+import { buildInventory, decodeTokenRow, deployIcon } from "../lp/inventory";
 import { imageDataUrl } from "../lp/images";
-import { poolableTokens, preparePoolDeploy, selectDepositInputs } from "../lp/poolDeploy";
-import { relayPoolDeploy } from "../lp/deployFlow";
+import { deployPool } from "../lp/poolDeploy";
 import { positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
+import { POOLS_BASKET, assetBalance, heldOutputs } from "../wallet/color";
 import { completeClose, prepareClose, submitToOverlay } from "../lp/close";
 
 // ---------------------------------------------------------------------------
@@ -200,8 +206,6 @@ export interface Position {
   /** Fees the pool has earned the LP, when it can be told. */
   feesEarnedSats?: bigint;
   validator: ValidatorRef;
-  /** The claim spent: the validator withdrew the listing (the pool no longer trades; close it). */
-  rescinded: boolean;
 }
 
 export interface DeployRequest {
@@ -215,6 +219,8 @@ export interface DeployResult {
   /** The new pool, `<txid>.<vout>`. */
   outpoint: string;
   txid: string;
+  /** What did not complete after the broadcast (the position row's filing, the page's own submit). */
+  warnings?: string[];
 }
 
 export interface CloseRequest {
@@ -236,9 +242,12 @@ export interface WalletToken {
   sym: string;
   dec: number;
   icon?: string;
+  /** The wallet's balance (the BRC-207 module's `p color balance`). */
   balance: bigint;
   /** How many wallet outputs hold it. */
   outputs: number;
+  /** Held in the exchange's active swap basket (`amm-swap`): spent by swap legs, or moved back. */
+  inSwaps: bigint;
   /** Registered on this exchange. */
   onExchange: boolean;
   /** The user asked this exchange to list it. */
@@ -350,6 +359,25 @@ async function tokenMeta(): Promise<Map<string, ListedToken>> {
     /* no metadata: ids only */
   }
   return m;
+}
+
+/**
+ * A token's metadata from its deploy (`ls_color_deploys {tokenId}`, the
+ * discovery lookup: the deploy output with its BEEF), for a token the list
+ * does not carry; null when the lookup has none.
+ */
+async function deployMeta(tokenId: string): Promise<{ sym?: string; dec?: number; icon?: string } | null> {
+  try {
+    const out = parseOutputList(await lookup(context.af, context.base, "ls_color_deploys", { tokenId: sdkTokenId(tokenId) }))[0];
+    if (!out) return null;
+    const tx = Transaction.fromAtomicBEEF(out.beef);
+    const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${out.outputIndex}`, lockingScript: tx.outputs[out.outputIndex]?.lockingScript.toHex() });
+    if (!t || t.role !== "deploy") return null;
+    const icon = deployIcon(t)?.image;
+    return { ...(t.metadata?.sym !== undefined ? { sym: t.metadata.sym } : {}), ...(t.metadata?.dec !== undefined ? { dec: t.metadata.dec } : {}), ...(icon ? { icon: imageDataUrl(icon) } : {}) };
+  } catch {
+    return null;
+  }
 }
 
 function symOf(meta: Map<string, ListedToken>, tokenId: string): string {
@@ -606,10 +634,10 @@ export async function executeSwap(quote: Quote): Promise<SwapResult> {
   if (gone.length > 0 && !quote.request.allowPartial) throw new Error(`${gone.map(outpointText).join(", ")} ${gone.length === 1 ? "was" : "were"} spent since the quote: quote again`);
   const terms = await swapTerms(af, context.base);
   const direction = quote.request.side === "buy" ? "bsvToToken" : "tokenToBsv";
-  let candidates: TokenInput[] = [];
-  if (direction === "tokenToBsv") candidates = tokenInputsOf((await loadWalletAssets(wallet)).tokenRows, tokenId);
   const legs: LegResult[] = [];
   const running: Promise<void>[] = [];
+  // The legs that can run: not spent since the quote, their validator live.
+  const runnable: { leg: Plan["legs"][number]; result: LegResult; pool: PoolState; peerId: string }[] = [];
   for (const leg of p.plan.legs) {
     const poolOutpoint = outpointText(leg.outpoint);
     if (gone.includes(leg.outpoint)) {
@@ -622,25 +650,54 @@ export async function executeSwap(quote: Quote): Promise<SwapResult> {
       legs.push({ poolOutpoint, status: "failed", error: "the pool's validator is no longer live" });
       continue;
     }
-    let tokenInputs: TokenInput[] | undefined;
-    if (direction === "tokenToBsv") {
-      const pick = selectExactTokenInputs(candidates, leg.amountIn);
-      if (!pick) {
-        legs.push({ poolOutpoint, status: "failed", error: `no set of your ${p.sym} outputs adds up to exactly ${formatAmount(leg.amountIn, p.dec)} (the pool takes no token change)` });
-        continue;
-      }
-      tokenInputs = pick;
-      candidates = candidates.filter((c) => !pick.includes(c));
-    }
     const result: LegResult = { poolOutpoint, status: "failed" };
     legs.push(result);
+    runnable.push({ leg, result, pool, peerId: validator.peerId });
+  }
+  // Tokens in (0.12.0): each leg spends `amm-swap` outputs carrying exactly its amount in; the
+  // legs that what the basket holds does not cover get one output each from ONE module send.
+  const inputsOf = new Map<LegResult, TokenInput[]>();
+  let tokenBeef: Awaited<ReturnType<typeof swapHoldingBeef>> | undefined;
+  if (direction === "tokenToBsv" && runnable.length > 0) {
+    let candidates = await swapHoldings(wallet, tokenId);
+    const short: typeof runnable = [];
+    for (const r of runnable) {
+      const pick = selectExactTokenInputs(candidates, r.leg.amountIn);
+      if (!pick) {
+        short.push(r);
+        continue;
+      }
+      inputsOf.set(r.result, pick);
+      candidates = candidates.filter((c) => !pick.includes(c));
+    }
+    let sent: number[] | undefined;
+    if (short.length > 0) {
+      const s = await sendToSwapBasket(wallet, context.base, tokenId, short.map((r) => r.leg.amountIn), { sym: p.sym });
+      sent = s.tx;
+      short.forEach((r, n) => {
+        const h = s.holdings[n];
+        if (h) inputsOf.set(r.result, [h]);
+        else r.result.error = `the swap basket send has no output for this leg${s.errors.length ? ` (${s.errors.join("; ")})` : ""}`;
+      });
+    }
+    tokenBeef = await swapHoldingBeef(wallet, sent);
+  }
+  for (const { leg, result, pool, peerId } of runnable) {
+    let tokenInputs: TokenInput[] | undefined;
+    if (direction === "tokenToBsv") {
+      tokenInputs = inputsOf.get(result);
+      if (!tokenInputs) {
+        result.error ??= `no ${p.sym} in the swap basket for exactly ${formatAmount(leg.amountIn, p.dec)}`;
+        continue;
+      }
+    }
     try {
       const poolOutput = await lookupPoolOutput(af, context.base, tokenId, leg.outpoint);
-      const prepared = await prepareSwap({ wallet, tokenId, meta: { sym: p.sym, dec: p.dec }, direction, leg, pool, poolOutput, commissionPkh: terms.commissionPkh, tokenInputs, satsPerKb: FEE_RATE_SATS_PER_KB });
+      const prepared = await prepareSwap({ wallet, tokenId, meta: { sym: p.sym, dec: p.dec }, direction, leg, pool, poolOutput, commissionPkh: terms.commissionPkh, tokenInputs, ...(tokenBeef ? { tokenBeef } : {}), satsPerKb: FEE_RATE_SATS_PER_KB });
       const pending = pendingSwapPayouts(prepared, tokenId);
       for (const r of pending) context.payouts.save(r);
       running.push(
-        relaySwap({ wallet, authFetch: af, base: context.base }, prepared, validator.peerId)
+        relaySwap({ wallet, authFetch: af, base: context.base }, prepared, peerId)
           .catch((e): SwapOutcome => ({ status: "unknown", reason: errText(e) }))
           .then((o) => {
             for (const r of pending) {
@@ -679,11 +736,11 @@ export async function walletSats(): Promise<bigint> {
 /** The positions last loaded, by the pool's current outpoint (`<txid>.<vout>`): what `closePosition` closes. */
 const loaded = new Map<string, LoadedPosition>();
 
-/** The connected wallet's open positions: its pool rows read from the chain state (src/lp/positions.ts). */
+/** The connected wallet's open positions: its pool rows (`amm-pools`) read from the chain state (src/lp/positions.ts). */
 export async function myPositions(): Promise<Position[]> {
   const { wallet, af } = needWallet();
-  const [assets, meta] = await Promise.all([loadWalletAssets(wallet), tokenMeta()]);
-  const rows = positionRowsOf(assets.tokenRows);
+  const [poolRows, meta] = await Promise.all([basketRows(wallet, POOLS_BASKET), tokenMeta()]);
+  const rows = positionRowsOf(poolRows);
   const out: Position[] = [];
   loaded.clear();
   const lives = new Map<string, Promise<LiveAnswer | null>>();
@@ -710,7 +767,6 @@ export async function myPositions(): Promise<Position[]> {
       sats: pos.sats,
       tokens: pos.pool.state.tokenReserve,
       validator: { identityKey: identity, live: live ? validatorStatus(identity, live).live : false },
-      rescinded: pos.rescinded,
     });
   }
   return out;
@@ -743,40 +799,30 @@ export async function validatorTerms(): Promise<ValidatorTerms> {
 }
 
 /**
- * Deploys a new position: the deploy delivered to this skein's validator at
- * its terms (src/lp/poolDeploy.ts: SIGHASH_SINGLE pairs, one unit left for
- * the claim); accepted, the claimed deploy filed in the wallet.
+ * Deploys a new position (src/lp/poolDeploy.ts, 0.12.0): this skein's
+ * validator affirms the proposed pool at its terms (`amm.pool.affirm`), then
+ * the wallet's BRC-207 module builds, signs and broadcasts the deploy in one
+ * createAction; the pool output is filed as a position row (`amm-pools`).
  */
 export async function deployPosition(req: DeployRequest): Promise<DeployResult> {
   const { wallet, af } = needWallet();
   if (req.tokens <= 0n || req.sats <= 0n) throw new Error("Both amounts must be more than 0");
-  const [terms, assets, meta] = await Promise.all([rawTerms(), loadWalletAssets(wallet), tokenMeta()]);
-  if (!terms.peerId) throw new Error("this skein's validator has no peer ID (no libp2p node): it cannot take a deploy");
-  const m = meta.get(req.tokenId);
-  const { tokens } = poolableTokens(assets.tokenRows, new Map(m ? [[req.tokenId, { sym: m.sym, dec: m.dec }]] : []));
-  const token = tokens.find((t) => sameToken(t.tokenId, req.tokenId));
-  if (!token) throw new Error("Your wallet holds none of that token as a 1Color output");
-  const sel = selectDepositInputs(token.inputs, req.tokens);
-  if (!sel) throw new Error(`Your wallet holds fewer than ${formatAmount(req.tokens + 1n, m?.dec ?? 0)} of that token (the deposit and the validator's one-unit claim)`);
-  const prepared = await preparePoolDeploy({
+  const [terms, held, meta] = await Promise.all([rawTerms(), heldOutputs(wallet), tokenMeta()]);
+  const m = meta.get(req.tokenId) ?? (await deployMeta(req.tokenId));
+  const d = await deployPool({
     wallet,
-    form: {
-      tokenId: req.tokenId,
-      inputs: sel.inputs,
-      tokens: req.tokens,
-      sats: req.sats,
-      lpFeeBps: BigInt(terms.fees.lpBps),
-      validatorFeeBps: BigInt(terms.fees.validatorBps),
-      commissionBps: BigInt(terms.fees.commissionBps),
-      validator: { identityKey: terms.validator, peerId: terms.peerId },
-    },
+    af,
+    base: context.base,
+    tokenId: req.tokenId,
+    tokens: req.tokens,
+    sats: req.sats,
+    fees: { lpFeeBps: BigInt(terms.fees.lpBps), validatorFeeBps: BigInt(terms.fees.validatorBps), commissionBps: BigInt(terms.fees.commissionBps) },
+    validator: { identityKey: terms.validator },
+    held,
     meta: { ...(m?.sym ? { sym: m.sym } : {}), ...(m?.dec !== undefined ? { dec: m.dec } : {}) },
-    satsPerKb: FEE_RATE_SATS_PER_KB,
   });
-  const o = await relayPoolDeploy({ wallet, authFetch: af, base: context.base }, prepared, terms.peerId);
-  if (o.status !== "accepted") throw new Error(o.status === "refused" ? `refused: ${o.reason}` : "reason" in o ? o.reason : o.status);
   emit();
-  return { outpoint: `${o.txid}.0`, txid: o.txid };
+  return { outpoint: d.outpoint, txid: d.txid, ...(d.errors.length ? { warnings: d.errors } : {}) };
 }
 
 /**
@@ -814,35 +860,66 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
 // Your tokens
 // ---------------------------------------------------------------------------
 
-/** The connected wallet's 1Color tokens with a balance, each marked on this exchange (registered) and requested. */
+/**
+ * The connected wallet's 1Color tokens (0.12.0: the BRC-207 module's): the
+ * assets `p color assets` lists, each balance `p color balance <assetTag>`,
+ * and what the active swap basket (`amm-swap`) holds of each; symbol,
+ * decimals and icon from the token list, else the token's deploy
+ * (`ls_color_deploys`), else a deploy the wallet holds. Each marked on this
+ * exchange (registered) and requested.
+ */
 export async function myTokens(): Promise<WalletToken[]> {
   const { wallet } = needWallet();
-  const [assets, topics, meta, requests] = await Promise.all([
-    loadWalletAssets(wallet),
+  const [held, swaps, topics, meta, requests] = await Promise.all([
+    heldOutputs(wallet),
+    swapTotals(wallet).catch(() => new Map<string, { amount: bigint; outputs: number }>()),
     listTokenTopics(context.base).catch(() => [] as TokenTopic[]),
     tokenMeta(),
     readRequests(context.base).catch(() => []),
   ]);
-  const inv = buildInventory(assets.tokenRows, { txs: assets.txs });
+  const inv = buildInventory(held.filter((h) => h.available));
+  const ids = [...new Set([...inv.tokens.filter((t) => t.valueOutputs > 0).map((t) => t.tokenId), ...swaps.keys()])];
   const registered = new Set(topics.map((t) => t.tokenId));
   const me = context.identityKey;
   const asked = new Set(requests.filter((r) => r.from === me).map((r) => r.tokenId));
-  return inv.tokens
-    .filter((t) => t.balance > 0n && t.encodings.includes("mandala"))
-    .map((t) => {
-      const m = meta.get(t.tokenId);
-      const icon = m?.icon ?? (t.icon?.image ? imageDataUrl(t.icon.image) : undefined);
+  const out = await Promise.all(
+    ids.map(async (tokenId): Promise<WalletToken> => {
+      const t = inv.tokens.find((x) => x.tokenId === tokenId);
+      const [balance, fromDeploy] = await Promise.all([
+        t && t.valueOutputs > 0 ? assetBalance(wallet, tokenId) : Promise.resolve(0n),
+        meta.has(tokenId) ? Promise.resolve(null) : deployMeta(tokenId),
+      ]);
+      const m = meta.get(tokenId) ?? fromDeploy ?? {};
+      const icon = m.icon ?? (t?.icon?.image ? imageDataUrl(t.icon.image) : undefined);
       return {
-        tokenId: t.tokenId,
-        sym: t.sym ?? m?.sym ?? t.tokenId.slice(0, 8),
-        dec: t.dec ?? m?.dec ?? 0,
+        tokenId,
+        sym: m.sym ?? t?.sym ?? tokenId.slice(0, 8),
+        dec: m.dec ?? t?.dec ?? 0,
         ...(icon ? { icon } : {}),
-        balance: t.balance,
-        outputs: t.valueOutputs,
-        onExchange: registered.has(t.tokenId),
-        requested: asked.has(t.tokenId),
+        balance,
+        outputs: t?.valueOutputs ?? 0,
+        inSwaps: swaps.get(tokenId)?.amount ?? 0n,
+        onExchange: registered.has(tokenId),
+        requested: asked.has(tokenId),
       };
-    });
+    }),
+  );
+  return out.filter((t) => t.balance > 0n || t.inSwaps > 0n).sort((a, b) => a.sym.localeCompare(b.sym) || a.tokenId.localeCompare(b.tokenId));
+}
+
+/**
+ * "Move back" (src/market/activeSwap.ts): every `amm-swap` output of the
+ * token to a module receiving key of the user's own, submitted to this
+ * skein's token topic and taken in through the module. The recovery path
+ * for a swap that got stuck, and how a closed position's tokens reach the
+ * wallet's balance.
+ */
+export async function moveBackTokens(tokenId: TokenId): Promise<{ txid: string; amount: bigint; internalized: boolean; errors: string[] }> {
+  const { wallet, af } = needWallet();
+  const meta = await tokenMeta();
+  const r = await moveBack({ wallet, af, base: context.base, tokenId, meta: { sym: symOf(meta, tokenId) }, satsPerKb: FEE_RATE_SATS_PER_KB, payouts: context.payouts });
+  emit();
+  return { txid: r.txid, amount: r.amount, internalized: r.internalized, errors: r.errors };
 }
 
 /** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the box `<app>/requests` (anyone may send; recorded for root). */

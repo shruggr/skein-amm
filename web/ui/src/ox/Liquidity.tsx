@@ -35,7 +35,10 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
     setError(null);
     try {
       const r = await closePosition({ outpoint: p.outpoint, bsvFee: fee });
-      onClosed(`Closed ${pair}: ${fmtSats(r.sats)} sats and ${fmtAmount(r.tokens, p.dec)} ${p.sym} returned to your wallet.`, r.txid);
+      onClosed(
+        `Closed ${pair}: ${fmtSats(r.sats)} sats returned to your wallet; ${fmtAmount(r.tokens, p.dec)} ${p.sym} are in the swap basket (Your tokens, Move back).`,
+        r.txid,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -48,7 +51,8 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
       <article className="panel pos pos-confirm" aria-label={`Close ${pair}`}>
         <h2 className="h2 h2-sm">Close {pair}?</h2>
         <p className="fg2 small">
-          Everything in the pool returns to your wallet: {fmtSats(p.sats)} sats and {fmtAmount(p.tokens, p.dec)} {p.sym}.
+          Everything in the pool returns to you: {fmtSats(p.sats)} sats to your wallet, and {fmtAmount(p.tokens, p.dec)} {p.sym} to the swap basket, which Your
+          tokens moves back into your wallet.
         </p>
         <div className="field">
           <label htmlFor={feeId}>Miner fee from the pool (sats)</label>
@@ -87,9 +91,6 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
           <Id value={p.outpoint} kind="outpoint" label={`${pair} pool`} />
         </span>
       </div>
-      {p.rescinded && (
-        <Notice kind="bad">The validator withdrew this pool&apos;s listing: it no longer trades. Close it to take everything back.</Notice>
-      )}
       <dl className="kv">
         <dt>In the pool</dt>
         <dd className="num">
@@ -118,13 +119,13 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
 function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   const mine = useMyTokens(true);
   const terms = useValidatorTerms();
-  const usable = mine.data?.filter((t) => t.onExchange) ?? null;
+  const usable = mine.data?.filter((t) => t.onExchange && t.balance > 0n) ?? null;
   const [pick, setPick] = useState<string>("");
   const [tokensText, setTokensText] = useState("");
   const [satsText, setSatsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ outpoint: string } | null>(null);
+  const [done, setDone] = useState<{ outpoint: string; warnings?: string[] } | null>(null);
 
   const token = usable?.find((t) => t.tokenId === pick) ?? usable?.[0];
   const dec = token?.dec ?? 0;
@@ -143,7 +144,7 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
     setDone(null);
     try {
       const r = await deployPosition({ tokenId: token.tokenId, tokens, sats });
-      setDone({ outpoint: r.outpoint });
+      setDone({ outpoint: r.outpoint, ...(r.warnings ? { warnings: r.warnings } : {}) });
       setTokensText("");
       setSatsText("");
     } catch (e) {
@@ -216,8 +217,8 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
             </span>
             <span className="muted">
               Fees are the validator&apos;s: LP {terms.data.fees.lpBps} · validator {terms.data.fees.validatorBps}
-              {terms.data.fees.commissionBps > 0 ? ` · commission ${terms.data.fees.commissionBps}` : ""} bps. The exchange adds its claim and
-              broadcasts.
+              {terms.data.fees.commissionBps > 0 ? ` · commission ${terms.data.fees.commissionBps}` : ""} bps. The validator affirms the pool;
+              your wallet builds and broadcasts it.
             </span>
           </>
         ) : (
@@ -230,6 +231,7 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
           Deployed. The new pool is <Id value={done.outpoint} kind="outpoint" label="pool" />.
         </Notice>
       )}
+      {done?.warnings && <Notice kind="bad">The deploy is broadcast, but: {done.warnings.join("; ")}</Notice>}
       <div className="actions">
         <button type="submit" className="btn btn-primary" disabled={busy || !token || !tokens || !sats || tokensBad || satsBad}>
           {busy ? "Deploying…" : "Deploy"}

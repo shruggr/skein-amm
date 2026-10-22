@@ -63,7 +63,7 @@ import {
   Utils,
 } from "@bsv/sdk";
 import { CTOR, METHOD_INDEX, poolArtifact, type PoolMethod } from "./artifact";
-import { decodeMandala, mandalaValuePrefix } from "./mandala";
+import { decodeOneColor, oneColorValuePrefix } from "./oneColor";
 import { deriveValidatorPubKey } from "../lib/keys";
 
 // ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ const p2pkhHex = (pkh: string) => `76a914${pkh}88ac`;
 const pkhOf = (pubKeyHex: string) => toHex(Hash.hash160(fromHex(pubKeyHex)) as number[]);
 
 function tokenPrefixHex(assetId: string, amount: bigint): string {
-  return toHex(mandalaValuePrefix(fromHex(assetId), amount));
+  return toHex(oneColorValuePrefix(fromHex(assetId), amount));
 }
 
 /** `tokenP2pkh` in Pool.runar.go: a 1Color value output of `amount` to `pkh`. */
@@ -315,7 +315,7 @@ export class PoolTemplate {
    */
   static decode(script: string | LockingScript | number[]): Pool | null {
     const bytes = Array.isArray(script) ? script : fromHex(scriptHex(script));
-    const prefix = decodeMandala(bytes);
+    const prefix = decodeOneColor(bytes);
     if (!prefix || prefix.role !== "value") return null;
     if (prefix.idBytes?.length !== 32) return null;
 
@@ -728,7 +728,7 @@ function decodeUtxo(utxo: PoolUtxo): Pool {
 function checkTokenInputs(inputs: BuilderInput[], assetId: string, expected: bigint): void {
   let sum = 0n;
   for (const i of inputs) {
-    const t = decodeMandala(fromHex(scriptHex(i.lockingScript)));
+    const t = decodeOneColor(fromHex(scriptHex(i.lockingScript)));
     if (t && t.idBytes && toHex(t.idBytes) === assetId) sum += t.amount;
   }
   if (sum !== expected) {

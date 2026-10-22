@@ -15,9 +15,10 @@
  * always to be shown in the txid.vout format, not underscores. The ONLY
  * remnant of underscores is for legacy tokenIds".
  *
- * 1sat-sdk's wallet filings (`bsv21:<id>` tags, the customInstructions `id`)
- * and `Mandala`'s string id take the same `<txid>_<vout>` (`sdkTokenId`); the
- * token's basket is `mandala <txid> <vout>`; the Zig programs' outpoint fields
+ * The wallet's BRC-207 module's asset id, 1sat-sdk's `OneColor` string id and
+ * the exchange's own filings take the same `<txid>_<vout>` (`sdkTokenId`); the
+ * module's baskets name it by its asset tag, `p color <txid>v<vout>`
+ * (src/wallet/color.ts); the Zig programs' outpoint fields
  * (amm-lookup's `{outpoint}`, the relay's) and the LP key derivations keep
  * `<txid>_<vout>` as before.
  */
@@ -56,7 +57,7 @@ export function tokenIdText(ref: TokenRef): string {
 /**
  * The token id a 1Color output names by its BRC-162 wire id (internal byte
  * order): 32 bytes is `<txid>_0`, 36 bytes (a legacy BRC-161 token at
- * vout > 0) `<txid>_<vout>`; as 1sat-sdk's `MandalaToken.tokenId` prints it.
+ * vout > 0) `<txid>_<vout>`; as 1sat-sdk's `OneColor` prints it.
  */
 export function tokenIdOfWire(idBytes: Uint8Array | number[]): string {
   const b = Uint8Array.from(idBytes);
@@ -75,7 +76,7 @@ function must(text: string): TokenRef {
   return r;
 }
 
-/** Any token id form → the token id string, `<txid>_<vout>` (a `<txid>` as `<txid>_0`): the form shown and the form 1sat-sdk takes (wallet tags and customInstructions, `Mandala`'s string id). */
+/** Any token id form → the token id string, `<txid>_<vout>` (a `<txid>` as `<txid>_0`): the form shown and the BRC-207 asset id (the module's receipts, `OneColor`'s string id). */
 export function sdkTokenId(text: string): string {
   return tokenIdText(must(text));
 }

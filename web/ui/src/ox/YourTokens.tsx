@@ -1,6 +1,10 @@
-/** Your tokens: the wallet's own 1Color tokens with balance, each on this exchange or with "Add to this exchange". */
+/**
+ * Your tokens: the wallet's own 1Color tokens with balance (the BRC-207 module's), each on this
+ * exchange or with "Add to this exchange"; beside the balance, what the swap basket holds of it,
+ * with "Move back" (0.12.0: the recovery path for a stuck swap, and a closed position's tokens).
+ */
 import { useState } from "react";
-import { COLOR_DEPLOY_HREF, requestListing, useMyTokens, type Session, type WalletToken } from "../data/exchange";
+import { COLOR_DEPLOY_HREF, moveBackTokens, requestListing, useMyTokens, type Session, type WalletToken } from "../data/exchange";
 import { fmtAmount } from "./format";
 import { NeedWallet, Notice, TokenName } from "./bits";
 
@@ -32,6 +36,42 @@ function Status({ t }: { t: WalletToken }) {
   );
 }
 
+function SwapBasket({ t }: { t: WalletToken }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (t.inSwaps === 0n) return null;
+  return (
+    <span className="status-cell">
+      <span className="muted small">
+        In the swap basket {fmtAmount(t.inSwaps, t.dec)}{" "}
+        <button
+          type="button"
+          className="btn btn-outline"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            moveBackTokens(t.tokenId).then(
+              (r) => {
+                if (r.errors.length > 0) setError(r.errors.join("; "));
+                setBusy(false);
+              },
+              (e: unknown) => {
+                setError(e instanceof Error ? e.message : String(e));
+                setBusy(false);
+              },
+            );
+          }}
+          aria-label={`Move ${t.sym} back from the swap basket into your wallet`}
+        >
+          {busy ? "Moving…" : "Move back"}
+        </button>
+      </span>
+      {error && <span className="bad small">{error}</span>}
+    </span>
+  );
+}
+
 export function YourTokens({ session }: { session: Session }) {
   const connected = session.status === "connected";
   const mine = useMyTokens(connected);
@@ -43,7 +83,10 @@ export function YourTokens({ session }: { session: Session }) {
           Deploy a new token
         </a>
       </div>
-      <p className="lead lead-tight">1Color tokens in your wallet. Add one to ask this exchange to list it.</p>
+      <p className="lead lead-tight">
+        1Color tokens in your wallet. Add one to ask this exchange to list it. The swap basket holds tokens on their way into a swap; Move back
+        returns them to your wallet.
+      </p>
       {!connected ? (
         <NeedWallet session={session} what="your tokens" />
       ) : (
@@ -67,6 +110,7 @@ export function YourTokens({ session }: { session: Session }) {
                     <span className="num r">
                       <span className="lbl">Balance </span>
                       {fmtAmount(t.balance, t.dec)}
+                      <SwapBasket t={t} />
                     </span>
                     <span className="r">
                       <Status t={t} />

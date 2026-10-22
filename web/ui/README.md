@@ -1,5 +1,79 @@
 # @amm-poc/market-ui
 
+**skein-amm 0.12.0: the pages on the wallet's BRC-207 1Color module**
+(David Case, 2026-10-21/22). The user's tokens are the wallet's `color`
+module's (`@bsv/color-permission-module`, the interim `@bopen-io` repack;
+Yours branch `1color` registers it); the page names the module's baskets,
+keys, plans and receipts and never holds a token output in a basket of its
+own except the active swap basket. `src/wallet/color.ts` holds the names.
+
+- **Dependencies**: `@1sat/*` 0.1.0 from npm, `@bsv/sdk` →
+  `npm:@bopen-io/sdk@4.0.1`, `@bsv/color-permission-module` →
+  `npm:@bopen-io/color-permission-module@0.1.0`, `@bsv/templates` →
+  `npm:@bopen-io/templates@2.1.0` (package.json `dependencies` and
+  `overrides`; one copy of `@bsv/sdk` in the tree). The 1Color template is
+  1sat-sdk's `OneColor` (`@1sat/templates`, formerly `Mandala`;
+  `src/pool/oneColor.ts`). The local 1sat-sdk checkout and
+  `ONESAT_SDK_DIR` are gone; vitest runs against the published packages.
+  The `mandala <txid> <vout>` baskets, the `bsv21` filings and their custom
+  instructions are gone.
+- **Your tokens** (`myTokens`): the assets of `listOutputs({basket: "p
+  color assets"})` (decoded from their locking scripts, `src/lp/inventory.ts`),
+  each balance `listOutputs({basket: "p color balance <assetTag>"})`
+  (`totalOutputs`, an exact decimal string; `<assetTag>` = `<txid>v<vout>`,
+  the module's `assetTag`); symbol, decimals and icon from the token list
+  (`/color/tokens`), else the deploy lookup (`ls_color_deploys {tokenId}`),
+  else a deploy the wallet holds. Beside the balance, what the active swap
+  basket holds of the token, with **Move back**.
+- **Pool deploy** (`src/lp/poolDeploy.ts` `deployPool`): `amm.pool.terms`,
+  then `amm.pool.affirm {pool, satoshis, keyInput}` → the validator's
+  signature, the pool output's payload (checked with
+  `PoolTemplate.affirmed`); then ONE `createAction`: the key input (one of
+  the wallet's own outputs of the token, `inputPositions` index 0: the
+  pool's first validator key is keyed by the deploy's first token input,
+  so the page names it), output 0 the pool (a transfer to a foreign script
+  in the `p color plan`), output 1 the key input's rest to a fresh module
+  key when it carries more than the deposit (the plan's `ownedOutputs`),
+  `randomizeOutputs: false`; the module adds any further token inputs and
+  their change, signs and submits to `tm_color_<assetId>`; the page submits
+  too (plain fetch). The position row: output 0 into `amm-pools` (basket
+  insertion). `amm.pool.submit`, the funding transaction, SIGHASH_SINGLE,
+  the claim and `deployFlow.ts` / `poolRelay.ts` are gone.
+- **Swaps, tokens in** (`src/market/activeSwap.ts`): each leg spends
+  `amm-swap` outputs that carry its amount in exactly (the pool takes no
+  token change); the legs they do not cover get one output each from ONE
+  module send before the legs (outputs to fresh keys under the exchange's
+  protocol `[2, "amm swap"]`, counterparty self; the plan a transfer out;
+  one prompt), filed in `amm-swap` with `{assetId, amount, protocolID,
+  keyID, counterparty}`. The legs are built, signed (`createSignature`
+  under that key), relayed and settled as before; their inputs are
+  relinquished from `amm-swap`. Sats in: no module step.
+- **Token payouts**: a swap's token payout (and the taker's own token
+  commission) is locked to a module receiving key, `getPublicKey({protocolID:
+  [2, "p color <assetTag> <prefixHex> <suffixHex>"], keyID: "color",
+  counterparty: <the pool's ValidatorIdentity>, forSelf: true})`, fresh
+  random prefix and suffix; accepted, `internalizeAction` with a basket
+  insertion into `p color <assetTag>` and the receipt JSON (`@1sat/actions`
+  `colorReceiptInstructions`). Pending payouts keep both kinds (a BRC-29
+  remittance or a receipt).
+- **Close**: the contract pays the tokens to the LP key (a BRC-29 key, not a
+  module key), so they are filed in `amm-swap` under that key; Move back
+  takes them into the wallet's balance.
+- **Move back** (`moveBack`): an app-built transaction spending every
+  `amm-swap` output of the token and a funding output the wallet broadcasts
+  (`1sat-deposit`) to one module receiving key of the user's own (sender:
+  the user's identity), submitted to this skein's token topic, then taken in
+  through the module with its receipt; the spent outputs relinquished.
+- **Manifest**: baskets `amm-swap`, `amm-pools`, `1sat-deposit`; protocols
+  BRC-29 to self, `[2, "amm swap"]` to self, identity, AuthFetch's two, the
+  action labels; no `bsv21`, `1sat` or `[0, "onesat"]`, no spending
+  authorization, no `p color` entry (the module prompts for those itself,
+  and the manager routes every `p `-scheme basket and protocol to it, so a
+  manifest grant would never be consulted).
+
+Where the text below describes `bsv21` filings, `mandala` baskets, the
+delivered deploy or its claim, read this.
+
 **skein-amm 0.10.0: 1Color names** (skein-1color 0.10.0, BRC-207's wire
 names; David Case, 2026-10-21): every topic, lookup and program name the
 pages use is the new one — `tm_color_<assetId>` and its `-live`,
@@ -230,23 +304,23 @@ the rest. Every @1sat/connect connector calls `waitForAuthentication({})`
 first on connect (src/wallet/AppWalletProvider.tsx), so that prompt comes
 before any other.
 
-Declared:
+Declared (0.12.0):
 
-- Spending: 10,000,000 sats (0.1 BSV) a month — swap inputs, pool
-  deposits, fees.
-- Baskets: `bsv21` (tokens, pools held as LP), `1sat` (ordinals as icons;
-  an inscribed icon), `1sat-deposit` (a swap's exact funding output, held
-  until the swap's expiry, relinquished once the swap spent it).
+- Spending: none (David, 2026-10-22): the wallet asks for each action's spend.
+- Baskets: `amm-swap` (the active swap basket: tokens on their way into a
+  swap's legs, and a closed position's tokens), `amm-pools` (the pools held
+  as LP), `1sat-deposit` (a swap's exact funding output, held until the
+  swap's expiry, relinquished once the swap spent it; a Close's and a Move
+  back's funding). No `p color` basket: the module asks for those itself.
 - Protocols:
-  - `[0, "onesat"]` (1sat-sdk's `P1SAT_PROTOCOL`: token and legacy LP keys).
-    Level 0 is never prompted (`ensureProtocolPermission` returns at level 0,
-    WalletPermissionsManager.ts:1210), so the wallet never shows it; declared
-    for completeness.
   - `[2, "3241645161d8"]`, counterparty `"self"`: BRC-29 payout keys and LP
     keys ("BRC-29 payouts"). Level-2 grants are keyed by the exact
     counterparty string (`findProtocolToken`), so the page derives with
     counterparty `"self"` — the same key as the user's identity key in hex,
     but only `"self"` can be named in a static manifest.
+  - `[2, "amm swap"]`, counterparty `"self"`: the exchange's keys for the
+    `amm-swap` outputs (a fresh keyID per output), and the legs' and Move
+    back's signatures over them.
   - `[1, "identity key retrieval"]`: `getPublicKey({identityKey: true})`
     (connect, the remittance's sender, AuthFetch) is checked as this level-1
     protocol (WalletPermissionsManager.ts:4495), which groups like any
@@ -255,9 +329,12 @@ Declared:
     (`createNonce` / `verifyNonce`, counterparty self).
   - `[2, "auth message signature"]`, **no counterparty**: AuthFetch's request
     signatures, counterparty = the instance's identity.
-  - `[1, "action label amm-swap" | "amm-pool-deploy" |
-    "amm-remove-liquidity" | "amm-add-liquidity" | "amm-payout"]`: action labels are checked as
-    level-1 protocols `[1, "action label <label>"]` (`ensureLabelAccess`).
+  - `[1, "action label amm-swap" | "amm-pool-deploy" | "amm-close" |
+    "amm-payout"]`: action labels are checked as level-1 protocols
+    `[1, "action label <label>"]` (`ensureLabelAccess`).
+  - Not declared: `[0, "onesat"]` (1sat-sdk's `P1SAT_PROTOCOL`, the funding
+    keys): level 0 is never prompted. The `p color …` protocols: the
+    module's, routed to it by the permissions manager.
 - Certificates: none.
 
 Still prompted one-off, and why:
@@ -272,8 +349,10 @@ Still prompted one-off, and why:
   `maybeRequestPeerGroupedLevel2ProtocolPermissions` (:1961) fills the
   missing counterparty with that instance's key and raises a grouped prompt
   for it — once per instance, not up front.
-- **Spending beyond the monthly authorization**: a spending prompt
-  (`ensureSpendingAuthorization`).
+- **Every spend**: a spending prompt (`ensureSpendingAuthorization`; no
+  spending authorization is declared).
+- **Every `p color` read, send and receive**: the wallet's module asks
+  (`color_access`, `color_send`, …); Yours decides whether a grant covers it.
 - **Token inputs filed by other apps** under a level-1/2 protocol other than
   the above (the key named in a basket row's customInstructions): that
   protocol's own prompt.
@@ -1034,38 +1113,26 @@ page says so with the lookup's pool count.
 **Peers.** The validators this node sees on its own `/amm/live`, the
 validator picker's table (`src/pages/LiveTable.tsx`, shared).
 
-## The `Mandala` template from the local 1sat-sdk checkout
+## The 1sat-sdk packages and the BRC-207 module (published)
 
-`Mandala` (BRC-162) was not in a published `@1sat/templates` when amm-poc
-was written (draft PR b-open-io/1sat-sdk#82). Like
-runar-sdk, it is bundled from the checkout's sources: `vite.config.ts`
-aliases `@1sat/templates/mandala` to
-`$ONESAT_SDK_DIR/packages/templates/src/mandala/mandala.ts` (default
-`../../../../bsv/1sat-sdk` from here, i.e. `~/Work/bsv/1sat-sdk`), and `tsconfig.json`
-`paths` mirror it. The committed `www/` (0.8.0) was built against the
-unpublished embedded icon, b-open-io/1sat-sdk#92 (branch
-`feat/mandala-embedded-icon`, aff025c3, its worktree
-`~/Work/bsv/1sat-sdk-embedded-icon`): `ONESAT_SDK_DIR` at that worktree for
-`vite build` and the tests, and the typecheck with `paths` pointed there
-(a temporary tsconfig extending this one; `tsconfig.json` itself still names
-`~/Work/bsv/1sat-sdk`). Before 0.8.0, with its master at 183c0ce3. Its DAG-CBOR payload code imports `cbor2`, a dependency
-here, deduped with `@bsv/sdk` so the checkout needs no `node_modules`; since
-0.10.0 also `@ipld/dag-cbor` and `cborg` (the template imports them at
-aff025c3 and on master), dependencies here, deduped (vite.config.ts) and
-mapped (tsconfig.json `paths`) the same way. 0.10.0's `www/` and tests used
-that commit again, from a detached worktree of it (`git worktree add
---detach <dir> aff025c3`, `ONESAT_SDK_DIR=<dir>`); 1sat-sdk master
-(20947539) takes the icon as an outpoint, not `[mediaType, bytes]`, so
-`test/lp.test.ts`'s embedded-icon cases and the typecheck fail against it.
-`src/pool/mandala.ts` adapts it for the pool template; there is no second
-decoder. Once published, drop the alias and import from `@1sat/templates`.
+0.12.0: every 1sat-sdk package is the published 0.1.0 (`@1sat/actions`,
+`@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types`), built on
+`@bsv/sdk` 4 through the interim `@bopen-io` repack; this package aliases the
+same names (`dependencies` and `overrides`): `@bsv/sdk` →
+`npm:@bopen-io/sdk@4.0.1`, `@bsv/templates` →
+`npm:@bopen-io/templates@2.1.0`, `@bsv/color-permission-module` →
+`npm:@bopen-io/color-permission-module@0.1.0`, `@bsv/wallet-toolbox-client`
+→ `npm:@bopen-io/wallet-toolbox-client@2.15.0` (the module's dependency).
+`npm ls @bsv/sdk` shows one copy. When upstream publishes, replace each
+`npm:@bopen-io/<name>@<v>` with the upstream version and drop the overrides.
 
-The other 1sat-sdk packages come from npm: `@1sat/actions` (the
-customInstructions builders and the createAction pipeline), `@1sat/templates`
-(Inscription, BSV21, B), `@1sat/types` (baskets, tags). `@1sat/connect` /
-`@1sat/react` were bumped so all of them share one `@1sat/wallet`.
-`@1sat/actions` lazily imports `xdelta3-wasm`, whose `package.json` names a
-missing `module` file; `vite.config.ts` aliases it to the file that exists.
+The 1Color template is `OneColor` from `@1sat/templates` (1sat-sdk's
+`Mandala`, renamed; its embedded icon is `[mediaType, bytes]`);
+`src/pool/oneColor.ts` adapts it for the pool template, and there is no
+second decoder. The local 1sat-sdk checkout alias (`ONESAT_SDK_DIR`, the
+aff025c3 worktree of 0.8.0–0.11.0) is gone. `@1sat/actions` lazily imports
+`xdelta3-wasm`, whose `package.json` names a missing `module` file;
+`vite.config.ts` aliases it to the file that exists.
 
 ## runar-sdk from the local checkout
 

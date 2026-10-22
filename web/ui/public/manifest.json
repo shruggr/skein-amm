@@ -9,16 +9,17 @@
   "theme_color": "#0E1526",
   "metanet": {
     "groupPermissions": {
-      "description": "Open Exchange reads your tokens, builds swaps and pools with your wallet, and receives the sats pools pay you.",
+      "description": "Open Exchange builds swaps and pools with your wallet, holds the tokens on their way into a swap, and receives the sats pools pay you; your tokens themselves are read and sent through your wallet's 1Color module, which asks you each time.",
       "protocolPermissions": [
-        {
-          "protocolID": [0, "onesat"],
-          "description": "Derive the keys that hold your tokens and pools (1Sat token keys)."
-        },
         {
           "protocolID": [2, "3241645161d8"],
           "counterparty": "self",
           "description": "Derive one-time keys for the sats pools pay you, and for your LP position (BRC-29 payments to yourself)."
+        },
+        {
+          "protocolID": [2, "amm swap"],
+          "counterparty": "self",
+          "description": "Derive one-time keys for the tokens held in the swap basket, and sign the swap legs that spend them."
         },
         {
           "protocolID": [1, "identity key retrieval"],
@@ -52,12 +53,12 @@
       ],
       "basketAccess": [
         {
-          "basket": "bsv21",
-          "description": "Read and file your tokens and the pools you hold as LP."
+          "basket": "amm-swap",
+          "description": "File the tokens sent into the swap basket for your swap legs, spend them in the legs, and move them back into your wallet."
         },
         {
-          "basket": "1sat",
-          "description": "Read your ordinals to offer them as token icons, and file a new icon you inscribe."
+          "basket": "amm-pools",
+          "description": "File and read the pools you hold as LP, and drop one when you close it."
         },
         {
           "basket": "1sat-deposit",

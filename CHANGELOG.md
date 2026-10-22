@@ -4,6 +4,47 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.12.0 (2026-10-22)
+
+The pages (`web/ui`, `www/`) move onto the wallet's BRC-207 1Color module
+(David Case, 2026-10-21/22; docs/AMM.md "The pages and the wallet's
+module"). Nothing outside the pages changed: `bin/`, the contract, the
+fixtures and `www/color/` are 0.11.0's.
+
+- **Dependencies**: `@1sat/*` 0.1.0 (published), `@bsv/sdk` 4.0.1,
+  `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and
+  `@bsv/wallet-toolbox-client` 2.15.0 through the interim `@bopen-io`
+  repacks (npm aliases and `overrides`; one copy of `@bsv/sdk`). The
+  template is 1sat-sdk's `OneColor` (was `Mandala`; `src/pool/oneColor.ts`).
+  The local 1sat-sdk checkout alias (`ONESAT_SDK_DIR`, aff025c3) is gone.
+  The `mandala <txid> <vout>` and `bsv21` baskets and their custom
+  instructions are gone.
+- **Your tokens**: the module's assets (`p color assets`) and balances
+  (`p color balance <assetTag>`, exact); metadata from the token list, else
+  `ls_color_deploys`, else a held deploy; what the active swap basket holds,
+  with Move back.
+- **Pool deploy**: `amm.pool.affirm`, then ONE createAction (key input at
+  index 0, the affirmed pool at output 0 as a transfer to a foreign script,
+  the key input's rest to a fresh module key, `randomizeOutputs: false`);
+  the module funds the tokens and submits; the page submits too and files
+  the pool in `amm-pools`. Gone: the funding transaction, SIGHASH_SINGLE,
+  the claim, `amm.pool.submit` (`lp/deployFlow.ts`, `lp/poolRelay.ts`),
+  `completePoolDeploy`, `abandonPoolDeploy`, a position's "rescinded".
+- **Swaps**: tokens in, the legs spend the active swap basket `amm-swap`
+  (keys `[2, "amm swap"]`, counterparty self); the legs it does not cover
+  get an output each from ONE module send before the legs. Token payouts
+  (and the taker's own token commission) go to a module receiving key, the
+  pool's validator the sender, taken in with a receipt. Pending payouts
+  keep receipts as well as BRC-29 remittances.
+- **Close**: the tokens (paid by the contract to the LP key) are filed in
+  `amm-swap`; Move back takes them into the wallet.
+- **Move back**: every `amm-swap` output of a token, with a broadcast
+  funding for the fee, to one module receiving key of the user's own;
+  submitted to the token topic; taken in through the module.
+- **Manifest**: baskets `amm-swap`, `amm-pools`, `1sat-deposit`; protocol
+  `[2, "amm swap"]` (self) added; `bsv21`, `1sat` and `[0, "onesat"]`
+  dropped; no spending authorization; no `p color` entry.
+
 ## 0.11.0 (2026-10-22)
 
 Pool deploys move to the BRC-207 wallet module (David Case, 2026-10-21):

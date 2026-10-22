@@ -35,9 +35,6 @@
       "@runar-src/*": [
         "../../../../bsv/runar/packages/*"
       ],
-      "@1sat/templates/mandala": [
-        "../../../../bsv/1sat-sdk/packages/templates/src/mandala/mandala.ts"
-      ],
       "cbor2": [
         "./node_modules/cbor2/lib/index.d.ts"
       ],

@@ -25,4 +25,4 @@ export {
   type PoolBuildErrorCode,
 } from "./template";
 export { poolArtifact, METHOD_INDEX, type PoolMethod } from "./artifact";
-export { decodeMandala, mandalaValuePrefix, type MandalaPrefix, type MandalaRole } from "./mandala";
+export { decodeOneColor, oneColorValuePrefix, type OneColorPrefix, type OneColorRole } from "./oneColor";

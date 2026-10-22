@@ -78,15 +78,15 @@ describe("the skein's doors", () => {
 });
 
 describe("the positions' pool rows", () => {
-  it("a pool row: its deploy outpoint, the token, the LP key, the claim's vout (null before 0.9.0); other rows passed over", () => {
+  it("a pool row (amm-pools, 0.12.0: no claim): its deploy outpoint, the token, the LP key; other rows passed over", () => {
     const rows = positionRowsOf([
-      { outpoint: `${"33".repeat(32)}.0`, satoshis: 1, tags: ["amm-pool"], customInstructions: JSON.stringify({ id: T, op: "amm-pool", sym: "TST", dec: "2", protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self", amm: { claimVout: 4, validatorIdentity: A } }) },
+      { outpoint: `${"33".repeat(32)}.0`, satoshis: 1, tags: ["amm-pool"], customInstructions: JSON.stringify({ id: T, op: "amm-pool", sym: "TST", dec: "2", protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self", amm: { validatorIdentity: A } }) },
       { outpoint: `${"44".repeat(32)}.0`, satoshis: 1, tags: ["amm-pool"], customInstructions: JSON.stringify({ id: U, op: "amm-pool", protocolID: [0, "onesat"], keyID: "old" }) },
       { outpoint: `${"55".repeat(32)}.1`, satoshis: 1, tags: [], customInstructions: JSON.stringify({ id: T, amt: "5" }) },
     ]);
     expect(rows).toEqual([
-      { deployOutpoint: `${"33".repeat(32)}.0`, tokenId: T, sym: "TST", dec: 2, lpKey: { protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self" }, claimVout: 4, validatorIdentity: A },
-      { deployOutpoint: `${"44".repeat(32)}.0`, tokenId: U, lpKey: { protocolID: [0, "onesat"], keyID: "old", counterparty: "self" }, claimVout: null },
+      { deployOutpoint: `${"33".repeat(32)}.0`, tokenId: T, sym: "TST", dec: 2, lpKey: { protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self" }, validatorIdentity: A },
+      { deployOutpoint: `${"44".repeat(32)}.0`, tokenId: U, lpKey: { protocolID: [0, "onesat"], keyID: "old", counterparty: "self" } },
     ]);
   });
 });

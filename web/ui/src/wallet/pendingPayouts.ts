@@ -1,9 +1,13 @@
 /**
- * Pending payouts: every BRC-29 payout output the page has built and the
- * wallet has not yet internalized, kept durably in the browser so the final
- * step (`internalizeAction`) can run later — after a reload, or for a swap
- * once the validator returns the signed transaction. The wallet derives the
- * output's private key from exactly the remittance stored here.
+ * Pending payouts: every payout output the page has built and the wallet has
+ * not yet internalized, kept durably in the browser so the final step
+ * (`internalizeAction`) can run later — after a reload, or for a swap once
+ * the validator returns the signed transaction. Two kinds of output (0.12.0):
+ * sats, a BRC-29 wallet payment (the wallet derives the output's private key
+ * from exactly the remittance stored here); tokens, an output locked to a
+ * BRC-207 module receiving key, taken in through the module with the receipt
+ * stored here (src/wallet/color.ts `receiptOutput`; the module asks the
+ * overlay that the output is admitted and unspent).
  *
  * Where the remittance lives at each step:
  *   1. built: in the createAction call (the output's customInstructions, so
@@ -19,22 +23,28 @@
  * `{[txid:vout]: PendingPayout}`; every access is guarded (private windows,
  * blocked storage), and tests pass their own `KV`.
  */
-import { Beef, type WalletInterface } from "@bsv/sdk";
+import { Beef, Utils, type WalletInterface } from "@bsv/sdk";
 import { lookupPoolOutput, queryPools, type SignedFetch } from "../lib/overlay";
 import { internalizePayout, type PaymentRemittance } from "./brc29";
+import { receiptOutput, type ColorReceipt } from "./color";
 
 export const PENDING_PAYOUTS_KEY = "amm-poc.pending-payouts.v1";
 
 export interface PendingPayout {
   /** `txid:vout` */
   id: string;
-  kind: "swap" | "remove-liquidity";
+  kind: "swap" | "remove-liquidity" | "move-back";
   txid: string;
   vout: number;
   satoshis: number;
-  /** P2PKH to the BRC-29 key, hex: how the final transaction is recognised when its txid is not known yet. */
+  /** The output's script, hex (P2PKH to the BRC-29 key, or the 1Color output to the module key): how the final transaction is recognised when its txid is not known yet. */
   lockingScript: string;
-  remittance: PaymentRemittance;
+  /** A sats payout: its BRC-29 remittance. */
+  remittance?: PaymentRemittance;
+  /** A token payout: its BRC-207 receipt. */
+  receipt?: ColorReceipt;
+  /** The transaction's AtomicBEEF, hex, when the page holds it (a move back): no lookup needed. */
+  atomicBeef?: string;
   /**
    * false while the txid is provisional: a swap is built with the
    * validator's signature slot empty and the wallet's inputs unsigned, so its
@@ -184,6 +194,10 @@ function findIn(beefBytes: number[], p: PendingPayout): { txid: string; beef: nu
  * longer in any live pool's BEEF).
  */
 export async function findPayoutBeef(af: SignedFetch | null, base: string, p: PendingPayout): Promise<{ txid: string; beef: number[] } | null> {
+  if (p.atomicBeef) {
+    const hit = findIn(Utils.toArray(p.atomicBeef, "hex"), p);
+    if (hit) return hit;
+  }
   if (p.final && p.poolOutpoint) {
     try {
       const out = await lookupPoolOutput(af, base, p.tokenId, p.poolOutpoint);
@@ -219,7 +233,11 @@ export async function internalizePending(
 ): Promise<{ accepted: boolean; txid: string }> {
   let rec = p;
   if (found.txid !== p.txid || !p.final) rec = store.finalize(p.id, found.txid) ?? { ...p, id: payoutId(found.txid, p.vout), txid: found.txid, final: true };
-  const r = await internalizePayout(wallet, found.beef, { outputIndex: rec.vout, remittance: rec.remittance }, rec.description);
+  const r = rec.receipt
+    ? await wallet.internalizeAction({ tx: found.beef, outputs: [receiptOutput(rec.vout, rec.receipt)], description: rec.description.slice(0, 50), labels: ["amm-payout"] })
+    : rec.remittance
+      ? await internalizePayout(wallet, found.beef, { outputIndex: rec.vout, remittance: rec.remittance }, rec.description)
+      : { accepted: false };
   if (r.accepted) store.remove(rec.id);
   return { accepted: r.accepted, txid: found.txid };
 }

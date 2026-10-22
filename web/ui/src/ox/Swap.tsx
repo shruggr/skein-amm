@@ -88,7 +88,10 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
   const mine = useMyTokens(connected);
   const pools = useTokenPools(token.tokenId);
   const terms = useValidatorTerms();
-  const held = mine.data?.find((t) => t.tokenId === token.tokenId)?.balance ?? 0n;
+  const mineToken = mine.data?.find((t) => t.tokenId === token.tokenId);
+  // A sell spends the swap basket's outputs first, then what the wallet sends into it (0.12.0).
+  const inSwaps = mineToken?.inSwaps ?? 0n;
+  const held = (mineToken?.balance ?? 0n) + inSwaps;
 
   const payDec = side === "buy" ? 0 : token.dec;
   const recvDec = side === "buy" ? token.dec : 0;
@@ -148,7 +151,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
       ? sats.data !== null
         ? `Wallet: ${fmtSats(sats.data)} sats`
         : "Wallet: …"
-      : `Wallet: ${fmtAmount(held, token.dec)} ${token.sym}`
+      : `Wallet: ${fmtAmount(held - inSwaps, token.dec)} ${token.sym}${inSwaps > 0n ? ` (and ${fmtAmount(inSwaps, token.dec)} in the swap basket)` : ""}`
     : "Connect a wallet to swap.";
   const tooMuch = connected && amountIn !== null && (side === "buy" ? sats.data !== null && amountIn > sats.data : amountIn > held);
 

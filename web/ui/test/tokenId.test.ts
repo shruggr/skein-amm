@@ -11,7 +11,7 @@ import {
   tokenIdText,
 } from "../src/lib/tokenId";
 import { parseTokenTopic } from "../src/lib/overlay";
-import { mandalaBasket } from "../src/lp/wallet";
+import { assetBasket, balanceSelector } from "../src/wallet/color";
 import { assetIdHex } from "../src/lp/poolDeploy";
 import { assetIdOf } from "../src/market/swapAction";
 import { fullId, shortId } from "../src/components/Id";
@@ -46,14 +46,13 @@ describe("token ids are <txid>_<vout> for every token (David 2026-10-07, BRC-162
     expect(() => tokenIdOfWire(internal.slice(1))).toThrow(/32 or 36/);
   });
 
-  it("hands 1sat-sdk the same <txid>_<vout> (a <txid> input as <txid>_0) and names the token's basket `mandala <txid> <vout>`", () => {
+  it("hands the wallet's BRC-207 module the same <txid>_<vout> (a <txid> input as <txid>_0); its baskets are `p color <txid>v<vout>`", () => {
     expect(sdkTokenId(TX)).toBe(tokenIdText({ txid: TX, vout: 0 }));
     expect(sdkTokenId(TX)).toBe(`${TX}_0`);
     expect(sdkTokenId(`${TX}.3`)).toBe(`${TX}_3`);
     expect(() => sdkTokenId("nope")).toThrow(/not a token id/);
-    expect(mandalaBasket(TX)).toBe(`mandala ${TX} 0`);
-    expect(mandalaBasket(`${TX}_0`)).toBe(`mandala ${TX} 0`);
-    expect(mandalaBasket(`${UP}.2`)).toBe(`mandala ${TX} 2`);
+    expect(assetBasket(sdkTokenId(TX), "value")).toBe(`p color ${TX}v0`);
+    expect(balanceSelector(sdkTokenId(`${UP}.2`))).toBe(`p color balance ${TX}v2`);
   });
 
   it("pools take a 32-byte id in any form", () => {

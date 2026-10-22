@@ -28,19 +28,21 @@ describe("manifest.json", () => {
     expect(manifest.start_url).toBe("./");
     expect(Object.keys(g).sort()).toEqual(["basketAccess", "certificateAccess", "description", "protocolPermissions"]);
     expect(g.certificateAccess).toEqual([]);
-    expect(g.basketAccess.map((b: { basket: string }) => b.basket)).toEqual(["bsv21", "1sat", "1sat-deposit"]);
+    // 0.12.0: the exchange's own baskets; no `bsv21`, no `1sat`; no `p color` entry (the wallet's module asks for those itself).
+    expect(g.basketAccess.map((b: { basket: string }) => b.basket)).toEqual(["amm-swap", "amm-pools", "1sat-deposit"]);
+    expect(JSON.stringify(manifest)).not.toMatch(/p color|spendingAuthorization/);
     for (const e of [...g.protocolPermissions, ...g.basketAccess]) {
       expect(e.description).toMatch(/^[A-Z][^.]*(\.[^.]+)*\.$/); // one sentence
     }
   });
 
-  it("protocols: onesat, BRC-29 to self, identity key, AuthFetch's two, and every action label the pages use", () => {
+  it("protocols: BRC-29 to self, the exchange's [2, \"amm swap\"] to self, identity key, AuthFetch's two, and every action label the pages use (no onesat: the funding keys are level 0)", () => {
     const used = new Set<string>();
     for (const src of sources(join(root, "src"))) for (const m of src.matchAll(/labels: \[([^\]]*)\]/g)) for (const l of m[1]!.matchAll(/"([^"]+)"/g)) used.add(l[1]!);
     expect([...used].sort()).toEqual(["amm-close", "amm-payout", "amm-pool-deploy", "amm-swap"]);
     expect(g.protocolPermissions.map((p: { protocolID: unknown; counterparty?: string }) => [p.protocolID, p.counterparty])).toEqual([
-      [[0, "onesat"], undefined],
       [[2, "3241645161d8"], "self"],
+      [[2, "amm swap"], "self"],
       [[1, "identity key retrieval"], undefined],
       [[2, "server hmac"], "self"],
       // No counterparty: the instance's identity is not known here; the manager groups it per peer at first use.

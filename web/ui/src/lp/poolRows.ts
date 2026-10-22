@@ -1,7 +1,7 @@
 /**
- * How this page files a pool output it holds as LP in the `bsv21` basket:
- * tags `bsv21:<tokenId>` + `amm-pool`, customInstructions `op: "amm-pool"`
- * and no `amt` (src/lp/poolDeploy.ts). Such a row is not a token balance and
+ * How this page files a pool output it holds as LP in the exchange's basket
+ * `amm-pools` (0.12.0; `bsv21` before): tag `amm-pool`, customInstructions
+ * `op: "amm-pool"` (src/lp/poolDeploy.ts). Such a row is not a token balance and
  * not a token input: its script starts with a 1Color value prefix, but the
  * lock behind it is the Pool contract, not P2PKH.
  */

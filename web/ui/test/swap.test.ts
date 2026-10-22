@@ -7,12 +7,14 @@
  * relay's call shape and status polling, acceptance (internalize +
  * relinquish) and refusal / timeout (abortAction).
  */
-import { BigNumber, ECDSA, Beef, LockingScript, P2PKH, PrivateKey, Transaction, UnlockingScript, Utils, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
+import { colorReceiptInstructions } from "@1sat/actions";
+import { colorProtocolID } from "@bsv/color-permission-module";
+import { BigNumber, ECDSA, Beef, LockingScript, P2PKH, PrivateKey, PublicKey, Transaction, UnlockingScript, Utils, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
 import { computeSwap, type Leg, type PoolState } from "@amm-poc/matching-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BRC29, brc29Side, isBrc29 } from "./brc29Wallet";
 import { PendingPayoutStore, internalizeNow, type KV } from "../src/wallet/pendingPayouts";
-import { PoolTemplate, decodeMandala } from "../src/pool";
+import { PoolTemplate, decodeOneColor } from "../src/pool";
 import {
   LIVE_WINDOW_MS,
   liveTopicOf,
@@ -444,7 +446,7 @@ describe("the funding transaction", () => {
 
 describe("the swap transaction", () => {
   it("sats in: [pool, funding] → exactly the contract's outputs; the funding input validates; with the validator's signature every input does", async () => {
-    const { prepared, vkey } = await satsIn();
+    const { prepared, vkey, side } = await satsIn();
     const s = prepared.swap;
     expect(s.inputs.map((i) => `${i.sourceTXID}.${i.sourceOutputIndex}`)).toEqual([`${poolDeploy.id("hex")}.0`, prepared.funding.outpoint]);
     expect(s.outputs.map((o) => [BigInt(o.satoshis!), o.lockingScript.toHex()])).toEqual(prepared.plan.outputs.map((o) => [o.satoshis, o.script]));
@@ -453,14 +455,19 @@ describe("the swap transaction", () => {
     expect(spendValid(s, 0)).toBe(false); // the validator's slot is OP_0
     const final = await validatorSigns(prepared, s.toBinary(), vkey);
     for (const i of [0, 1]) expect(spendValid(final, i)).toBe(true);
-    expect(prepared.payout).toMatchObject({ kind: "bsv21", outputIndex: 1, basket: "bsv21", tags: [`bsv21:${SDK_ID}`] });
+    // The token payout (0.12.0): locked to a BRC-207 module receiving key whose sender is the pool's validator.
+    if (prepared.payout.kind !== "color") throw new Error("expected a module receipt");
+    const rc = prepared.payout.receipt;
+    expect(rc).toMatchObject({ assetId: SDK_ID, senderIdentityKey: v.identity });
+    const recv = side.publicKey({ protocolID: colorProtocolID(rc.assetId, rc.derivationPrefix, rc.derivationSuffix), keyID: "color", counterparty: v.identity, forSelf: true });
+    expect(s.outputs[1]!.lockingScript.toHex().endsWith(new P2PKH().lock(PublicKey.fromString(recv).toAddress()).toHex())).toBe(true);
   });
 
   it("tokens in: [pool, funding, token] with the token input's BEEF from the wallet; funding = 1 sat per 1Color fee or commission output − the token input's sat + fee; all valid", async () => {
     const { prepared, calls, vkey, side } = await tokensIn();
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "listOutputs", "listOutputs", "getPublicKey", "createAction", "signAction", "createSignature", "getPublicKey", "createSignature", "getPublicKey"]);
-    expect(calls[2]!.args).toEqual({ basket: `mandala ${TOKEN_ID.slice(0, 64)} 0`, include: "entire transactions", limit: 10000 });
-    expect(calls[3]!.args).toEqual({ basket: "bsv21", tags: [`bsv21:${SDK_ID}`], include: "entire transactions", limit: 10000 });
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "listOutputs", "getPublicKey", "createAction", "signAction", "createSignature", "getPublicKey", "createSignature", "getPublicKey"]);
+    // The token inputs' sources: the active swap basket (0.12.0).
+    expect(calls[2]!.args).toEqual({ basket: "amm-swap", include: "entire transactions", limit: 10000 });
     expect(prepared.funding.outputs).toBe(2); // LP fee, validator fee, commission: 3 sats − the token input's 1
     expect(prepared.commission).toEqual({ amount: 50n, pkh: v.commissionPkh, to: "relay" });
     const s = prepared.swap;
@@ -553,10 +560,16 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     expect(after.map((c) => c.method)).toEqual(["internalizeAction", "relinquishOutput"]);
     const ia = after[0]!.args as { tx: number[]; outputs: unknown[]; labels: string[]; description: string };
     expect(Beef.fromBinary(ia.tx).atomicTxid).toBe(final!.id("hex"));
+    if (prepared.payout.kind !== "color") throw new Error("expected a module receipt");
+    // The module's receive: a basket insertion into `p color <txid>v0` with the receipt JSON (BRC-207).
     expect(ia.outputs).toEqual([
-      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: (prepared.payout as { customInstructions: string }).customInstructions } },
+      {
+        outputIndex: 1,
+        protocol: "basket insertion",
+        insertionRemittance: { basket: `p color ${TOKEN_ID.slice(0, 64)}v0`, customInstructions: colorReceiptInstructions(prepared.payout.receipt) },
+      },
     ]);
-    expect(JSON.parse((prepared.payout as { customInstructions: string }).customInstructions)).toMatchObject({ id: SDK_ID, op: "transfer", sym: "TST", counterparty: "self" });
+    expect(JSON.parse(colorReceiptInstructions(prepared.payout.receipt))).toEqual({ version: 1, ...prepared.payout.receipt });
     expect(ia.labels).toEqual(["amm-swap"]);
     expect(after[1]!.args).toEqual({ basket: "1sat-deposit", output: prepared.funding.outpoint });
     expect(calls.some((c) => c.method === "abortAction")).toBe(false);
@@ -575,7 +588,7 @@ describe("relay: amm.swap.submit / amm.swap.status over the app's /call route", 
     expect(ia.outputs).toEqual([{ outputIndex: 1, protocol: "wallet payment", paymentRemittance: prepared.payout.remittance }]);
     expect(calls.filter((c) => c.method === "relinquishOutput").map((c) => c.args)).toEqual([
       { basket: "1sat-deposit", output: prepared.funding.outpoint },
-      { basket: "bsv21", output: `${poolDeploy.id("hex")}.1` },
+      { basket: "amm-swap", output: `${poolDeploy.id("hex")}.1` },
     ]);
   });
 
@@ -742,7 +755,11 @@ describe("the commission", () => {
     expect(prepared.plan.args[5]).toBe(c.pkh);
 
     const recs = pendingSwapPayouts(prepared, TOKEN_ID, 1);
-    expect(recs).toEqual([expect.objectContaining({ vout: 4, satoshis: 20, remittance: r, description: "AMM swap commission" })]);
+    // The token payout (its receipt) and the commission (its remittance) are both pending records (0.12.0).
+    expect(recs).toEqual([
+      expect.objectContaining({ vout: 1, satoshis: 1, receipt: (prepared.payout as { receipt: unknown }).receipt, description: "AMM swap payout" }),
+      expect.objectContaining({ vout: 4, satoshis: 20, remittance: r, description: "AMM swap commission" }),
+    ]);
 
     const { af } = fakeRelay(async (fn, args) => {
       const final = await validatorSigns(prepared, readBytes(args.swap)!, vkey);
@@ -753,28 +770,28 @@ describe("the commission", () => {
     expect(o.completed.internalized).toBe(true);
     const ia = calls.find((x) => x.method === "internalizeAction")!.args as { outputs: unknown[] };
     expect(ia.outputs).toEqual([
-      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: expect.objectContaining({ basket: "bsv21" }) },
+      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: expect.objectContaining({ basket: `p color ${TOKEN_ID.slice(0, 64)}v0` }) },
       { outputIndex: 4, protocol: "wallet payment", paymentRemittance: r },
     ]);
   });
 
-  it("tokens in, no relay address: the commission (tokens) is a 1Color output to the taker's own P1SAT key, inserted into bsv21", async () => {
+  it("tokens in, no relay address: the commission (tokens) is a 1Color output to a module receiving key of the taker's (sender: the validator), taken in through the module", async () => {
     const { wallet, calls, prepared, vkey, side } = await tokensIn(fakeWallet({ fundingVout: 2 }), null);
     const c = prepared.commission;
     expect(c).toMatchObject({ amount: 50n, to: "own" });
-    if (c.payout?.kind !== "bsv21") throw new Error("expected a bsv21 commission");
-    const ci = JSON.parse(c.payout.customInstructions) as { keyID: string; amt: string };
-    expect(ci).toMatchObject({ id: SDK_ID, amt: "50", op: "transfer", protocolID: [0, "onesat"], counterparty: "self" });
-    const own = side.privateKey({ protocolID: [0, "onesat"], keyID: ci.keyID });
+    if (c.payout?.kind !== "color") throw new Error("expected a module receipt");
+    const rc = c.payout.receipt;
+    expect(rc).toMatchObject({ assetId: SDK_ID, senderIdentityKey: v.identity });
+    const own = PublicKey.fromString(side.publicKey({ protocolID: colorProtocolID(rc.assetId, rc.derivationPrefix, rc.derivationSuffix), keyID: "color", counterparty: v.identity, forSelf: true }));
     expect(c.payout.outputIndex).toBe(4);
     expect(prepared.swap.outputs[4]!.satoshis).toBe(1);
     const script = prepared.swap.outputs[4]!.lockingScript.toHex();
     expect(script).toBe(prepared.plan.outputs[4]!.script);
-    expect(decodeMandala(Utils.toArray(script, "hex"))).toMatchObject({ role: "value", amount: 50n });
+    expect(decodeOneColor(Utils.toArray(script, "hex"))).toMatchObject({ role: "value", amount: 50n });
     expect(script.endsWith(new P2PKH().lock(own.toAddress()).toHex())).toBe(true);
     expect(prepared.funding.outputs).toBe(2);
-    // Only the sats payout is a pending BRC-29 record.
-    expect(pendingSwapPayouts(prepared, TOKEN_ID, 1).map((r) => r.vout)).toEqual([1]);
+    // Both are pending records: the sats payout (BRC-29), the token commission (its receipt).
+    expect(pendingSwapPayouts(prepared, TOKEN_ID, 1).map((r) => [r.vout, Boolean(r.remittance), Boolean(r.receipt)])).toEqual([[1, true, false], [4, false, true]]);
 
     const { af } = fakeRelay(async (fn, args) => {
       const final = await validatorSigns(prepared, readBytes(args.swap)!, vkey);
@@ -786,7 +803,7 @@ describe("the commission", () => {
     const ia = calls.find((x) => x.method === "internalizeAction")!.args as { outputs: unknown[] };
     expect(ia.outputs).toEqual([
       { outputIndex: 1, protocol: "wallet payment", paymentRemittance: prepared.payout.remittance },
-      { outputIndex: 4, protocol: "basket insertion", insertionRemittance: { basket: "bsv21", tags: [`bsv21:${SDK_ID}`], customInstructions: c.payout.customInstructions } },
+      { outputIndex: 4, protocol: "basket insertion", insertionRemittance: { basket: `p color ${TOKEN_ID.slice(0, 64)}v0`, customInstructions: colorReceiptInstructions(rc) } },
     ]);
   });
 

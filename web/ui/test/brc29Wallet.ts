@@ -6,9 +6,16 @@
  * `derivePrivateKey([2, "3241645161d8"], "<prefix> <suffix>",
  * senderIdentityKey)`, P2PKH of it must be the output's script), after
  * checking the AtomicBEEF and the base64 of prefix and suffix; a "basket
- * insertion" only needs the output and a basket.
+ * insertion" only needs the output and a basket, except into a `p color`
+ * basket, where the receipt must name the output's asset and the output be
+ * locked to the module's receiving key, as the BRC-207 module checks it
+ * (`verifyReceipt`, `assertOwned`; admission is the overlay's, not faked).
  */
-import { Beef, KeyDeriver, P2PKH, PrivateKey, Utils, type InternalizeActionArgs, type WalletProtocol } from "@bsv/sdk";
+import { parseColorReceipt } from "@1sat/actions";
+import { COLOR_KEY_ID, colorProtocolID, parseAssetBasket } from "@bsv/color-permission-module";
+import { Beef, KeyDeriver, P2PKH, PrivateKey, PublicKey, Utils, type InternalizeActionArgs, type WalletProtocol } from "@bsv/sdk";
+import { decodeOneColor } from "../src/pool";
+import { tokenIdOfWire } from "../src/lib/tokenId";
 
 export const BRC29: WalletProtocol = [2, "3241645161d8"];
 
@@ -51,6 +58,16 @@ export function brc29Side(root: PrivateKey) {
         if (o.protocol === "basket insertion") {
           // wallet-toolbox takes any output into the named basket (it must exist in the tx).
           if (!tx.outputs[o.outputIndex] || !o.insertionRemittance?.basket) throw new Error("insertionRemittance: valid for protocol basket insertion");
+          const target = parseAssetBasket(o.insertionRemittance.basket);
+          if (o.insertionRemittance.basket.startsWith("p color ")) {
+            if (!target) throw new Error("BRC-207: a receipt must name a per-asset value or authority basket");
+            const r = parseColorReceipt(o.insertionRemittance.customInstructions ?? "");
+            const script = tx.outputs[o.outputIndex]!.lockingScript.toHex();
+            const t = decodeOneColor(Utils.toArray(script, "hex"));
+            if (!t || t.role !== "value" || tokenIdOfWire(t.idBytes!) !== r.assetId || r.assetId !== target.assetId) throw new Error("BRC-207: the receipt basket does not match the received output");
+            const key = kd.derivePublicKey(colorProtocolID(r.assetId, r.derivationPrefix, r.derivationSuffix), COLOR_KEY_ID, r.senderIdentityKey, true);
+            if (!script.endsWith(new P2PKH().lock(PublicKey.fromString(key.toString()).toAddress()).toHex())) throw new Error("BRC-207: the token output is not locked to this wallet's p color key");
+          }
           continue;
         }
         if (o.protocol !== "wallet payment") throw new Error(`unexpected protocol ${o.protocol}`);

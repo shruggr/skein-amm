@@ -125,14 +125,84 @@ deploys move to the BRC-207 wallet module.
   hashes the message itself).
 - **The deploy.** The LP's wallet builds, signs and broadcasts the deploy
   as one createAction (the BRC-207 module submits it to the token topic
-  `tm_color_<assetId>`; the page may also submit it): output 0 the pool,
+  `tm_color_<assetId>`; the page also submits it): output 0 the pool,
   its prefix carrying the signature as its payload (`<push sig> OP_DROP`;
   `PoolTemplate.lockDeploy(args, state, affirmation)`, pool.zig
   `withAffirmation`), the deposit's first token input the `keyInput` it was
   affirmed with. The validator's part at deploy time ends with the
   affirmation. (0.9.0's delivered deploy — every input SIGHASH_SINGLE, one
   unit left, `amm.pool.submit`, the validator's appended claim and its
-  filing in the wallet — is gone.)
+  filing in the wallet — is gone.) The pages' side is below, "The pages
+  and the wallet's module".
+
+## The pages and the wallet's module (0.12.0)
+
+David Case, 2026-10-21/22. The pages (`web/ui`, the Open Exchange) hold the
+user's tokens in the wallet's BRC-207 `color` module (`@bsv/color-permission-module`;
+Yours, branch `1color`, registers it, its overlay on testnet this skein,
+`https://swap.skein.nexus`). The module's names are the page's
+(`src/wallet/color.ts`): the asset id `<txid>_<vout>`, its tag
+`<txid>v<vout>`; the reads `p color assets` and `p color balance <tag>`; a
+send is a `createAction` with a `p color plan` (`ColorPlan.toLabels`) and
+`randomizeOutputs: false`, the module selecting token inputs, adding token
+change, asking the user, signing and submitting; a receive is an output
+locked to a module receiving key, `[2, "p color <tag> <prefixHex>
+<suffixHex>"]`, keyID `color`, counterparty the sender, taken in with
+`internalizeAction` (`basket insertion` into `p color <tag>`, the receipt
+`{version: 1, assetId, derivationPrefix, derivationSuffix,
+senderIdentityKey}`) once the overlay admits it. The exchange's own
+baskets: `amm-pools` (the LP's position rows) and `amm-swap` (the active
+swap basket, keys `[2, "amm swap"]`, counterparty self, a fresh keyID per
+output; customInstructions `{assetId, amount, protocolID, keyID,
+counterparty}`).
+
+- **Your tokens.** The assets `p color assets` lists, each balance `p color
+  balance <tag>` (an exact decimal string); symbol, decimals and icon from
+  the token list (`/color/tokens`), else `ls_color_deploys {tokenId}`, else
+  a deploy the wallet holds. Beside it, what `amm-swap` holds, with Move
+  back.
+- **Deploy a position.** `amm.pool.terms`; the key input: one of the
+  wallet's own outputs of the token (`p color assets`), the smallest that
+  covers the deposit, else the largest; `amm.pool.affirm {pool, satoshis,
+  keyInput}`, the answer checked (`PoolTemplate.affirmed`); one
+  `createAction`: input 0 the key input (`inputPositions`), output 0 the
+  pool (a transfer to a foreign script), output 1 the key input's rest to a
+  fresh module key of the user's (the plan's `ownedOutputs`) when there is
+  one; the module adds further inputs and change. The wallet funds the sats
+  (one spend prompt, one module prompt). The page submits the deploy to
+  `tm_color_<assetId>` too, then files output 0 in `amm-pools` (customInstructions
+  `{id, op: "amm-pool", sym, dec, protocolID, keyID, counterparty, amm:
+  {role, validatorIdentity, lpFeeBps, validatorFeeBps, commissionBps}}`, the
+  LP key BRC-29 as before).
+- **Swap, sats in.** As before (`1sat-deposit` funding, the leg built here,
+  the relay). The token payout is locked to a module receiving key whose
+  sender is the pool's ValidatorIdentity; accepted, the page takes it in
+  through the module with its receipt.
+- **Swap, tokens in.** Each leg spends `amm-swap` outputs carrying exactly
+  its amount in (the contract takes no token change). The legs those do
+  not cover get one output each, of exactly their amount, from ONE module
+  send before the legs (a transfer out to `amm swap` keys; one module
+  prompt; the page submits it to the token topic too and files the outputs
+  in `amm-swap`). The legs are built and signed as before
+  (`createSignature` under each output's key), relayed, and their inputs
+  relinquished from `amm-swap` once accepted; an output a failed leg did
+  not spend stays there for a later swap.
+- **Close.** As before, the page's own Close (`bsvFee`). The contract pays
+  every token to the LP key, which is not a module key, so the token output
+  is filed in `amm-swap` under the LP key.
+- **Move back** (Your tokens). Every `amm-swap` output of the token, and a
+  funding output the wallet broadcasts for the fee, spent by an app-built
+  transaction to one module receiving key of the user's own (sender: the
+  user's identity), submitted to `tm_color_<assetId>`, taken in through the
+  module, the spent outputs relinquished. A swap that got stuck, and a
+  closed position's tokens, come back this way.
+- **Pending payouts** (`wallet/pendingPayouts.ts`) keep both kinds: a
+  BRC-29 remittance or a module receipt, retried with the final
+  transaction's BEEF.
+- **Manifest** (`www/manifest.json`, `web/ui/public/manifest.json`):
+  baskets `amm-swap`, `amm-pools`, `1sat-deposit`; protocols BRC-29 to self,
+  `[2, "amm swap"]` to self, identity, AuthFetch's two, the action labels;
+  no spending authorization; no `p color` entry (the module asks for those).
 
 ## The listing (0.11.0)
 
@@ -416,13 +486,9 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
 
 ## Not wired
 
-- **The pages' deploy and positions (0.11.0).** The Liquidity page
-  (`web/ui/src/lp`, `src/data/exchange.ts`) still builds 0.9.0's delivered
-  deploy and sends it with `amm.pool.submit`, which this version no longer
-  serves (the call answers `unknown-fn`), and still reads a position's claim
-  as "rescinded". Moving the pages to the wallet's BRC-207 module and
-  `amm.pool.affirm` is the next build; until then a pool is deployed here
-  only by a client that asks `amm.pool.affirm` itself.
+- **A validator's Close, as the LP sees it.** The pool leaves the LP's
+  positions (it is closed); the payout to the LP key (sats and tokens) is
+  not taken into the wallet by the pages.
 
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
   0.7.1+'s manifest row): not carried, as skein-1color 0.6.0 does not; a
@@ -458,10 +524,11 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
 - **Root, as the page sees it.** No read tells a page a key's grants
   (shruggr/skein#143): `isRoot` is a stub, every connected wallet sees
   Settings, and the skein refuses a non-root's register messages.
-- **Pending payouts.** A swap payout the wallet did not take in at once is
-  kept in the browser (`wallet/pendingPayouts.ts`); 0.8.1's Pending payouts
-  page, which retried them, is gone with the old pages, and the Open
-  Exchange pages have no place for it.
+- **Pending payouts.** A payout the wallet did not take in at once (sats or
+  tokens, or a Move back not yet admitted) is kept in the browser
+  (`wallet/pendingPayouts.ts`); 0.8.1's Pending payouts page, which retried
+  them, is gone with the old pages, and the Open Exchange pages have no
+  place for it.
 - **Spends the chain app records of a transaction never submitted to the
   topic** (a pool spent by a transaction that bypassed the overlay): the
   listing does not fold them out (skein-overlay 0.12.1 "Beats"); the LP's

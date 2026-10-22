@@ -20,18 +20,23 @@
  *      signed `nosend` transaction and broadcasts nothing.
  *   3. **Swap transaction**, built here: inputs pool (`callUnlock`, the
  *      validator's slot `OP_0`, `_changeAmount = 0`), the funding output,
- *      the token inputs (token → sats); outputs exactly the contract's, no
- *      change. The funding and token inputs are signed with `createSignature`
- *      (SIGHASH_ALL|FORKID over the BIP-143 sighash computed here) and every
- *      input but the pool's is checked with `Spend`.
+ *      the token inputs (token → sats: outputs of the active swap basket
+ *      `amm-swap`, src/market/activeSwap.ts, 0.12.0); outputs exactly the
+ *      contract's, no change. The funding and token inputs are signed with
+ *      `createSignature` (SIGHASH_ALL|FORKID over the BIP-143 sighash
+ *      computed here, under the key each input's customInstructions name)
+ *      and every input but the pool's is checked with `Spend`.
  *   4. The relay (src/market/relay.ts) carries both to the validator.
  *   5. Accepted: `completeSwap` internalizes the payout (sats: BRC-29 wallet
- *      payment; tokens: basket insertion into `bsv21`), and the commission
- *      when it is the taker's own (same two forms), and relinquishes the
- *      funding output and the token inputs. Refused / timed out:
- *      `abandonSwap` aborts the funding action (its output never existed).
+ *      payment; tokens, 0.12.0: the output is locked to a BRC-207 module
+ *      receiving key whose sender is the pool's validator, taken in with a
+ *      basket insertion into `p color <assetTag>` and the receipt,
+ *      src/wallet/color.ts), and the commission when it is the taker's own
+ *      (same two forms), and relinquishes the funding output and the token
+ *      inputs (`amm-swap`). Refused / timed out: `abandonSwap` aborts the
+ *      funding action (its output never existed).
  */
-import { BSV21_BASKET, P1SAT_PROTOCOL, bsv21FilterTags, buildBsv21CustomInstructions } from "@1sat/actions";
+import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { DEPOSIT_BASKET, depositHoldTag } from "@1sat/types";
 import {
   Beef,
@@ -50,13 +55,14 @@ import {
   type WalletProtocol,
 } from "@bsv/sdk";
 import type { Direction, Leg, PoolState } from "@amm-poc/matching-engine";
-import { PoolTemplate, decodeMandala, type CallPlan, type PoolUtxo } from "../pool";
+import { PoolTemplate, decodeOneColor, type CallPlan, type PoolUtxo } from "../pool";
 import type { LookupOutput } from "../lib/overlay";
 import { isPoolRow } from "../lp/poolRows";
-import { tokenSourceBeef } from "../lp/wallet";
+import { basketBeef } from "../lp/wallet";
 import { outpointText, parseOutpoint, parseTokenId, sdkTokenId } from "../lib/tokenId";
 import { payoutId, type PendingPayout } from "../wallet/pendingPayouts";
 import { WALLET_PAYMENT, identityKeyOf, newBrc29Payout, type Brc29Payout } from "../wallet/brc29";
+import { SWAP_BASKET, newReceivingKey, receiptOutput, type ColorReceipt } from "../wallet/color";
 
 /** A P2PKH unlocking script's upper bound: push(DER ≤ 72 + sighash byte) + push(33-byte key). */
 export const P2PKH_UNLOCK_LENGTH = 108;
@@ -88,7 +94,7 @@ export class LegShapeError extends Error {
 // Token inputs (token → sats)
 // ---------------------------------------------------------------------------
 
-/** A `bsv21` basket output the wallet can sign: a 1Color value output of the token, with its key. */
+/** An `amm-swap` basket output the wallet can sign: a 1Color value output of the token, with its key. */
 export interface TokenInput {
   /** `txid.vout` (BRC-100 outpoint form). */
   outpoint: string;
@@ -123,7 +129,7 @@ export function tokenInputsOf(
   for (const r of rows) {
     // A pool the wallet holds as LP carries the same 1Color prefix; it is not a token input.
     if (!r.lockingScript || isPoolRow(r)) continue;
-    const t = decodeMandala(Utils.toArray(r.lockingScript, "hex"));
+    const t = decodeOneColor(Utils.toArray(r.lockingScript, "hex"));
     if (!t || t.role !== "value" || !t.idBytes || toHex(Array.from(t.idBytes)) !== assetId) continue;
     let ci: { protocolID?: unknown; keyID?: unknown; counterparty?: unknown } = {};
     try {
@@ -184,8 +190,7 @@ export function poolUtxoFrom(poolOutput: LookupOutput): PoolUtxo {
 
 /**
  * A P2PKH (or 1Color-on-P2PKH) input signed by the wallet: BIP-143 over
- * the finished transaction under `scope` (ALL|FORKID; a delivered deploy's
- * SINGLE|FORKID, 0.9.0), `createSignature` with `hashToDirectlySign`
+ * the finished transaction under `scope` (ALL|FORKID), `createSignature` with `hashToDirectlySign`
  * (1sat-sdk's `signP2PKHInputWallet`).
  */
 export async function signP2pkhWithWallet(
@@ -288,8 +293,10 @@ export interface PrepareSwapInput {
    * the commission to a fresh key of the taker's own.
    */
   commissionPkh: string | null;
-  /** token → sats: inputs carrying exactly `leg.amountIn`. */
+  /** token → sats: `amm-swap` outputs carrying exactly `leg.amountIn`. */
   tokenInputs?: TokenInput[];
+  /** The token inputs' source transactions (default: `amm-swap`'s, from the wallet). */
+  tokenBeef?: Beef;
   /** sats per 1000 bytes (`VITE_FEE_RATE`). */
   satsPerKb: number;
   now?: number;
@@ -395,7 +402,7 @@ export async function createFunding(wallet: WalletInterface, r: FundingRequest):
 }
 
 export type SwapPayout =
-  | { kind: "bsv21"; outputIndex: number; basket: string; tags: string[]; customInstructions: string }
+  | { kind: "color"; outputIndex: number; satoshis: number; lockingScript: string; receipt: ColorReceipt }
   | ({ kind: "brc29" } & Brc29Payout);
 
 export interface PreparedSwap {
@@ -453,28 +460,29 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
     throw new LegShapeError(`token inputs carry ${tokensIn}, the leg needs exactly ${bsvIn ? 0n : leg.amountIn}`);
   }
 
-  // The payout key: tokens under 1sat-sdk's conventions, sats as a BRC-29 payment to self.
-  const poolArgs = PoolTemplate.decode(poolUtxo.script)?.args;
-  if (!poolArgs) throw new LegShapeError(`${outpointText(leg.outpoint)} is not a pool output`);
+  const decoded = PoolTemplate.decode(poolUtxo.script);
+  const poolArgs = decoded?.args;
+  if (!decoded || !poolArgs) throw new LegShapeError(`${outpointText(leg.outpoint)} is not a pool output`);
   const commissionAmount = (leg.amountIn * poolArgs.commissionBps + 9999n) / 10000n;
   const commissionTo: SwapCommission["to"] = commissionAmount === 0n ? "none" : i.commissionPkh ? "relay" : "own";
 
-  // The payout key: tokens under 1sat-sdk's conventions, sats as a BRC-29 payment to self.
+  // The payout key: tokens to a module receiving key from the pool's validator (0.12.0), sats as a BRC-29 payment to self.
   // The taker's own commission (in the input asset) is keyed the same way, the other way round.
   const identity = !bsvIn || commissionTo === "own" ? await identityKeyOf(wallet) : "";
-  // The wallet's filings (keyIDs, tags, customInstructions) carry 1sat-sdk's id form, `<txid>_0`.
+  // The module's asset id form, `<txid>_0`.
   const sdkId = sdkTokenId(i.tokenId);
-  const payoutKeyID = `${sdkId}-${randomHex()}`;
+  const validatorIdentity = decoded.state.validatorIdentity;
   const brc29 = bsvIn ? null : await newBrc29Payout(wallet, identity);
-  const payoutKey = brc29 ? brc29.publicKey : (await wallet.getPublicKey({ protocolID: P1SAT, keyID: payoutKeyID, counterparty: "self", forSelf: true })).publicKey;
+  const tokenKey = bsvIn ? await newReceivingKey(wallet, sdkId, validatorIdentity) : null;
+  const payoutKey = brc29 ? brc29.publicKey : tokenKey!.publicKey;
   const userPkh = toHex(PublicKey.fromString(payoutKey).toHash() as number[]);
 
-  let ownCommission: { brc29: Awaited<ReturnType<typeof newBrc29Payout>> | null; keyID: string; pkh: string } | null = null;
+  let ownCommission: { brc29: Awaited<ReturnType<typeof newBrc29Payout>> | null; token: Awaited<ReturnType<typeof newReceivingKey>> | null; pkh: string } | null = null;
   if (commissionTo === "own") {
-    const keyID = `${sdkId}-${randomHex()}`;
     const own = bsvIn ? await newBrc29Payout(wallet, identity) : null;
-    const key = own ? own.publicKey : (await wallet.getPublicKey({ protocolID: P1SAT, keyID, counterparty: "self", forSelf: true })).publicKey;
-    ownCommission = { brc29: own, keyID, pkh: toHex(PublicKey.fromString(key).toHash() as number[]) };
+    const token = bsvIn ? null : await newReceivingKey(wallet, sdkId, validatorIdentity);
+    const key = own ? own.publicKey : token!.publicKey;
+    ownCommission = { brc29: own, token, pkh: toHex(PublicKey.fromString(key).toHash() as number[]) };
   }
   const commissionPkh = ownCommission?.pkh ?? i.commissionPkh ?? ZERO_PKH;
 
@@ -502,18 +510,7 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
 
   const payout: SwapPayout = brc29
     ? { kind: "brc29", outputIndex: 1, satoshis: Number(plan.outputs[1]!.satoshis), lockingScript: plan.outputs[1]!.script, remittance: brc29.remittance }
-    : {
-        kind: "bsv21",
-        outputIndex: 1,
-        basket: BSV21_BASKET,
-        tags: bsv21FilterTags({ tokenId: sdkId }),
-        customInstructions: buildBsv21CustomInstructions({
-          token: { id: sdkId, amt: String(leg.amountOut), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
-          protocolID: P1SAT,
-          keyID: payoutKeyID,
-          counterparty: "self",
-        }),
-      };
+    : { kind: "color", outputIndex: 1, satoshis: Number(plan.outputs[1]!.satoshis), lockingScript: plan.outputs[1]!.script, receipt: tokenKey!.receipt };
 
   // The commission is the last output when there is one (Pool.runar.go Swap).
   const commission: SwapCommission = { amount: commissionAmount, pkh: commissionPkh, to: commissionTo };
@@ -522,24 +519,13 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
     const out = plan.outputs[at]!;
     commission.payout = ownCommission.brc29
       ? { kind: "brc29", outputIndex: at, satoshis: Number(out.satoshis), lockingScript: out.script, remittance: ownCommission.brc29.remittance }
-      : {
-          kind: "bsv21",
-          outputIndex: at,
-          basket: BSV21_BASKET,
-          tags: bsv21FilterTags({ tokenId: sdkId }),
-          customInstructions: buildBsv21CustomInstructions({
-            token: { id: sdkId, amt: String(commissionAmount), op: "transfer", sym: i.meta?.sym, dec: i.meta?.dec },
-            protocolID: P1SAT,
-            keyID: ownCommission.keyID,
-            counterparty: "self",
-          }),
-        };
+      : { kind: "color", outputIndex: at, satoshis: Number(out.satoshis), lockingScript: out.script, receipt: ownCommission.token!.receipt };
   }
 
-  // Token inputs: their source transactions, for the final swap's BEEF.
+  // Token inputs: their source transactions (the active swap basket's), for the final swap's BEEF.
   let tokenBeef: Beef | null = null;
   if (tokenInputs.length > 0) {
-    tokenBeef = await tokenSourceBeef(wallet, i.tokenId, { tags: bsv21FilterTags({ tokenId: sdkId }) });
+    tokenBeef = i.tokenBeef ?? (await basketBeef(wallet, SWAP_BASKET));
     if (!tokenBeef) throw new LegShapeError("the wallet returned no BEEF for the token inputs");
     for (const t of tokenInputs) if (!tokenBeef.findTxid(t.txid)) throw new LegShapeError(`the wallet's BEEF lacks the token input ${t.outpoint}`);
   }
@@ -672,7 +658,7 @@ export interface CompletedSwap {
 /**
  * Accepted: the wallet takes the payout in (`internalizeAction`) and drops
  * what the swap spent from its baskets (`relinquishOutput`: the funding
- * output in `1sat-deposit`, the token inputs in `bsv21`). The funding
+ * output in `1sat-deposit`, the token inputs in `amm-swap`). The funding
  * transaction stays a `nosend` action; the wallet's TaskCheckNoSends finds
  * its proof once the validator's broadcast is mined.
  */
@@ -694,7 +680,7 @@ export async function completeSwap(wallet: WalletInterface, p: PreparedSwap, raw
   }
   const spent = [
     { basket: DEPOSIT_BASKET, output: p.funding.outpoint },
-    ...p.tokenInputs.map((t) => ({ basket: BSV21_BASKET, output: t.outpoint })),
+    ...p.tokenInputs.map((t) => ({ basket: SWAP_BASKET, output: t.outpoint })),
   ];
   for (const s of spent) {
     try {
@@ -708,9 +694,7 @@ export async function completeSwap(wallet: WalletInterface, p: PreparedSwap, raw
 }
 
 function internalizeOutputOf(o: SwapPayout): InternalizeOutput {
-  return o.kind === "brc29"
-    ? { outputIndex: o.outputIndex, protocol: WALLET_PAYMENT, paymentRemittance: { ...o.remittance } }
-    : { outputIndex: o.outputIndex, protocol: "basket insertion", insertionRemittance: { basket: o.basket, tags: o.tags, customInstructions: o.customInstructions } };
+  return o.kind === "brc29" ? { outputIndex: o.outputIndex, protocol: WALLET_PAYMENT, paymentRemittance: { ...o.remittance } } : receiptOutput(o.outputIndex, o.receipt);
 }
 
 /** Refused or timed out: the funding action is aborted, freeing the wallet's inputs (its output never existed on chain). */
@@ -719,16 +703,16 @@ export async function abandonSwap(wallet: WalletInterface, p: PreparedSwap): Pro
 }
 
 /**
- * The pending-payout records of the swap's sats outputs to the taker (the
- * payout of a tokens-in swap, the taker's own commission of a sats-in swap;
- * none for token outputs), written before the swap is submitted. Their txid
- * is provisional: the validator's signature changes it.
+ * The pending-payout records of the swap's outputs to the taker (the payout,
+ * and the taker's own commission): sats with their BRC-29 remittance, tokens
+ * with their module receipt (0.12.0). Written before the swap is submitted;
+ * their txid is provisional: the validator's signature changes it.
  */
 export function pendingSwapPayouts(p: PreparedSwap, tokenId: string, now = Date.now()): PendingPayout[] {
   const txid = p.swap.id("hex");
   const out: PendingPayout[] = [];
   for (const [o, description] of [[p.payout, "AMM swap payout"], [p.commission.payout, "AMM swap commission"]] as const) {
-    if (o?.kind !== "brc29") continue;
+    if (!o) continue;
     out.push({
       id: payoutId(txid, o.outputIndex),
       kind: "swap",
@@ -736,7 +720,7 @@ export function pendingSwapPayouts(p: PreparedSwap, tokenId: string, now = Date.
       vout: o.outputIndex,
       satoshis: o.satoshis,
       lockingScript: o.lockingScript,
-      remittance: o.remittance,
+      ...(o.kind === "brc29" ? { remittance: o.remittance } : { receipt: o.receipt }),
       final: false,
       tokenId,
       reference: p.funding.reference,

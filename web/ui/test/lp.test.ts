@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import Mandala from "@1sat/templates/mandala";
-import { BSV21, buildInscriptionScript } from "@1sat/templates";
-import { LockingScript, P2PKH, PrivateKey, Transaction, type WalletInterface, type WalletOutput } from "@bsv/sdk";
+import { OneColor } from "@1sat/templates";
+import { LockingScript, P2PKH, PrivateKey, Transaction, type WalletOutput } from "@bsv/sdk";
 import { formatAmount, parseAmount } from "../src/lp/amounts";
 import { buildInventory, decodeTokenRow } from "../src/lp/inventory";
 
@@ -9,7 +8,6 @@ const T = (c: string) => c.repeat(64);
 const ADDR = PrivateKey.fromHex("01".padStart(64, "0")).toAddress();
 const P2 = new P2PKH().lock(ADDR);
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
-const pngInscription = (lock: LockingScript = P2) => buildInscriptionScript(lock, PNG, "image/png").toHex();
 
 const row = (outpoint: string, script: string, extra: Partial<WalletOutput> = {}): WalletOutput => ({
   outpoint,
@@ -41,50 +39,37 @@ describe("amounts", () => {
   });
 });
 
-describe("inventory", () => {
-  // A binary deploy whose icon is embedded in it (BRC-162 draft BRCs#308: [mediaType, bytes]).
+describe("inventory (0.12.0: the module's p color assets, decoded with OneColor)", () => {
+  // A binary deploy whose icon is embedded in it (BRC-162, BRCs#308: [mediaType, bytes]).
   const deployTx = new Transaction();
-  const deployScript = Mandala.deployValue(100_000n, { lock: ADDR, payload: { sym: "GOLD", dec: 2, icon: { mediaType: "image/png", bytes: PNG } } }).lock();
+  const deployScript = OneColor.deployValue(100_000n, { lock: ADDR, payload: { sym: "GOLD", dec: 2, icon: { mediaType: "image/png", bytes: PNG } } }).lock();
   deployTx.addOutput({ satoshis: 1, lockingScript: deployScript });
-  // A 1Color token's id is `<txid>_0` (BRC-162 Token identification, David 2026-10-07), as the SDK's Mandala.value takes it.
+  // A 1Color token's id is `<txid>_0` (BRC-162 Token identification, David 2026-10-07).
   const gold = `${deployTx.id("hex")}_0`;
-  const goldSdk = gold;
 
   // A binary deploy with no icon.
-  const silverDeploy = Mandala.deployAuthority({ lock: ADDR, payload: { sym: "SILV", dec: 0 } }).lock();
+  const silverDeploy = OneColor.deployAuthority({ lock: ADDR, payload: { sym: "SILV", dec: 0 } }).lock();
   // A binary deploy whose embedded "icon" is not an image: no picture.
-  const ironDeploy = Mandala.deployValue(9n, { lock: ADDR, payload: { sym: "IRON", icon: { mediaType: "text/html", bytes: PNG } } }).lock();
-
-  const legacyDeploy = BSV21.deployMint("OLD", 500n, 1).lock(P2);
-  // A legacy JSON deploy whose icon is an outpoint, held in the ordinals basket (its resolution unchanged).
-  const silverIcon = `${T("5")}_3`;
-  const jsonDeploy = BSV21.deployMint("JSN", 10n, 0, silverIcon).lock(P2);
-  const old = `${T("2")}_0`;
+  const ironDeploy = OneColor.deployValue(9n, { lock: ADDR, payload: { sym: "IRON", icon: { mediaType: "text/html", bytes: PNG } } }).lock();
 
   const rows: WalletOutput[] = [
-    row(`${deployTx.id("hex")}.0`, deployScript.toHex(), { tags: ["bsv21:deploy"] }),
-    row(`${T("a")}.0`, Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex()),
-    row(`${T("a")}.1`, Mandala.value(goldSdk, 17n, { lock: ADDR }).lock().toHex()),
+    row(`${deployTx.id("hex")}.0`, deployScript.toHex()),
+    row(`${T("a")}.0`, OneColor.value(gold, 250n, { lock: ADDR }).lock().toHex()),
+    row(`${T("a")}.1`, OneColor.value(gold, 17n, { lock: ADDR }).lock().toHex()),
     row(`${T("3")}.0`, silverDeploy.toHex()),
     row(`${T("4")}.0`, ironDeploy.toHex()),
-    row(`${T("2")}.0`, legacyDeploy.toHex()),
-    row(`${T("8")}.0`, jsonDeploy.toHex()),
-    row(`${T("b")}.1`, BSV21.transfer(old, 40n).lock(P2).toHex()),
-    // binary value of the legacy token (36-byte id would be for vout > 0; vout 0 is 32 bytes)
-    row(`${T("b")}.2`, Mandala.value(old, 2n, { lock: ADDR }).lock().toHex()),
-    // a legacy transfer of a token whose deploy is not in the wallet
-    row(`${T("c")}.0`, BSV21.transfer(`${T("7")}_2`, 7n).lock(P2).toHex()),
+    // a value output of a token whose deploy is not in the wallet (36-byte id: vout > 0)
+    row(`${T("c")}.0`, OneColor.value(`${T("7")}_2`, 7n, { lock: ADDR }).lock().toHex()),
     row(`${T("d")}.0`, P2.toHex()),
   ];
-  const ordinalRows = [row(`${T("5")}.3`, pngInscription(), { tags: ["type:image/png", "origin"] })];
-  const inv = buildInventory(rows, { ordinalRows, txs: new Map([[deployTx.id("hex"), deployTx]]) });
+  const inv = buildInventory(rows);
   const byId = new Map(inv.tokens.map((t) => [t.tokenId, t]));
 
   it("groups by token id and sums value", () => {
     const g = byId.get(gold)!;
     expect(g.balance).toBe(100_000n + 250n + 17n);
     expect(g.valueOutputs).toBe(3);
-    expect(g).toMatchObject({ sym: "GOLD", dec: 2, deployInWallet: true, encodings: ["mandala"] });
+    expect(g).toMatchObject({ sym: "GOLD", dec: 2, deployInWallet: true });
   });
 
   it("a 1Color deploy's icon is the image embedded in it (nothing to resolve)", () => {
@@ -102,35 +87,13 @@ describe("inventory", () => {
     expect(iron.dec).toBeUndefined();
   });
 
-  it("a legacy JSON deploy's icon outpoint resolves from the ordinals basket as before", () => {
-    const j = byId.get(`${T("8")}_0`)!;
-    expect(j.icon!.outpoint).toBe(silverIcon);
-    expect(j.icon!.image?.via).toBe("inscription");
-  });
-
-  it("reads legacy JSON deploys and transfers, mixed with binary outputs", () => {
-    const o = byId.get(old)!;
-    expect(o).toMatchObject({ sym: "OLD", dec: 1, balance: 542n, deployInWallet: true });
-    expect(o.encodings.sort()).toEqual(["bsv21", "mandala"]);
-    // one token, one id `<txid>_0`
-    expect(o.tokenId).toBe(`${T("2")}_0`);
-    expect(byId.has(T("2"))).toBe(false);
-  });
-
-  it("writes every token id `<txid>_<vout>` (David 2026-10-07, BRC-162 Token identification): 1Color and legacy BSV-21 alike, `_0` included", () => {
-    // a 1Color deploy row: `<txid>_0`
-    expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: `${T("3")}_0`, role: "deploy", encoding: "mandala" });
-    // a 1Color value row with a 32-byte id: `<txid>_0`
-    const v32 = decodeTokenRow({ outpoint: `${T("a")}.0`, lockingScript: Mandala.value(goldSdk, 250n, { lock: ADDR }).lock().toHex() })!;
-    expect(Mandala.decode(LockingScript.fromHex(Mandala.value(goldSdk, 1n, { lock: ADDR }).lock().toHex()))!.idBytes!.length).toBe(32);
-    expect(v32).toMatchObject({ tokenId: gold, role: "value", encoding: "mandala" });
-    // a 1Color value row with a 36-byte (legacy, vout > 0) id: `<txid>_<vout>`
+  it("writes every token id `<txid>_<vout>` (David 2026-10-07, BRC-162 Token identification), `_0` included", () => {
+    expect(decodeTokenRow({ outpoint: `${T("3")}.0`, lockingScript: silverDeploy.toHex() })).toMatchObject({ tokenId: `${T("3")}_0`, role: "deploy" });
+    const v32 = decodeTokenRow({ outpoint: `${T("a")}.0`, lockingScript: OneColor.value(gold, 250n, { lock: ADDR }).lock().toHex() })!;
+    expect(OneColor.decode(LockingScript.fromHex(OneColor.value(gold, 1n, { lock: ADDR }).lock().toHex()))!.idBytes!.length).toBe(32);
+    expect(v32).toMatchObject({ tokenId: gold, role: "value" });
     const legacy36 = `${T("7")}_2`;
-    expect(decodeTokenRow({ outpoint: `${T("e")}.0`, lockingScript: Mandala.value(legacy36, 3n, { lock: ADDR }).lock().toHex() })).toMatchObject({ tokenId: legacy36, encoding: "mandala" });
-    // a BSV-21 JSON row: `<txid>_<vout>`, `_0` included
-    expect(decodeTokenRow({ outpoint: `${T("2")}.0`, lockingScript: legacyDeploy.toHex() })).toMatchObject({ tokenId: `${T("2")}_0`, encoding: "bsv21" });
-    expect(decodeTokenRow({ outpoint: `${T("b")}.1`, lockingScript: BSV21.transfer(old, 40n).lock(P2).toHex() })).toMatchObject({ tokenId: old, encoding: "bsv21" });
-    expect(byId.get(gold)!.tokenId).toBe(gold);
+    expect(decodeTokenRow({ outpoint: `${T("e")}.0`, lockingScript: OneColor.value(legacy36, 3n, { lock: ADDR }).lock().toHex() })).toMatchObject({ tokenId: legacy36 });
   });
 
   it("shows a token without its deploy as id and balance only", () => {
@@ -140,7 +103,7 @@ describe("inventory", () => {
     expect(x.icon).toBeUndefined();
   });
 
-  it("lists outputs neither template decodes", () => {
+  it("lists outputs OneColor does not decode", () => {
     expect(inv.unrecognized).toEqual([`${T("d")}_0`]);
     expect(decodeTokenRow({ outpoint: `${T("d")}.0`, lockingScript: P2.toHex() })).toBeUndefined();
   });

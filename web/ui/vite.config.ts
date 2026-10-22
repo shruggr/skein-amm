@@ -12,14 +12,6 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 // tsconfig.json's `paths` mirror these aliases for the type checker.
 const runarDir = resolve(here, process.env.RUNAR_DIR ?? "../../../../bsv/runar");
 
-// The 1Color (BRC-162) script template, the SDK's `Mandala`, comes the same way
-// from the local 1sat-sdk checkout's sources (README.md, "The `Mandala`
-// template from the local 1sat-sdk checkout") until @1sat/templates publishes
-// it; the SDK has not renamed it, so the import stays `@1sat/templates/mandala`.
-// ONESAT_SDK_DIR overrides where that checkout is; the default is
-// ~/Work/bsv/1sat-sdk.
-const oneSatSdkDir = resolve(here, process.env.ONESAT_SDK_DIR ?? "../../../../bsv/1sat-sdk");
-
 // Build output (`npm run build` -> ../../www/) is the app's `www/`, committed:
 // the tree a skein serves under /<app>/ (nothing is built on the skein). The
 // 1Color pages are copied into www/color/ afterwards
@@ -40,14 +32,10 @@ export default defineConfig({
       // package (dist/xdelta3.esm.js; the file is dist/xdelta3-wasm.esm.js).
       // Point at the file that exists so the bundler can resolve it.
       { find: /^xdelta3-wasm$/, replacement: resolve(here, "node_modules/xdelta3-wasm/dist/xdelta3-wasm.esm.js") },
-      {
-        find: /^@1sat\/templates\/mandala$/,
-        replacement: resolve(oneSatSdkDir, "packages/templates/src/mandala/mandala.ts"),
-      },
     ],
-    // runar-sdk's and the template's sources import @bsv/sdk (and the template
-    // cbor2, @ipld/dag-cbor and cborg) from outside this package: resolve them
-    // from here, one copy each, so the checkout needs no node_modules.
+    // runar-sdk's sources import @bsv/sdk from outside this package: resolve
+    // it from here, one copy (the @bopen-io/sdk 4 alias, package.json), so the
+    // checkout needs no node_modules.
     dedupe: ["@bsv/sdk", "cbor2", "@ipld/dag-cbor", "cborg"],
   },
   build: {

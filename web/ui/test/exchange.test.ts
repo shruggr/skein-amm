@@ -5,7 +5,10 @@
  * a fake wallet, over the Go fixtures (src/fixtures/vectors.zig's copy).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Beef, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
+import { Beef, LockingScript, PrivateKey, Transaction, UnlockingScript, Utils, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
+import { ColorPlan } from "@bsv/color-permission-module";
+import { decodeOneColor } from "../src/pool";
+import { tokenP2pkhScript } from "../src/lp/poolDeploy";
 import { decode, encode } from "cbor2";
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import {
@@ -122,6 +125,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   if (path === "/spends") return json(inst.spends[u.searchParams.get("outpoint")!] ?? { outpoint: u.searchParams.get("outpoint"), hops: 0, closed: false });
   if (path === "/lookup") {
     const q = JSON.parse(String(init!.body)) as { service: string; query: Record<string, unknown> };
+    if (q.service === "ls_amm" && q.query.beef) return json({ type: "output-list", outputs: [{ beef: atomic(poolDeploy, [fund, tokenDeploy]), outputIndex: 0 }] });
     if (q.service === "ls_amm") return json({ type: "freeform", result: inst.pools[String(q.query.tokenId)] ?? [] });
     if (q.service === "ls_color") return json(inst.color[`${q.query.txid}.${q.query.outputIndex}`] ?? { type: "output-list", outputs: [] });
   }
@@ -138,12 +142,25 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   return json({ error: `no route ${url}` }, 404);
 }
 
-/** A fake wallet: its token rows (`bsv21`), a default basket, its identity. */
-function fakeWallet(rows: unknown[] = [], sats: number[] = [1_000, 2_500]): WalletInterface {
+/**
+ * A fake wallet: its position rows (`amm-pools`), the BRC-207 module's views
+ * (`p color assets`: `held`; `p color balance <tag>`: `balances`), the
+ * active swap basket (`amm-swap`), a default basket, its identity.
+ */
+interface WalletRows {
+  pools?: unknown[];
+  held?: unknown[];
+  balances?: Record<string, string>;
+  swaps?: unknown[];
+}
+function fakeWallet(rows: WalletRows = {}, sats: number[] = [1_000, 2_500]): WalletInterface {
   return {
     async listOutputs(args: { basket: string; tags?: string[] }) {
       if (args.basket === "default") return { totalOutputs: sats.length, outputs: sats.map((s, i) => ({ outpoint: `${"aa".repeat(32)}.${i}`, satoshis: s, spendable: true })) };
-      if (args.basket === "bsv21" && !args.tags) return { totalOutputs: rows.length, outputs: rows };
+      if (args.basket === "amm-pools") return { totalOutputs: rows.pools?.length ?? 0, outputs: rows.pools ?? [] };
+      if (args.basket === "amm-swap") return { totalOutputs: rows.swaps?.length ?? 0, outputs: rows.swaps ?? [] };
+      if (args.basket === "p color assets") return { totalOutputs: rows.held?.length ?? 0, outputs: rows.held ?? [] };
+      if (args.basket.startsWith("p color balance ")) return { totalOutputs: rows.balances?.[args.basket] ?? "0", outputs: [] };
       return { totalOutputs: 0, outputs: [] };
     },
     async listActions() {
@@ -167,7 +184,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const connect = (rows?: unknown[]) => setExchangeContext({ wallet: fakeWallet(rows), af: af as never, identityKey: ME });
+const connect = (rows?: WalletRows) => setExchangeContext({ wallet: fakeWallet(rows), af: af as never, identityKey: ME });
 
 describe("exchange.ts, wired", () => {
   it("hostedTokens: the registered 1Color tokens, priced from ls_amm's beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
@@ -235,25 +252,68 @@ describe("exchange.ts, wired", () => {
     await expect(executeSwap(q)).rejects.toThrow(/spent since the quote/);
   });
 
+  it("executeSwap, tokens in (0.12.0): each leg spends amm-swap outputs carrying its amount exactly; a leg they do not cover gets an output from ONE module send first", async () => {
+    const swapKey = new PrivateKey(77);
+    const sent: CreateActionArgs[] = [];
+    const swapRows: unknown[] = [];
+    const swapBeef = new Beef();
+    const wallet = {
+      ...fakeWallet(),
+      async listOutputs(args: { basket: string }) {
+        if (args.basket === "amm-swap") return { totalOutputs: swapRows.length, outputs: swapRows, BEEF: swapBeef.toBinary() };
+        return { totalOutputs: 0, outputs: [] };
+      },
+      async getPublicKey(args: { identityKey?: boolean }) {
+        return { publicKey: args.identityKey ? ME : swapKey.toPublicKey().toString() };
+      },
+      async createAction(args: CreateActionArgs) {
+        sent.push(args);
+        const tx = new Transaction();
+        tx.addInput({ sourceTXID: fund.id("hex"), sourceOutputIndex: 0, sourceTransaction: fund, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
+        for (const o of args.outputs ?? []) tx.addOutput({ satoshis: o.satoshis, lockingScript: LockingScript.fromHex(o.lockingScript) });
+        return { txid: tx.id("hex"), tx: tx.toAtomicBEEF(true) };
+      },
+      async internalizeAction() {
+        return { accepted: true };
+      },
+    } as unknown as WalletInterface;
+    setExchangeContext({ wallet, af: af as never, identityKey: ME });
+    const q = await quoteSwap({ tokenId: TOKEN, side: "sell", amountIn: 50_000n, maxSlippageBps: 100, allowPartial: false });
+    expect(q.legs.map((l) => l.amountIn)).toEqual([50_000n]);
+    // Nothing in the swap basket: one module send of exactly the leg's amount, before the leg.
+    await executeSwap(q);
+    expect(sent).toHaveLength(2); // the send, then the leg's funding
+    const plan = ColorPlan.fromLabels(sent[0]!.labels)!;
+    expect(plan).toMatchObject({ assets: [TOKEN], ownedOutputs: [], operations: [{ assetId: TOKEN, operation: "transfer" }] });
+    expect(sent[0]!.outputs!.map((o) => decodeOneColor(Utils.toArray(o.lockingScript, "hex"))!.amount)).toEqual([50_000n]);
+    expect(sent[1]!.labels).toEqual(["amm-swap"]);
+    // The swap basket holds an output of exactly the leg's amount: no module send.
+    const held = new Transaction();
+    held.addInput({ sourceTXID: "77".repeat(32), sourceOutputIndex: 0, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
+    held.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(tokenP2pkhScript(TOKEN, 50_000n, swapKey.toPublicKey().toString())) });
+    swapBeef.mergeTransaction(held);
+    swapRows.push({ outpoint: `${held.id("hex")}.0`, satoshis: 1, spendable: true, lockingScript: held.outputs[0]!.lockingScript.toHex(), customInstructions: JSON.stringify({ assetId: TOKEN, amount: "50000", protocolID: [2, "amm swap"], keyID: "amm-swap-x", counterparty: "self" }) });
+    sent.length = 0;
+    await executeSwap(q);
+    expect(sent.map((a) => ColorPlan.fromLabels(a.labels) !== undefined)).toEqual([false]); // the leg's funding only
+  });
+
   it("walletSats: the default basket's spendable sats", async () => {
     connect();
     expect(await walletSats()).toBe(3_500n);
   });
 
-  it("myPositions: the wallet's pool rows read from the chain state — followed to the current output (its BEEF from ls_color), the claim spent = rescinded; closed ones left out", async () => {
+  it("myPositions: the wallet's pool rows (amm-pools) read from the chain state — followed to the current output (its BEEF from ls_color); closed ones left out", async () => {
     const pd = poolDeploy.id("hex");
-    // A 0.9.0 pool row's claim vout, as the page filed it (gen/vectors has no claim since 0.11.0).
-    const claimVout = 4;
     const row = {
       outpoint: `${pd}.0`,
       satoshis: v.pool0.bsv,
       lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(),
-      tags: [`bsv21:${TOKEN}`, "amm-pool"],
-      customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "lp key", counterparty: "self", amm: { claimVout } }),
+      tags: ["amm-pool"],
+      customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "lp key", counterparty: "self", amm: { validatorIdentity: SKEIN } }),
     };
-    connect([row]);
+    connect({ pools: [row] });
     inst.spends[`${pd}.0`] = { outpoint: `${pd}.0`, spentBy: swap1.id("hex"), current: `${swap1.id("hex")}.0`, hops: 1, closed: false };
-    inst.spends[`${pd}.${claimVout}`] = { outpoint: `${pd}.${claimVout}`, spentBy: "ab".repeat(32), hops: 0, closed: false };
     inst.color[`${swap1.id("hex")}.0`] = { type: "output-list", outputs: [{ beef: atomic(swap1, [fund, tokenDeploy, poolDeploy]), outputIndex: 0 }] };
     const ps = await myPositions();
     expect(ps).toEqual([
@@ -265,7 +325,6 @@ describe("exchange.ts, wired", () => {
         sats: BigInt(v.pool1.bsv),
         tokens: BigInt(v.pool1.tokens),
         validator: { identityKey: SKEIN, live: true },
-        rescinded: true,
       },
     ]);
     // Closed: gone from the list; and a close of a position not held is refused.
@@ -280,36 +339,32 @@ describe("exchange.ts, wired", () => {
     expect(inst.calls).toEqual([{ fn: "amm.pool.terms", args: {} }]);
   });
 
-  it("deployPosition: delivered to this skein's validator at its terms; refused without its peer, without the token, or short of the deposit and the claim's unit", async () => {
+  it("deployPosition (0.12.0): from the module's held outputs; refused without the token, or short of the deposit (no claim's unit any more)", async () => {
     await expect(deployPosition({ tokenId: TOKEN, tokens: 1n, sats: 1n })).rejects.toThrow(/Connect a wallet/);
-    const deployRow = {
-      outpoint: `${DEPLOY}.0`,
-      satoshis: 1,
-      lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex(),
-      tags: ["bsv21:deploy"],
-      customInstructions: JSON.stringify({ amt: "10000000", op: "deploy+mint", protocolID: P1SAT_PROTOCOL, keyID: "bsv21-deploy-TST-00" }),
-    };
-    connect([]);
+    const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
+    connect({});
     await expect(deployPosition({ tokenId: TOKEN, tokens: 0n, sats: 1n })).rejects.toThrow(/more than 0/);
-    await expect(deployPosition({ tokenId: TOKEN, tokens: 5n, sats: 1_000n })).rejects.toThrow(/holds none/);
-    connect([deployRow]);
-    await expect(deployPosition({ tokenId: TOKEN, tokens: 10_000_000n, sats: 1_000n })).rejects.toThrow(/fewer than 10000001/);
-    delete inst.terms.peerId;
-    await expect(deployPosition({ tokenId: TOKEN, tokens: 5n, sats: 1_000n })).rejects.toThrow(/no peer ID/);
+    await expect(deployPosition({ tokenId: TOKEN, tokens: 5n, sats: 1_000n })).rejects.toThrow(/fewer than 5 /);
+    connect({ held: [held] });
+    await expect(deployPosition({ tokenId: TOKEN, tokens: 10_000_001n, sats: 1_000n })).rejects.toThrow(/fewer than 10000001 /);
+    // A reserved output (an action in progress holds it) is not offered.
+    connect({ held: [{ ...held, spendable: false }] });
+    await expect(deployPosition({ tokenId: TOKEN, tokens: 5n, sats: 1_000n })).rejects.toThrow(/fewer than 5 /);
+    expect(inst.calls.filter((c) => c.fn === "amm.pool.affirm")).toEqual([]);
   });
 
-  it("myTokens: the wallet's 1Color tokens with a balance, on this exchange (registered) and requested (by this wallet)", async () => {
-    const deployRow = {
-      outpoint: `${DEPLOY}.0`,
-      satoshis: 1,
-      lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex(),
-      tags: ["bsv21:deploy"],
-      customInstructions: JSON.stringify({ amt: "10000000", op: "deploy+mint", protocolID: P1SAT_PROTOCOL, keyID: "k" }),
-    };
-    connect([deployRow]);
+  it("myTokens (0.12.0): the module's assets (p color assets), each balance the module's (p color balance <assetTag>), what the swap basket holds; on this exchange (registered) and requested (by this wallet)", async () => {
+    const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
+    const swapRow = { outpoint: `${poolDeploy.id("hex")}.1`, satoshis: 1, lockingScript: poolDeploy.outputs[1]!.lockingScript.toHex(), customInstructions: JSON.stringify({ assetId: TOKEN, amount: "50000", protocolID: [2, "amm swap"], keyID: "amm-swap-1", counterparty: "self" }) };
+    connect({ held: [held], balances: { [`p color balance ${DEPLOY}v0`]: "9999999" }, swaps: [swapRow] });
     const ts = await myTokens();
     expect(ts).toHaveLength(1);
-    expect(ts[0]).toMatchObject({ tokenId: TOKEN, balance: 10_000_000n, outputs: 1, onExchange: true, requested: false });
+    // The balance is the module's exact decimal string, not the scripts' sum.
+    expect(ts[0]).toMatchObject({ tokenId: TOKEN, sym: "TST", dec: 0, balance: 9_999_999n, outputs: 1, onExchange: true, requested: false });
+    expect(ts[0]!.inSwaps).toBe(50_000n); // the swap basket's output carries 50,000 (pool_deploy:1)
+    // Only what the swap basket holds: still listed, with "Move back".
+    connect({ swaps: [swapRow] });
+    expect(await myTokens()).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: 0n, outputs: 0, inSwaps: 50_000n })]);
   });
 
   it("requestListing: a message {fn: request, args: {tokenId}} to <app>/requests, BRC-104-signed, the skein's identity the recipient", async () => {
