@@ -10,10 +10,6 @@
   "metanet": {
     "groupPermissions": {
       "description": "Open Exchange reads your tokens, builds swaps and pools with your wallet, and receives the sats pools pay you.",
-      "spendingAuthorization": {
-        "amount": 10000000,
-        "description": "Up to 0.1 BSV a month for swap inputs, pool deposits and network fees."
-      },
       "protocolPermissions": [
         {
           "protocolID": [0, "onesat"],
