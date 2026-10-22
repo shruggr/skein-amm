@@ -409,7 +409,9 @@ fn ancestry(a: Allocator, b: beef.Beef, subject: [32]u8) ![]bool {
 pub fn requestBeef(a: Allocator, p: Pair) ![]u8 {
     var entries: std.ArrayList(beef.Entry) = .empty;
     var bumps: []w.merkle.MerklePath = &.{};
-    if (p.funding.beef) |b| {
+    if (p.funding.beef) |given_b| {
+        // Parents first (skein-sdk beef.sorted: a writer's order sorted, not refused).
+        const b = try beef.sorted(a, given_b);
         const keep = try ancestry(a, b, p.funding.txid);
         // Keep the BUMPs as they are (indices stay valid); only the entries are filtered.
         bumps = b.bumps;

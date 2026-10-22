@@ -604,6 +604,21 @@ test "relay: the one BEEF (the funding transaction's ancestry, the funding trans
     try testing.expectEqualSlices(u8, &w.beef.txidOf(p.funding), &b2.entries[1].txid);
     try testing.expectEqualSlices(u8, &w.beef.txidOf(p.swap), &b2.subject().?);
 
+    // The funding's BEEF out of order (an Atomic BEEF, its parent fund after it): sorted, the same
+    // one BEEF (skein-sdk 0.11.1, David 2026-10-22).
+    const fback = try w.beef.serialize(a, .{ .version = w.beef.V2, .atomic = w.beef.txidOf(p.funding), .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{
+        .{ .txid = w.beef.txidOf(unhex(a, vec.token_deploy)), .format = .raw, .raw = unhex(a, vec.token_deploy) },
+        .{ .txid = w.beef.txidOf(p.funding), .format = .raw, .raw = p.funding },
+        .{ .txid = w.beef.txidOf(fund_raw), .format = .raw, .raw = fund_raw },
+    }) });
+    const pair3 = (try relay.checkPair(a, fback, p.swap, p.pool, &p.validator, t_expires, t_now, ours)).ok;
+    const b3 = try w.beef.parse(a, try relay.requestBeef(a, pair3));
+    try testing.expectEqual(@as(usize, 3), b3.entries.len);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(fund_raw), &b3.entries[0].txid);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(p.funding), &b3.entries[1].txid);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(p.swap), &b3.subject().?);
+    try testing.expect(w.beef.parentsFirst(b3));
+
     // The package: a mail record signed by this instance (BRC-169), recipient the validator, box `swap`.
     const rec: relay.Record = .{ .id = relay.idOf(p.swap), .funding = fbeef, .swap = p.swap, .pool = p.pool, .validator = p.validator, .expires = t_expires, .created = t_now, .updated = t_now };
     const signer = try keySigner(a, relay_priv);

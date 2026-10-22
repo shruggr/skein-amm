@@ -3,7 +3,11 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.13.0** (David Case, 2026-10-22; docs/AMM.md
+and its pages. Version **0.13.1** (2026-10-22: a BEEF out of order — a
+child before its parent, as a wallet's ts-sdk writer emits — is sorted
+parents-first and verified, not refused, by the chain app (skein-chain
+0.6.1, which the image installs), the engine (skein-overlay 0.14.1) and
+the validator and relay; skein-sdk 0.11.1). Since **0.13.0** (David Case, 2026-10-22; docs/AMM.md
 "The pool rule", "The deploy and the affirmation", "The listing"): the
 validator's nonce and affirmation live in every pool's state (Nonce,
 Affirmation; message v2, no termsHash), the validator's first key is its
@@ -288,7 +292,7 @@ skein-host add <h> --image <this repo>/image
 ```
 
 Its `etc/apps.json` installs, at birth, the chain app (shruggr/skein-chain
-v0.6.0 by its release tarball, checked by its tree's git id; this app
+v0.6.1 by its release tarball, checked by its tree's git id; this app
 requires `chain/1`, and the chain app has no start message, so a genesis can
 carry it) and then this app (`..`, the repo root), and adds root's three
 routes, as the old image did: `POST /submit` (`kernel.beef`, the engine's
@@ -308,12 +312,12 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.13.0 |
-| skein-overlay | v0.14.0 (385e1b9) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.10.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
+| this app | 0.13.1 |
+| skein-overlay | v0.14.1 (968356d) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's; skein-1color 0.10.x carries 0.14.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
-| skein-sdk | v0.11.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
+| skein-sdk | v0.11.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
-| requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.0) |
+| requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.1) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions`, `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types` 0.1.0 (published; `OneColor`); `@bsv/sdk` 4.0.1, `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0 as the interim `@bopen-io` repacks (npm aliases and `overrides`, one copy each; `web/ui/package-lock.json`) |
 

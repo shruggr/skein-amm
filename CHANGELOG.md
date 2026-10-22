@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.13.1 (2026-10-22)
+
+A BEEF out of order is sorted, not refused (David Case, 2026-10-22). A
+wallet's Atomic BEEF (ts-sdk's writer: a proven child before its proven
+parent) was refused `NotParentsFirst` by the chain app's ingest on swap.
+
+- **The image** installs shruggr/skein-chain **v0.6.1** (tree a3e1f859):
+  its ingest sorts the BEEF parents-first, then runs the same SPV
+  (skein-sdk 0.11.1 `beef.sorted`).
+- **The engine**: `bin/overlay.wasm` is skein-overlay **0.14.1**'s (its
+  decode, the door's envelope and the per-transaction Atomic BEEFs sorted).
+- **amm-validator**: `unprovenParents` walks the request's BEEF sorted, so
+  every parent is found and each parent's Atomic BEEF is parents first.
+- **amm-p2p**: the relay's one BEEF takes the funding's ancestry from its
+  BEEF sorted.
+- Nothing else changes: the pages, the contract and the manifest are
+  0.13.0's.
+
 ## 0.13.0 (2026-10-22)
 
 The validator sign-off redesign (David Case, 2026-10-22; agent-env

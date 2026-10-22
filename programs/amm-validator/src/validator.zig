@@ -305,8 +305,11 @@ fn ancestryOf(a: std.mem.Allocator, b: beef.Beef, subject: [32]u8) ![]bool {
 /// subject's ancestry, that the instance does not hold), parents first, each
 /// with its Atomic BEEF.
 pub fn unprovenParents(a: std.mem.Allocator, v: View, sub: Subject) ![]const Parent {
-    const b = sub.ancestry orelse return &.{};
-    const subject = b.subject() orelse return &.{};
+    const given = sub.ancestry orelse return &.{};
+    const subject = given.subject() orelse return &.{};
+    // Parents first (skein-sdk beef.sorted: a writer's order sorted, not refused): the walk back
+    // from a transaction (`ancestryOf`) reaches every ancestor, and each Atomic BEEF is in order.
+    const b = try beef.sorted(a, given);
     const ours = try ancestryOf(a, b, subject);
     var out: std.ArrayList(Parent) = .empty;
     for (b.entries, ours) |e, k| {

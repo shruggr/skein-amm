@@ -1789,3 +1789,38 @@ test "rescind (0.13.0): the pool, followed from its deploy to its newest output;
     try testing.expectEqualSlices(u8, &.{ 0x01, 0x71, 0x12, 0x20, 0xaa }, (try rescind.resultCid(a, res)).?);
     try testing.expect((try rescind.resultCid(a, .null)) == null);
 }
+
+/// A transaction with one input (`prev`:0, no script) and one output: its raw bytes.
+fn chained(a: std.mem.Allocator, prev: [32]u8) ![]const u8 {
+    var raw: std.ArrayList(u8) = .empty;
+    try raw.appendSlice(a, &.{ 1, 0, 0, 0, 1 });
+    try raw.appendSlice(a, &prev);
+    try raw.appendSlice(a, &.{ 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1, 0x10, 0x27, 0, 0, 0, 0, 0, 0, 1, 0x51, 0, 0, 0, 0 });
+    return raw.items;
+}
+
+test "unproven parents of a request whose BEEF is out of order (skein-sdk 0.11.1, David 2026-10-22): sorted, each parent's Atomic BEEF parents first" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ra = try chained(a, .{0x72} ** 32);
+    const rb = try chained(a, w.beef.txidOf(ra));
+    const rc = try chained(a, w.beef.txidOf(rb));
+    const e = struct {
+        fn of(al: std.mem.Allocator, raw: []const u8) !w.beef.Entry {
+            return .{ .txid = w.beef.txidOf(raw), .format = .raw, .raw = raw, .tx = try Transaction.parse(al, raw) };
+        }
+    }.of;
+    // Wire order: the subject, its parent, its grandparent.
+    const bytes = try w.beef.serialize(a, .{ .version = w.beef.V2, .atomic = w.beef.txidOf(rc), .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{ try e(a, rc), try e(a, rb), try e(a, ra) }) });
+    const sub = validator.subjectOf(a, bytes).?;
+    var mem = MemView.init(a, .{0} ** 32);
+    const parents = try validator.unprovenParents(a, mem.view(), sub);
+    try testing.expectEqual(@as(usize, 2), parents.len);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(ra), &parents[0].txid);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(rb), &parents[1].txid);
+    const pb = try w.beef.parse(a, parents[1].beef);
+    try testing.expectEqual(@as(usize, 2), pb.entries.len);
+    try testing.expect(w.beef.parentsFirst(pb));
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(rb), &pb.atomic.?);
+}
