@@ -283,8 +283,12 @@ export interface Session {
 // Links
 // ---------------------------------------------------------------------------
 
-/** The 1Color deploy page the app carries (www/color/deploy/, skein-1color). */
-export const COLOR_DEPLOY_HREF = "color/deploy/";
+/**
+ * The 1Color deploy page the app carries (www/color/deploy/, skein-1color), at
+ * the app's own base (`<origin>/amm/color/deploy/`): those pages take the app's
+ * name from their URL, so at the origin's root (`/color/deploy/`) they find none.
+ */
+export const COLOR_DEPLOY_HREF = `${AMM_OVERLAY}/color/deploy/`;
 /** The skein's management site, at its own app path (skein#147). */
 export const SITE_HREF = "/site/";
 

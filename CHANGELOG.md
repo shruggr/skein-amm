@@ -4,6 +4,14 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.10.2 (2026-10-21)
+
+The Exchange's "Deploy a new token" link points at the app's own base
+(`<origin>/amm/color/deploy/`) instead of `color/deploy/`, which at the
+skein's root resolved to `/color/deploy/`, where the 1Color pages find no
+app name in their URL and skip the overlay submit. `www/` rebuilt; nothing
+else changed (`bin/`, `www/color/` as in 0.10.1).
+
 ## 0.10.1 (2026-10-21)
 
 Re-pinned onto shruggr/skein-1color 0.10.1 (d7348cf, tree 7342c1df): its
