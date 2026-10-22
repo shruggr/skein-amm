@@ -25,21 +25,21 @@
 //!                   the app's pages, `www/` of the app's own tree (skein-sdk `files.serve`,
 //!                   shruggr/skein#125); it reads only
 //!   call            route /amm/call (APPS.md §4; kernel.brc104: the caller is the signed request's key,
-//!                   who may call is the kernel's gate, 0.7.0): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`,
-//!                   `amm.pool.submit` answer {wait: true} and, called again with
-//!                   `resolved`, the record
+//!                   who may call is the kernel's gate, 0.7.0): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`
+//!                   answers {wait: true} and, called again with `resolved`, the record
 //!   requests        the read route `/requests` (filter `requests`, 0.9.0): the holders' listing requests (reads.zig)
 //!   spends          the read route `/spends?outpoint=<txid>.<vout>` (filter `spends`, 0.9.0): the chain
 //!                   state of an outpoint, a pool followed to its current output (reads.zig)
 //!   amm.swap.submit, amm.swap.status, amm.swap.terms   an in-VM call of the interface amm.swap/1 (relay.zig)
-//!   amm.pool.submit, amm.pool.status, amm.pool.terms   an in-VM call of the interface amm.pool/1 (relay.zig: the
-//!                   pool deploy, delivered; the validator's terms, 0.9.0)
+//!   amm.pool.terms, amm.pool.affirm   an in-VM call of the interface amm.pool/1 (the validator's terms,
+//!                   0.9.0; the affirmation of a proposed pool, 0.11.0: amm-validator's fn `affirm`
+//!                   called in-VM, answered at once)
 //!
 //! **Stepped** (the `mailbox` route on the box `amm/amm-p2p`; since 0.7.0, shruggr/skein#143, the
 //! app's box `amm` is the overlay engine's alone):
 //!
 //!   message {fn, args} in box `amm/amm-p2p`            this program's box (APPS.md §4): amm.swap.submit | status | terms,
-//!                                                     amm.pool.submit | status | terms,
+//!                                                     amm.pool.terms | affirm,
 //!                                                     answered to the sender in that box (a submit: when the relay settles)
 //!   message {fn: "request", args: {tokenId}} in box `amm/requests`   a holder's listing request (0.9.0): recorded
 //!                                                     under the head `amm/requests` (reads.zig)
@@ -384,7 +384,7 @@ fn selfPeerId(a: Allocator, in: Value) ![]const u8 {
 fn step(a: Allocator, in: Value) !void {
     const s = vm.store();
     const args = in.get("args") orelse return error.BadInput;
-    // The relay thread (launched by amm.swap.submit or amm.pool.submit).
+    // The relay thread (launched by amm.swap.submit).
     if (relay.Kind.ofRelay(args.getText("kind") orelse "")) |kind| return relayStep(a, in, args, kind);
     // A holder's listing request in the box `amm/requests` (0.9.0).
     if (eql(u8, args.getText("box") orelse "", reads.requests_box)) return listingRequest(a, in, args);
@@ -787,9 +787,8 @@ const fns = [_]app.Function{
     .{ .name = relay.fn_submit, .run = submitFn },
     .{ .name = relay.fn_status, .run = statusFn },
     .{ .name = relay.fn_terms, .run = termsFn },
-    .{ .name = relay.fn_pool_submit, .run = poolSubmitFn },
-    .{ .name = relay.fn_pool_status, .run = poolStatusFn },
     .{ .name = relay.fn_pool_terms, .run = poolTermsFn },
+    .{ .name = relay.fn_pool_affirm, .run = poolAffirmFn },
 };
 
 fn isAppFn(name: []const u8) bool {
@@ -811,18 +810,32 @@ fn statusFn(c: *app.Call) anyerror!scbor.Value {
     return recordStatus(c, .swap) catch |e| failure(c.a, e);
 }
 
-fn poolSubmitFn(c: *app.Call) anyerror!scbor.Value {
-    return submit(c, .pool) catch |e| failure(c.a, e);
+fn poolAffirmFn(c: *app.Call) anyerror!scbor.Value {
+    return poolAffirm(c) catch |e| failure(c.a, e);
 }
 
-fn poolStatusFn(c: *app.Call) anyerror!scbor.Value {
-    return recordStatus(c, .pool) catch |e| failure(c.a, e);
+/// amm.pool.affirm {pool, satoshis, keyInput} → {signature} (0.11.0, David Case 2026-10-21): the
+/// proposed pool to this instance's own validator — the package (box `affirm`, from this
+/// instance to itself) handed to amm-validator's fn `affirm` in-VM, as the local relay hands a
+/// swap — which checks it against the terms and answers its signature at once, or the refusal
+/// (`<reason>[: <detail>]`). Nothing is recorded.
+fn poolAffirm(c: *app.Call) !scbor.Value {
+    const a = c.a;
+    const args = try fromSdk(a, c.args);
+    const body = (try relay.affirmBody(a, args)) orelse return sk.report("bad_request: want {pool: bytes, satoshis: int, keyInput: \"<txid>_<vout>\"}");
+    const me = try signerIdentity(&signer_dummy, a);
+    const pkg = try relay.package(a, signer(), &me, relay.affirm_box, body, try relay.affirmNonce(a, body));
+    const ans = try callValidator(a, ctx.in, relay.affirm_protocol, relay.affirm_box, pkg, null, null);
+    return switch (relay.affirmAnswer(a, ans)) {
+        .ok => |v| toSdk(a, v),
+        .refused => |r| sk.report(try relay.refusalText(a, r)),
+    };
 }
 
 /// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"): this
 /// instance's `config.amm.ammValidator` `{lpFeeBps, validatorFeeBps, commissionBps}` (amm-validator
 /// reads the same; the defaults 30, 5, 0), with this instance's identity and peer ID (the
-/// validator a deploy here names: its `amm.pool.submit` is relayed in-VM).
+/// validator a pool here names: `amm.pool.affirm` asks it, in-VM).
 const ValidatorTerms = struct { lpFeeBps: i64 = 30, validatorFeeBps: i64 = 5, commissionBps: i64 = 0 };
 
 fn validatorTerms(a: Allocator, in: Value) !ValidatorTerms {
@@ -849,7 +862,7 @@ fn termsFn(c: *app.Call) anyerror!scbor.Value {
     return toSdk(c.a, relay.terms(c.a, commissionConfig(c.a, ctx.in) catch |e| return failure(c.a, e)) catch |e| return failure(c.a, e));
 }
 
-/// amm.swap.status / amm.pool.status {id} → the record (or the error `not_found`).
+/// amm.swap.status {id} → the record (or the error `not_found`).
 fn recordStatus(c: *app.Call, kind: relay.Kind) !scbor.Value {
     const a = c.a;
     const h = try AppHead.load(a);
@@ -890,8 +903,7 @@ fn envLaunch(_: *anyopaque, a: Allocator, kind: relay.Kind, id: [32]u8) anyerror
 }
 
 /// amm.swap.submit {funding, swap, pool, validator, peerId, expires} (relay.zig
-/// `submit`) and amm.pool.submit {funding, deploy, validator, peerId, expires}
-/// (relay.zig `submitDeploy`): check, record `pending` under the app's head,
+/// `submit`): check, record `pending` under the app's head,
 /// launch the relay thread → the record. The same request again answers its
 /// record (a `/call` waits on its relay while it is pending); one that timed
 /// out or failed in transport is relayed again.
@@ -913,7 +925,6 @@ fn submit(c: *app.Call, kind: relay.Kind) !scbor.Value {
     const args = try fromSdk(a, c.args);
     const submitted = switch (kind) {
         .swap => try relay.submit(a, env, args),
-        .pool => try relay.submitDeploy(a, env, args),
     };
     switch (submitted) {
         .refused => |r| return sk.report(try relay.refusalText(a, r)),
@@ -968,7 +979,7 @@ fn failureValue(a: Allocator, f: app.Failure) !scbor.Value {
 }
 
 /// The `/call` route (APPS.md §4; the SDK's `app` route, with one addition:
-/// `amm.swap.submit` and `amm.pool.submit` wait on the relay thread). The body is `{fn, args}`
+/// `amm.swap.submit` waits on the relay thread). The body is `{fn, args}`
 /// (JSON / dag-json, or dag-cbor as application/cbor); the answer `{fn,
 /// result}` (200) or `{fn, error}` (400, 403, 404, 409, 500). A submit that
 /// launched (or found) its relay answers `{wait: true}`; called again with
@@ -993,7 +1004,6 @@ fn appRoute(a: Allocator, in: Value, arg: Value) !Value {
             const sargs = try fromSdk(a, call_args orelse .null);
             const id = switch (kind) {
                 .swap => relay.idOf(sargs.getBytes("swap") orelse ""),
-                .pool => relay.deployId(a, sargs.getBytes("deploy") orelse "") orelse break :blk .{ .err = .{ .code = .failed, .message = "not_found" } },
             };
             const h = try AppHead.load(a);
             var book = try relay.Book.load(a, vm.store(), h.state);
@@ -1170,7 +1180,7 @@ fn localRelayStep(a: Allocator, in: Value, kind: relay.Kind, id: [32]u8, now: u6
     if (fx.call) {
         const pkg = try relay.packageFor(a, signer(), rec.*);
         var why: []const u8 = "";
-        const ans: ?Value = callValidator(a, in, kind, pkg, reply, resolved) catch |e| blk: {
+        const ans: ?Value = callValidator(a, in, kind.protocol(), kind.box(), pkg, reply, resolved) catch |e| blk: {
             why = std.fmt.allocPrint(a, "{s}{s}{s}", .{ @errorName(e), if (vm.lastError().len > 0) ": " else "", vm.lastError() }) catch @errorName(e);
             break :blk null;
         };
@@ -1200,24 +1210,24 @@ fn validatorProgram(a: Allocator, in: Value) ![]const u8 {
     return error.NoValidatorProgram;
 }
 
-/// amm-validator's fn for `kind` (`swap`, `deploy`: its route's `fn`, the package's
-/// box), called in-VM with the argument the front door gives a frame's handler: `{transport:
-/// "local", protocol, body: <the package>, match: {program, fn, app}, reply?, resolved?}`
-/// (`transport` "local": no stream, no remote peer; the package carries who sent it).
-fn callValidator(a: Allocator, in: Value, kind: relay.Kind, pkg: []const u8, reply: ?Value, resolved: ?Value) !Value {
+/// amm-validator's fn `func` (`swap`: its route's `fn`; `affirm`, 0.11.0: called in-VM only; the
+/// package's box), called in-VM with the argument the front door gives a frame's handler:
+/// `{transport: "local", protocol, body: <the package>, match: {program, fn, app}, reply?,
+/// resolved?}` (`transport` "local": no stream, no remote peer; the package carries who sent it).
+fn callValidator(a: Allocator, in: Value, protocol: []const u8, func: []const u8, pkg: []const u8, reply: ?Value, resolved: ?Value) !Value {
     const prog = try validatorProgram(a, in);
     var es: std.ArrayList(cbor.Entry) = .empty;
     try es.appendSlice(a, &.{
         .{ .key = "transport", .value = .{ .text = "local" } },
-        .{ .key = "protocol", .value = .{ .text = kind.protocol() } },
+        .{ .key = "protocol", .value = .{ .text = protocol } },
         .{ .key = "body", .value = .{ .bytes = pkg } },
         .{ .key = "match", .value = .{ .map = try a.dupe(cbor.Entry, &.{
             .{ .key = "program", .value = .{ .cid = prog } },
-            .{ .key = "fn", .value = .{ .text = kind.box() } },
+            .{ .key = "fn", .value = .{ .text = func } },
             .{ .key = "app", .value = .{ .text = relay.app_name } },
         }) } },
     });
     if (reply) |r| try es.append(a, .{ .key = "reply", .value = r });
     if (resolved) |r| try es.append(a, .{ .key = "resolved", .value = r });
-    return vm.call(a, prog, kind.box(), .{ .map = es.items });
+    return vm.call(a, prog, func, .{ .map = es.items });
 }

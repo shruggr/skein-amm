@@ -7,8 +7,15 @@ zig build test-amm-p2p   # from the repo root: the direct call's request and rep
                          # the catch-up tick, the libp2p
                          # providers' bodies and answers; the relay: a pair's checks, the BEEF and the signed
                          # package, the record's lifecycle (dialled, or local), the validator named, the dispatch;
-                         # the same for a pool deploy and an AddLiquidity; the manifest's role settings, natively
+                         # the affirmation's body and answer (0.11.0); the manifest's role settings, natively
 ```
+
+## 0.11.0 (the affirmation, David Case 2026-10-21)
+
+This section supersedes "The pool deploy through the relay" below. Pool deploys move to the BRC-207 wallet module: the deploy is the LP's wallet's, so nothing carries it to a validator.
+
+- **`amm.pool.affirm`** (`writes: false`): `{pool: bytes, satoshis: int, keyInput: string}` → `{signature: bytes}`. `relay.affirmBody` checks the args (a `keyInput` in either outpoint form, normalised to `<txid>_<vout>`); main.zig packages the body (box `affirm`, from this instance to itself, nonce sha256("amm-pool-affirm" ‖ body)[0..16]) and calls its own amm-validator's fn `affirm` in-VM (`callValidator`, `transport: "local"`, protocol `/amm-validator/1/affirm`, which no route serves); `relay.affirmAnswer` turns the handler's `{verdict, body}` into `{signature}` or the function's error `<reason>[: <detail>]`. Nothing is recorded; no libp2p dial (the page asks this skein's own validator, `amm.pool.terms`).
+- **Gone:** `amm.pool.submit` and `amm.pool.status`, the kind `pool` (records `amm-pool`, the relay thread `amm-pool-relay`, the state's `pools` map, dropped at the next write), `checkDeploy`, `deployBeef`, `deployBody`, `claimedOf`, `deployId`, `submitDeploy`, and the call on `/amm-validator/1/deploy`.
 
 ## 0.9.0 (the Open Exchange, David Case 2026-10-09)
 
@@ -144,7 +151,7 @@ Dependencies (`build.zig`): skein-overlay 0.6.0 by URL + hash (its `sk` VM helpe
 | `libp2p:tm_color_<txid>_0-live` (GossipSub topic) | none (0.4.0) | the runtime's liveness tool on a market host (`liveness`), read at `GET /amm/.live/tm_color_<txid>_0-live`; this program judges no beat |
 | `libp2p:/amm/proofs/1.0.0` (direct call) | `proofsByBlock` | answer one request frame with one reply frame |
 | `/amm/` (a read route, prefix, its filter `page`, shruggr/skein#143) | `serve` | the pages, `www/` of the app's tree; a filter's answer, anyone, signed or not, nothing logged |
-| `/amm/call` (HTTP row, APPS.md §4: a signed request) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit`, `amm.pool.submit` and `amm.liquidity.submit` wait on their relay |
+| `/amm/call` (HTTP row, APPS.md §4: a signed request) | `call` | `{fn, args}` → `{fn, result}` / `{fn, error}`; `amm.swap.submit` waits on its relay (0.11.0: `amm.pool.affirm` answers at once; `amm.pool.submit` gone) |
 
 `<txid>` is the token's deploy txid, 64 lowercase hex characters in display order; the topic name is `tm_color_<txid>_0` (skein-1color 0.8.2: `tm_color_<assetId>`, `_0` included; until skein-amm 0.7.1 it had no suffix), and the liveness topic adds `-live`, in skein's `-admit`/`-proof` style. Bodies are dag-cbor; hashes and txids are 32 bytes in internal byte order.
 
@@ -251,7 +258,9 @@ woke at `expires`     timeout (close the stream if open); before it, rest again
 
 **The package** (the frame): the signed-message package amm-validator opens (its README, "A direct call"): `{message, body}`, the mail record `{kind: "mail", op: "put", sender: this instance's identity, recipient: validator, box: "swap", body: <cid>, nonce: sha256("amm-swap-relay" ‖ id)[0..16], signature}` signed BRC-169's way through the `wallet` import (`createSignature`, `[2, "metanet handles envelope"]`, key ID `send`, counterparty anyone, over sha256 of the record without `signature`), and the body `{tx: <one V2 BEEF: the funding transaction's ancestry from its BEEF, the funding transaction (unproven), the swap>, pool}`. The pool's own ancestry is not sent: the validator holds the pool (it is its overlay).
 
-## The pool deploy through the relay (`amm.pool/1`)
+## The pool deploy through the relay (`amm.pool/1`) — gone in 0.11.0
+
+As 0.9.0–0.10.2 had it (superseded by "0.11.0" above):
 
 The LP's own skein carries a pool deploy to the pool's validator the same way (web/ui src/lp/poolDeploy.ts and poolRelay.ts; docs/notes.md 2026-10-02 "Swap funding and signing" applied to the deploy). The page builds the **funding transaction** (`createAction` with `noSend`: one exact output, the pool's sats + the deploy's miner fee) and the **deploy** (the LP's token inputs, then the funding output; output 0 the pool, ValidatorPubKey the validator identity's anyone-child for the first token input; every input signed by the LP), and hands both to its skein. Nobody signs a deploy but the LP: the validator consents and submits it to its own overlay, whose chain app broadcasts the funding parent with it.
 

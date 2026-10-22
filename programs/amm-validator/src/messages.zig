@@ -62,11 +62,15 @@ pub fn parseSpend(v: Value) ?validator.SpendRequest {
     };
 }
 
-pub fn parseDeploy(v: Value) ?validator.DeployRequest {
+/// An affirm request body (0.11.0): `{pool: <the pool output's locking script, no payload>,
+/// satoshis, keyInput: "<txid>_<vout>"}`.
+pub fn parseAffirm(v: Value) ?validator.AffirmRequest {
     if (v != .map) return null;
-    const vout = v.getUint("pool") orelse return null;
-    if (vout > std.math.maxInt(u32)) return null;
-    return .{ .tx = v.getBytes("tx") orelse return null, .pool = @intCast(vout) };
+    return .{
+        .pool = v.getBytes("pool") orelse return null,
+        .satoshis = v.getUint("satoshis") orelse return null,
+        .key_input = Outpoint.parse(v.getText("keyInput") orelse return null) orelse return null,
+    };
 }
 
 fn entries(a: std.mem.Allocator, es: []const cbor.Entry) !Value {
@@ -106,8 +110,8 @@ pub fn poolValue(a: std.mem.Allocator, n: validator.Newest) !Value {
     }
 }
 
-/// A reply body: `{ok: true, tx, txid}` (a spend; a deploy, its claim appended),
-/// or `{ok: false, reason, detail?, txid?, pool?}`.
+/// A reply body: `{ok: true, tx, txid}` (a spend), `{ok: true, signature}` (an affirmation,
+/// 0.11.0), or `{ok: false, reason, detail?, txid?, pool?}`.
 pub fn replyValue(a: std.mem.Allocator, r: Reply) !Value {
     var es: std.ArrayList(cbor.Entry) = .empty;
     switch (r) {
@@ -115,6 +119,7 @@ pub fn replyValue(a: std.mem.Allocator, r: Reply) !Value {
             try es.append(a, .{ .key = "ok", .value = .{ .boolean = true } });
             if (ok.tx) |t| try es.append(a, .{ .key = "tx", .value = .{ .bytes = t } });
             if (ok.txid) |t| try es.append(a, .{ .key = "txid", .value = try text(a, &w.header.toHex(t)) });
+            if (ok.signature) |s| try es.append(a, .{ .key = "signature", .value = .{ .bytes = s } });
         },
         .refused => |f| {
             try es.append(a, .{ .key = "ok", .value = .{ .boolean = false } });
@@ -155,17 +160,13 @@ pub const Next = union(enum) {
 pub const Served = struct {
     reply: Reply,
     next: Next = .answer,
-    /// With a deploy's `submit` (0.9.0): the claim to file in the validator's wallet (main.zig
-    /// launches the wallet's `internalize`, filing.zig).
-    file: ?Filing = null,
     /// With `submit` only: the unproven parents its BEEF carries, parents first, which the chain
     /// app registers and broadcasts when the engine ingests the submission
     /// (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF"). Nothing on a refusal.
     broadcast: []const validator.Parent = &.{},
 };
 
-/// After `validator.spend` signs (or `validator.deploy` consents: the LP's
-/// deploy as it came, nobody else signs it): what the state says of the
+/// After `validator.spend` signs: what the state says of the
 /// transaction already — admitted under the topic, or rejected (answered from
 /// the state), or with the chain app in a submission of its own (wait on that
 /// thread: the engine answers a resubmission while the first is pending with
@@ -181,12 +182,8 @@ fn finishSpend(a: std.mem.Allocator, reply: Reply, d: Deps) !Served {
     if ((try settlementOf(d.st, txid)) != null) return .{ .reply = reply, .next = .from_state };
     if (try d.st.isPending(txid)) if (!(try d.st.isPaused(txid))) return .{ .reply = reply, .next = .{ .wait_on = txid } };
     const beef = try submit.submissionBeef(a, raw, sub.ancestry);
-    const file: ?Filing = if (sub.claim) |c| .{ .atomic = try submit.atomicBeef(a, raw, sub.ancestry), .vout = c.vout, .key_id = c.key_id, .txid = txid } else null;
-    return .{ .reply = reply, .next = .{ .submit = .{ .beef = beef, .topic = sub.topic } }, .broadcast = sub.parents, .file = file };
+    return .{ .reply = reply, .next = .{ .submit = .{ .beef = beef, .topic = sub.topic } }, .broadcast = sub.parents };
 }
-
-/// A claim to file (0.9.0): the claimed deploy as Atomic BEEF, the claim's output index, its key ID.
-pub const Filing = struct { atomic: []const u8, vout: u32, key_id: []const u8, txid: [32]u8 };
 
 /// A direct call's request body → the reply, and what the handler does next.
 pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Served {
@@ -195,9 +192,10 @@ pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Se
             const req = parseSpend(body) orelse return .{ .reply = refuse(.bad_request, "want {tx: bytes, pool: \"<txid>_<vout>\"}") };
             return finishSpend(a, try validator.spend(a, op, req, d.config, d.view, d.oracle), d);
         },
-        .deploy => {
-            const req = parseDeploy(body) orelse return .{ .reply = refuse(.bad_request, "want {tx: bytes, pool: <vout>}") };
-            return finishSpend(a, try validator.deploy(a, req, d.config, d.view, d.oracle), d);
+        .affirm => {
+            // Answered now: nothing is signed into a transaction, nothing submitted.
+            const req = parseAffirm(body) orelse return .{ .reply = refuse(.bad_request, "want {pool: bytes, satoshis: uint, keyInput: \"<txid>_<vout>\"}") };
+            return .{ .reply = try validator.affirm(a, req, d.config, d.oracle) };
         },
     }
 }
@@ -208,32 +206,6 @@ pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Se
 fn settlementOf(st: *ov.state.State, txid: [32]u8) !?Value {
     const c = (try st.ch.settlementCid(txid)) orelse return null;
     return try st.record(c);
-}
-
-/// A deploy's answer, read from the state once its submission's thread has
-/// come to rest: the claimed deploy, found among the held spenders of the
-/// request's input 0 (validator.zig `claimedHeld`: the same inputs, the
-/// delivered outputs and the claim after them).
-///   admitted (the topic's `applied` record) → `{ok: true, tx, txid}`;
-///   rejected → `{ok: false, reason: "rejected", detail, txid}`;
-///   still pending → `{ok: false, reason: "pending", txid}`;
-///   not held, or none of these → `{ok: false, reason: "submit_failed"}`.
-fn deployFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, body: Value) !Reply {
-    const req = parseDeploy(body) orelse return refuse(.bad_request, "want {tx: bytes, pool: <vout>}");
-    const sub = validator.subjectOf(a, req.tx) orelse return refuse(.bad_transaction, null);
-    if (sub.tx.outputs.len == 0) return refuse(.not_a_pool, null);
-    const id = validator.poolTokenId(sub.tx.outputs[0].locking_script.bytes) orelse return refuse(.not_a_pool, null);
-    const topic = try validator.topicOf(a, id);
-    const held = (try validator.claimedHeld(a, v, sub)) orelse return refuse(.submit_failed, "the deploy is not held: its submission did not reach the overlay");
-    const txid = held.txid;
-    if (try st.isPending(txid)) return .{ .refused = .{
-        .reason = .pending,
-        .detail = "not yet accepted by the network: nothing is admitted until it is; send the same request again",
-        .txid = txid,
-    } };
-    if (try settlementOf(st, txid)) |rec| return .{ .refused = .{ .reason = .rejected, .detail = rec.getText("reason") orelse "rejected", .txid = txid } };
-    if (try st.isApplied(topic, txid)) return .{ .ok = .{ .tx = held.raw, .txid = txid } };
-    return .{ .refused = .{ .reason = .submit_failed, .detail = "not admitted, pending or rejected: the submission came to nothing", .txid = txid } };
 }
 
 /// The answer to a spend's direct call, read from the state: when the
@@ -251,7 +223,7 @@ fn deployFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, body: Val
 ///     `{ok: false, reason: "pending", txid}`: send the same request again;
 ///   not held, or none of these → `{ok: false, reason: "submit_failed"}`.
 pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: validator.Op, body: Value) !Reply {
-    const method = op.method() orelse return deployFromState(a, st, v, body);
+    const method = op.method() orelse return refuse(.bad_request, "an affirm is answered at once: nothing to read from the state");
     const req = parseSpend(body) orelse return refuse(.bad_request, "want {tx: bytes, pool: \"<txid>_<vout>\"}");
     const sub = validator.subjectOf(a, req.tx) orelse return refuse(.bad_transaction, null);
     const pi = for (sub.tx.inputs, 0..) |in, i| {
@@ -287,7 +259,7 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
 /// The direct call's answer on the engine's answer to its submission (the handler called again
 /// with `reply`; skein-overlay docs/OVERLAY.md "Submitting", "The answers"): `{fn: "submit",
 /// request, replyTo, result | error}`.
-///   `admitted` or `proven` → the answer from the state (`{ok: true, tx, txid}`; a deploy's `{ok: true, txid}`);
+///   `admitted` or `proven` → the answer from the state (`{ok: true, tx, txid}`);
 ///   `rejected` → from the state when the chain app holds it (its settlement: `rejected`, with the
 ///     pool's newest state if another transaction spent it); else by the engine's reason —
 ///     `NotAdmitted…` → `topic_refused`, `TransactionRejected` → `rejected`, any other (the BEEF

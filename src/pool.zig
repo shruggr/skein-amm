@@ -10,7 +10,8 @@
 //! checks a pair with it. The parser and the rules (`brc162`, `bsv21`) are
 //! skein-1color's `1color` module, re-exported below.
 //!
-//! A pool is a BRC-162 value output whose lock (the script after the prefix)
+//! A pool is a BRC-162 value output whose lock (the script after the prefix, and after the
+//! payload when a deploy carries its affirmation, 0.11.0)
 //! is the compiled Pool code followed by `OP_RETURN` and the state:
 //!
 //!   code (fixtures/pool_artifact.zig, readonly args spliced in at the slots:
@@ -280,78 +281,132 @@ pub fn validatorKey(a: std.mem.Allocator, identity: [33]u8, txid: [32]u8, vout: 
     return child.toCompressedSec1();
 }
 
-// ---------------------------------------------------------------- the claim (0.9.0)
+// ---------------------------------------------------------------- the affirmation (0.11.0)
 
-/// The claim (skein-amm 0.9.0, David Case 2026-10-09). A deploy the LP delivers carries one
-/// token unit no output takes; the validator appends it as the claim: a BRC-162 value output of
-/// ONE unit of the pool's token, P2PKH to the pool's validator key (the key the contract names,
-/// `validatorKey(identity, <the LP's first token input>)`), whose payload is that key's DER
-/// signature over `claimDigest(<the pool output's locking script>, <the first token input>)` —
-/// the deploy's txid cannot be signed: it includes the claim. A pool is listed only while both
-/// its contract output and its claim are unspent and the claim verifies (amm-lookup); the
-/// validator rescinds by spending the claim.
-pub const claim_amount: u64 = 1;
+/// The affirmation (skein-amm 0.11.0, David Case 2026-10-21; docs/AMM.md "The affirmation").
+/// Before the LP's wallet builds a deploy, the validator checks the proposed pool against its
+/// terms and signs, with the pool's validator key (the ValidatorPubKey in state), the pool's
+/// canonical parameters and a hash of the terms it agreed to. The deploy's pool output carries
+/// that DER signature as its BRC-162 payload (`0x20 <assetId> <amount> OP_2DROP <push sig>
+/// OP_DROP` then the Pool code and state); the contract never reads the prefix, and every
+/// continuation it writes has no payload. amm-lookup lists a deploy's pool only when the
+/// payload verifies (`affirmed`); a continuation is listed when the pool it spends was.
+///
+/// The terms, as the validator holds them (`config.amm.ammValidator`) and a pool carries them.
+pub const Terms = struct {
+    lp_fee_bps: i64 = 30,
+    validator_fee_bps: i64 = 5,
+    commission_bps: i64 = 0,
+};
 
-/// sha256(pool locking script ‖ txid (internal byte order) ‖ vout, 4 bytes LE): what the claim
-/// signs. `txid:vout` is the LP's first token input.
-pub fn claimDigest(pool_script: []const u8, txid: [32]u8, vout: u32) [32]u8 {
-    var h = std.crypto.hash.sha2.Sha256.init(.{});
-    h.update(pool_script);
-    h.update(&txid);
-    var v: [4]u8 = undefined;
-    std.mem.writeInt(u32, &v, vout, .little);
-    h.update(&v);
+/// The affirmation message's tag (its first bytes): a domain separator and the layout's version.
+pub const affirm_tag = "skein-amm affirm 1";
+
+/// The affirmation message's length: the tag, the asset id, three fees, two reserves, three keys
+/// and the terms hash.
+pub const affirm_len = affirm_tag.len + 32 + 8 * 3 + 8 * 2 + 33 * 3 + 32;
+
+fn le64(out: []u8, v: u64) void {
+    std.mem.writeInt(u64, out[0..8], v, .little);
+}
+
+/// sha256 of the terms' canonical bytes: lpFeeBps ‖ validatorFeeBps ‖ commissionBps, each a
+/// two's-complement int64, little-endian (24 bytes).
+pub fn termsHash(t: Terms) [32]u8 {
+    var b: [24]u8 = undefined;
+    le64(b[0..8], @bitCast(t.lp_fee_bps));
+    le64(b[8..16], @bitCast(t.validator_fee_bps));
+    le64(b[16..24], @bitCast(t.commission_bps));
     var out: [32]u8 = undefined;
-    h.final(&out);
+    std.crypto.hash.sha2.Sha256.hash(&b, &out, .{});
     return out;
 }
 
-/// The claim output's locking script: `0x20 <assetId> OP_1 OP_2DROP <sig> OP_DROP` then P2PKH to `pkh`.
-pub fn claimScript(a: std.mem.Allocator, asset_id: [32]u8, sig: []const u8, pkh: [20]u8) ![]u8 {
-    var buf: [10]u8 = undefined;
-    var push: std.ArrayList(u8) = .empty;
-    if (sig.len == 0 or sig.len > 0x4b) return error.BadSignature;
-    try push.append(a, @intCast(sig.len));
-    try push.appendSlice(a, sig);
-    const lock = p2pkh(pkh);
-    return std.mem.concat(a, u8, &.{ &.{0x20}, &asset_id, brc162.pushAmount(&buf, claim_amount), &.{0x6d}, push.items, &.{0x75}, &lock });
+/// The terms a pool carries (its readonly fees).
+pub fn termsOf(p: Pool) Terms {
+    return .{ .lp_fee_bps = p.lp_fee_bps, .validator_fee_bps = p.validator_fee_bps, .commission_bps = p.commission_bps };
 }
 
-/// A claim at an output script: a BRC-162 value output of one unit of `asset_id` with a payload
-/// (the signature) and a plain P2PKH lock. Null when the script is not one.
-pub const Claim = struct { sig: []const u8, pkh: [20]u8 };
-
-pub fn claimOf(script: []const u8, asset_id: [32]u8) ?Claim {
-    const tok = brc162.decode(script) orelse return null;
-    if (tok.role != .value or tok.amount != claim_amount) return null;
-    const id = tok.id orelse return null;
-    if (id.vout != 0 or !std.mem.eql(u8, &id.txid, &asset_id)) return null;
-    const sig = tok.payload orelse return null;
-    const lock = tok.lock;
-    if (lock.len != 25 or lock[0] != 0x76 or lock[1] != 0xa9 or lock[2] != 0x14 or lock[23] != 0x88 or lock[24] != 0xac) return null;
-    return .{ .sig = sig, .pkh = lock[3..23].* };
-}
-
-/// Whether `claim` is `key`'s claim of the pool at `pool_script` whose first token input is
-/// `txid:vout`: locked to `key`'s hash, its payload `key`'s signature of `claimDigest`.
-pub fn claimVerifies(claim: Claim, key: [33]u8, pool_script: []const u8, txid: [32]u8, vout: u32) bool {
-    if (!std.mem.eql(u8, &bsvz.crypto.hash.hash160(&key).bytes, &claim.pkh)) return false;
-    const der = bsvz.crypto.DerSignature.fromDer(claim.sig) catch return false;
-    const pk = bsvz.primitives.ec.PublicKey.fromSec1(&key) catch return false;
-    return pk.verifyDigest(claimDigest(pool_script, txid, vout), der) catch false;
-}
-
-/// The claim of a deploy: `tx` creates the pool `p` at output 0 (script `pool_script`), and its
-/// first token input is `first_txid:first_vout`. → the claim's vout, or null when no output after
-/// 0 is a claim that verifies against the derivation.
-pub fn verifiedClaim(a: std.mem.Allocator, outputs: []const bsvz.transaction.Output, p: Pool, pool_script: []const u8, first_txid: [32]u8, first_vout: u32) !?u32 {
-    const want = try validatorKey(a, p.identity, first_txid, first_vout);
-    if (!std.mem.eql(u8, &want, &p.validator)) return null;
-    for (outputs[1..], 1..) |o, i| {
-        const cl = claimOf(o.locking_script.bytes, p.asset_id) orelse continue;
-        if (claimVerifies(cl, want, pool_script, first_txid, first_vout)) return @intCast(i);
+/// The bytes the affirmation signs (docs/AMM.md "The affirmation"):
+///
+///   "skein-amm affirm 1" (18 bytes, ASCII)
+///   ‖ AssetId (32: the bytes the pool script pushes, the token's deploy txid in internal order)
+///   ‖ LpFeeBps ‖ ValidatorFeeBps ‖ CommissionBps (int64 LE each)
+///   ‖ TokenReserve ‖ the pool output's satoshis (uint64 LE each)
+///   ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity (33 each, compressed)
+///   ‖ termsHash (32: `termsHash` of the terms agreed to)
+///
+/// 221 bytes; the signature is ECDSA (DER) by the ValidatorPubKey over sha256 of them.
+pub fn affirmMessage(p: Pool, satoshis: u64, terms_hash: [32]u8) [affirm_len]u8 {
+    var m: [affirm_len]u8 = undefined;
+    var at: usize = 0;
+    const put = struct {
+        fn f(buf: []u8, pos: *usize, bytes: []const u8) void {
+            @memcpy(buf[pos.* .. pos.* + bytes.len], bytes);
+            pos.* += bytes.len;
+        }
+    }.f;
+    var n: [8]u8 = undefined;
+    put(&m, &at, affirm_tag);
+    put(&m, &at, &p.asset_id);
+    for ([_]i64{ p.lp_fee_bps, p.validator_fee_bps, p.commission_bps }) |f| {
+        le64(&n, @bitCast(f));
+        put(&m, &at, &n);
     }
-    return null;
+    le64(&n, p.token_reserve);
+    put(&m, &at, &n);
+    le64(&n, satoshis);
+    put(&m, &at, &n);
+    put(&m, &at, &p.lp);
+    put(&m, &at, &p.validator);
+    put(&m, &at, &p.identity);
+    put(&m, &at, &terms_hash);
+    std.debug.assert(at == affirm_len);
+    return m;
+}
+
+/// sha256 of `affirmMessage`: what the validator's key signs (the signer signs it as is).
+pub fn affirmDigest(p: Pool, satoshis: u64, terms_hash: [32]u8) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&affirmMessage(p, satoshis, terms_hash), &out, .{});
+    return out;
+}
+
+/// Whether `sig` (DER) is the pool's ValidatorPubKey's signature of its affirmation at the
+/// terms the pool carries.
+pub fn affirmationVerifies(p: Pool, satoshis: u64, sig: []const u8) bool {
+    const der = bsvz.crypto.DerSignature.fromDer(sig) catch return false;
+    const pk = bsvz.primitives.ec.PublicKey.fromSec1(&p.validator) catch return false;
+    return pk.verifyDigest(affirmDigest(p, satoshis, termsHash(termsOf(p))), der) catch false;
+}
+
+/// An affirmed deploy's pool output: its pool and the affirmation (the payload). Null when the
+/// script is not a pool, or carries no payload.
+pub const Affirmed = struct { pool: Pool, sig: []const u8 };
+
+pub fn affirmationOf(script: []const u8) ?Affirmed {
+    const tok = brc162.decode(script) orelse return null;
+    if (tok.role != .value) return null;
+    const sig = tok.payload orelse return null;
+    const p = (parse(tok.lock) catch return null) orelse return null;
+    return .{ .pool = p, .sig = sig };
+}
+
+/// Whether the pool output (`script`, holding `satoshis`) is an affirmed deploy's: a pool whose
+/// payload is its ValidatorPubKey's signature of its affirmation.
+pub fn affirmed(script: []const u8, satoshis: u64) bool {
+    const af = affirmationOf(script) orelse return false;
+    return affirmationVerifies(af.pool, satoshis, af.sig);
+}
+
+/// The deploy's pool script with the affirmation in: the prefix of `bare` (a pool script with no
+/// payload), `<push sig> OP_DROP`, then the rest of `bare`.
+pub fn withAffirmation(a: std.mem.Allocator, bare: []const u8, sig: []const u8) ![]u8 {
+    const tok = brc162.decode(bare) orelse return error.NotAPool;
+    if (tok.payload != null) return error.HasPayload;
+    if (sig.len == 0 or sig.len > 0x4b) return error.BadSignature;
+    const cut = bare.len - tok.lock.len;
+    return std.mem.concat(a, u8, &.{ bare[0..cut], &.{@intCast(sig.len)}, sig, &.{0x75}, tok.lock });
 }
 
 pub const Violation = enum {

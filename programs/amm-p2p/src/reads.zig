@@ -8,8 +8,8 @@
 //!   `/requests` (filter `requests`) lists them, newest first, less the tokens registered already
 //!   (the engine's set: a registration settles a request).
 //! - **Spends** (`/spends?outpoint=<txid>.<vout>`, filter `spends`): what the chain state says of
-//!   an outpoint — the LP page reads its claim (spent: the validator rescinded, so Close) and
-//!   follows its pool from the deploy's outpoint to the current pool output (each spender's
+//!   an outpoint — the LP page follows its pool from the deploy's outpoint to the current pool
+//!   output, or to the Close that ended it (the LP's or, 0.11.0, the validator's) (each spender's
 //!   output 0 while it is a pool) — `{outpoint, spentBy?, current?, hops, closed}`. The chain
 //!   app's `chain/state` (its `spent` map), read only, as the overlay reads it.
 const std = @import("std");

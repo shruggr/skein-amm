@@ -65,6 +65,8 @@ const pub = (k: PrivateKey) => k.toPublicKey().toString();
 const fund = Transaction.fromHex(v.fund);
 const tokenDeploy = Transaction.fromHex(v.token_deploy);
 const poolDeploy = Transaction.fromHex(v.pool_deploy);
+/** The page builds the pool output without the validator's affirmation (0.11.0: that deploy flow is build 2's): gen/vectors' unaffirmed deploy. */
+const unaffirmedPool = Transaction.fromHex(v.pool_deploy_unaffirmed).outputs[0]!.lockingScript.toHex();
 const swap1 = Transaction.fromHex(v.swap_bsv_in);
 const swap2 = Transaction.fromHex(v.swap_tokens_in);
 const DEPLOY_TXID = tokenDeploy.id("hex");
@@ -102,7 +104,7 @@ describe("pool deploy: plan", () => {
       lpPubKey: pub(lpKey),
       validator: { identityKey: v.identity },
     });
-    expect(plan.lockingScript).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
+    expect(plan.lockingScript).toBe(unaffirmedPool);
     expect(plan.state.validatorPubKey).toBe(v.pool0.validator);
     expect(plan.validatorKeyId).toBe(`${DEPLOY_TXID}_0`);
     // BRC-29 LP key: prefix base64("amm-lp"), suffix base64("<first input>").
@@ -326,7 +328,7 @@ describe("pool deploy: funding and the deploy transaction", () => {
     const d = prepared.deploy;
     expect(d.inputs.map((i) => `${i.sourceTXID}.${i.sourceOutputIndex}`)).toEqual([`${DEPLOY_TXID}.0`, prepared.funding.outpoint]);
     expect(d.outputs).toHaveLength(2);
-    expect(d.outputs[0]!.lockingScript.toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
+    expect(d.outputs[0]!.lockingScript.toHex()).toBe(unaffirmedPool);
     expect(d.outputs[0]!.satoshis).toBe(1_000_000);
     const changeFiling = prepared.tokenChange!;
     const changeCi = JSON.parse(changeFiling.customInstructions);

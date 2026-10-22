@@ -85,7 +85,7 @@
         "name": "close",
         "params": [
           {
-            "name": "lpSig",
+            "name": "sig",
             "type": "Sig"
           },
           {
@@ -633,7 +633,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 77
+              "line": 83
             },
             "value": {
               "kind": "load_param",
@@ -645,7 +645,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 77
+              "line": 83
             },
             "value": {
               "kind": "load_prop",
@@ -657,7 +657,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 77
+              "line": 83
             },
             "value": {
               "args": [
@@ -673,7 +673,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 77
+              "line": 83
             },
             "value": {
               "kind": "assert",
@@ -685,7 +685,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 78
+              "line": 84
             },
             "value": {
               "kind": "load_param",
@@ -697,7 +697,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 78
+              "line": 84
             },
             "value": {
               "kind": "load_const",
@@ -709,7 +709,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 78
+              "line": 84
             },
             "value": {
               "kind": "bin_op",
@@ -723,7 +723,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 78
+              "line": 84
             },
             "value": {
               "kind": "assert",
@@ -735,7 +735,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 79
+              "line": 85
             },
             "value": {
               "kind": "load_prop",
@@ -747,7 +747,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 79
+              "line": 85
             },
             "value": {
               "args": [
@@ -762,7 +762,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 79
+              "line": 85
             },
             "value": {
               "kind": "load_const",
@@ -774,7 +774,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 80
+              "line": 86
             },
             "value": {
               "kind": "load_prop",
@@ -786,7 +786,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 80
+              "line": 86
             },
             "value": {
               "args": [
@@ -801,7 +801,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 80
+              "line": 86
             },
             "value": {
               "kind": "load_const",
@@ -813,7 +813,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 82
+              "line": 88
             },
             "value": {
               "kind": "load_param",
@@ -825,7 +825,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 82
+              "line": 88
             },
             "value": {
               "args": [
@@ -840,7 +840,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 82
+              "line": 88
             },
             "value": {
               "kind": "load_const",
@@ -852,7 +852,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "load_param",
@@ -864,7 +864,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "load_prop",
@@ -876,7 +876,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "bin_op",
@@ -890,7 +890,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "load_const",
@@ -902,7 +902,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "bin_op",
@@ -916,7 +916,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "load_const",
@@ -928,7 +928,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "bin_op",
@@ -942,7 +942,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 84
+              "line": 90
             },
             "value": {
               "kind": "load_const",
@@ -954,7 +954,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "load_param",
@@ -966,7 +966,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "load_prop",
@@ -978,7 +978,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "bin_op",
@@ -992,7 +992,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "load_const",
@@ -1004,7 +1004,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "bin_op",
@@ -1018,7 +1018,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "load_const",
@@ -1030,7 +1030,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "bin_op",
@@ -1044,7 +1044,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 85
+              "line": 91
             },
             "value": {
               "kind": "load_const",
@@ -1056,7 +1056,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "load_param",
@@ -1068,7 +1068,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "load_prop",
@@ -1080,7 +1080,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "bin_op",
@@ -1094,7 +1094,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "load_const",
@@ -1106,7 +1106,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "bin_op",
@@ -1120,7 +1120,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "load_const",
@@ -1132,7 +1132,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "bin_op",
@@ -1146,7 +1146,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 86
+              "line": 92
             },
             "value": {
               "kind": "load_const",
@@ -1158,7 +1158,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 87
+              "line": 93
             },
             "value": {
               "kind": "load_param",
@@ -1170,7 +1170,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 87
+              "line": 93
             },
             "value": {
               "kind": "bin_op",
@@ -1184,7 +1184,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 87
+              "line": 93
             },
             "value": {
               "kind": "bin_op",
@@ -1198,7 +1198,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 87
+              "line": 93
             },
             "value": {
               "kind": "bin_op",
@@ -1212,7 +1212,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 87
+              "line": 93
             },
             "value": {
               "kind": "load_const",
@@ -1224,7 +1224,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 88
+              "line": 94
             },
             "value": {
               "kind": "load_const",
@@ -1236,7 +1236,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 88
+              "line": 94
             },
             "value": {
               "kind": "bin_op",
@@ -1250,7 +1250,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 88
+              "line": 94
             },
             "value": {
               "kind": "assert",
@@ -1262,7 +1262,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 90
+              "line": 96
             },
             "value": {
               "kind": "bin_op",
@@ -1276,7 +1276,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 90
+              "line": 96
             },
             "value": {
               "kind": "load_prop",
@@ -1288,7 +1288,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 90
+              "line": 96
             },
             "value": {
               "kind": "bin_op",
@@ -1302,7 +1302,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 90
+              "line": 96
             },
             "value": {
               "kind": "bin_op",
@@ -1316,7 +1316,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 90
+              "line": 96
             },
             "value": {
               "kind": "load_const",
@@ -1328,7 +1328,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 91
+              "line": 97
             },
             "value": {
               "kind": "bin_op",
@@ -1342,7 +1342,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 91
+              "line": 97
             },
             "value": {
               "kind": "load_const",
@@ -1354,7 +1354,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 92
+              "line": 98
             },
             "value": {
               "kind": "load_prop",
@@ -1366,7 +1366,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 92
+              "line": 98
             },
             "value": {
               "kind": "bin_op",
@@ -1380,7 +1380,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 92
+              "line": 98
             },
             "value": {
               "kind": "load_const",
@@ -1392,7 +1392,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 93
+              "line": 99
             },
             "value": {
               "kind": "load_param",
@@ -1404,7 +1404,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 93
+              "line": 99
             },
             "value": {
               "cond": "t59",
@@ -1464,7 +1464,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 94
+                    "line": 100
                   },
                   "value": {
                     "kind": "load_prop",
@@ -1476,7 +1476,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 94
+                    "line": 100
                   },
                   "value": {
                     "kind": "bin_op",
@@ -1490,7 +1490,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 94
+                    "line": 100
                   },
                   "value": {
                     "kind": "bin_op",
@@ -1504,7 +1504,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 94
+                    "line": 100
                   },
                   "value": {
                     "kind": "bin_op",
@@ -1518,7 +1518,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 94
+                    "line": 100
                   },
                   "value": {
                     "kind": "load_const",
@@ -1530,7 +1530,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 95
+                    "line": 101
                   },
                   "value": {
                     "kind": "bin_op",
@@ -1544,7 +1544,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 95
+                    "line": 101
                   },
                   "value": {
                     "kind": "load_const",
@@ -1556,7 +1556,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 96
+                    "line": 102
                   },
                   "value": {
                     "kind": "load_prop",
@@ -1568,7 +1568,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 96
+                    "line": 102
                   },
                   "value": {
                     "kind": "bin_op",
@@ -1582,7 +1582,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 96
+                    "line": 102
                   },
                   "value": {
                     "kind": "load_const",
@@ -1639,7 +1639,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 98
+              "line": 104
             },
             "value": {
               "kind": "load_const",
@@ -1651,7 +1651,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 98
+              "line": 104
             },
             "value": {
               "kind": "bin_op",
@@ -1665,7 +1665,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 98
+              "line": 104
             },
             "value": {
               "kind": "assert",
@@ -1677,7 +1677,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 100
+              "line": 106
             },
             "value": {
               "kind": "update_prop",
@@ -1690,7 +1690,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 101
+              "line": 107
             },
             "value": {
               "kind": "load_param",
@@ -1702,7 +1702,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 101
+              "line": 107
             },
             "value": {
               "kind": "update_prop",
@@ -1715,7 +1715,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "load_const",
@@ -1727,7 +1727,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "bin_op",
@@ -1741,7 +1741,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "assert",
@@ -1753,7 +1753,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "load_prop",
@@ -1765,7 +1765,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "load_const",
@@ -1777,7 +1777,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "bin_op",
@@ -1791,7 +1791,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "assert",
@@ -1803,7 +1803,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "kind": "load_const",
@@ -1815,7 +1815,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "args": [],
@@ -1829,7 +1829,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "kind": "add_raw_output",
@@ -1842,7 +1842,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "load_param",
@@ -1854,7 +1854,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "unary_op",
@@ -1867,7 +1867,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "load_const",
@@ -1879,7 +1879,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "args": [
@@ -1896,7 +1896,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "load_param",
@@ -1908,7 +1908,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "load_param",
@@ -1920,7 +1920,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "unary_op",
@@ -1933,7 +1933,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "load_const",
@@ -1945,7 +1945,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "args": [
@@ -1963,7 +1963,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 103
+              "line": 109
             },
             "value": {
               "kind": "add_raw_output",
@@ -1976,7 +1976,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 107
+              "line": 113
             },
             "value": {
               "kind": "load_param",
@@ -1988,7 +1988,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 107
+              "line": 113
             },
             "value": {
               "kind": "load_const",
@@ -2000,7 +2000,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 107
+              "line": 113
             },
             "value": {
               "args": [
@@ -2018,7 +2018,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 107
+              "line": 113
             },
             "value": {
               "kind": "load_const",
@@ -2030,7 +2030,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 108
+              "line": 114
             },
             "value": {
               "kind": "load_param",
@@ -2042,7 +2042,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 108
+              "line": 114
             },
             "value": {
               "kind": "load_const",
@@ -2054,7 +2054,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 108
+              "line": 114
             },
             "value": {
               "args": [
@@ -2072,7 +2072,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 108
+              "line": 114
             },
             "value": {
               "kind": "load_const",
@@ -2084,7 +2084,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 109
+              "line": 115
             },
             "value": {
               "kind": "load_param",
@@ -2096,7 +2096,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 109
+              "line": 115
             },
             "value": {
               "kind": "load_param",
@@ -2108,7 +2108,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 109
+              "line": 115
             },
             "value": {
               "kind": "load_const",
@@ -2120,7 +2120,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 109
+              "line": 115
             },
             "value": {
               "args": [
@@ -2138,7 +2138,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 109
+              "line": 115
             },
             "value": {
               "kind": "load_const",
@@ -2150,7 +2150,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 110
+              "line": 116
             },
             "value": {
               "kind": "load_const",
@@ -2162,7 +2162,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 110
+              "line": 116
             },
             "value": {
               "kind": "bin_op",
@@ -2176,7 +2176,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 110
+              "line": 116
             },
             "value": {
               "cond": "t105",
@@ -2196,7 +2196,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 111
+                    "line": 117
                   },
                   "value": {
                     "kind": "load_param",
@@ -2208,7 +2208,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 111
+                    "line": 117
                   },
                   "value": {
                     "kind": "load_const",
@@ -2220,7 +2220,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 111
+                    "line": 117
                   },
                   "value": {
                     "args": [
@@ -2237,7 +2237,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 111
+                    "line": 117
                   },
                   "value": {
                     "kind": "add_raw_output",
@@ -2253,7 +2253,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 113
+              "line": 119
             },
             "value": {
               "kind": "load_const",
@@ -2265,7 +2265,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 113
+              "line": 119
             },
             "value": {
               "kind": "bin_op",
@@ -2279,7 +2279,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 113
+              "line": 119
             },
             "value": {
               "cond": "t112",
@@ -2299,7 +2299,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 114
+                    "line": 120
                   },
                   "value": {
                     "kind": "load_param",
@@ -2311,7 +2311,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 114
+                    "line": 120
                   },
                   "value": {
                     "kind": "load_const",
@@ -2323,7 +2323,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 114
+                    "line": 120
                   },
                   "value": {
                     "args": [
@@ -2340,7 +2340,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 114
+                    "line": 120
                   },
                   "value": {
                     "kind": "add_raw_output",
@@ -2356,7 +2356,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 116
+              "line": 122
             },
             "value": {
               "kind": "load_const",
@@ -2368,7 +2368,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 116
+              "line": 122
             },
             "value": {
               "kind": "bin_op",
@@ -2382,7 +2382,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 116
+              "line": 122
             },
             "value": {
               "cond": "t119",
@@ -2402,7 +2402,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 117
+                    "line": 123
                   },
                   "value": {
                     "kind": "load_param",
@@ -2414,7 +2414,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 117
+                    "line": 123
                   },
                   "value": {
                     "kind": "load_const",
@@ -2426,7 +2426,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 117
+                    "line": 123
                   },
                   "value": {
                     "args": [
@@ -2443,7 +2443,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 117
+                    "line": 123
                   },
                   "value": {
                     "kind": "add_raw_output",
@@ -2737,11 +2737,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 132
+              "line": 147
             },
             "value": {
               "kind": "load_param",
-              "name": "lpSig"
+              "name": "bsvFee"
             }
           },
           {
@@ -2749,11 +2749,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 132
+              "line": 147
             },
             "value": {
-              "kind": "load_prop",
-              "name": "lpPubKey"
+              "kind": "load_const",
+              "value": 0
             }
           },
           {
@@ -2761,35 +2761,182 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 132
+              "line": 147
             },
             "value": {
-              "args": [
-                "t10",
-                "t11"
+              "kind": "bin_op",
+              "left": "t10",
+              "op": "\u003e",
+              "right": "t11"
+            }
+          },
+          {
+            "name": "t24",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 147
+            },
+            "value": {
+              "cond": "t12",
+              "else": [
+                {
+                  "name": "t17",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "kind": "load_param",
+                    "name": "sig"
+                  }
+                },
+                {
+                  "name": "t18",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "elements": [
+                      "t17"
+                    ],
+                    "kind": "array_literal"
+                  }
+                },
+                {
+                  "name": "t19",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "kind": "load_prop",
+                    "name": "lpPubKey"
+                  }
+                },
+                {
+                  "name": "t20",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "kind": "load_prop",
+                    "name": "validatorPubKey"
+                  }
+                },
+                {
+                  "name": "t21",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "elements": [
+                      "t19",
+                      "t20"
+                    ],
+                    "kind": "array_literal"
+                  }
+                },
+                {
+                  "name": "t22",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "args": [
+                      "t18",
+                      "t21"
+                    ],
+                    "func": "checkMultiSig",
+                    "kind": "call"
+                  }
+                },
+                {
+                  "name": "t23",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 150
+                  },
+                  "value": {
+                    "kind": "assert",
+                    "value": "t22"
+                  }
+                }
               ],
-              "func": "checkSig",
-              "kind": "call"
+              "kind": "if",
+              "then": [
+                {
+                  "name": "t13",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 148
+                  },
+                  "value": {
+                    "kind": "load_param",
+                    "name": "sig"
+                  }
+                },
+                {
+                  "name": "t14",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 148
+                  },
+                  "value": {
+                    "kind": "load_prop",
+                    "name": "lpPubKey"
+                  }
+                },
+                {
+                  "name": "t15",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 148
+                  },
+                  "value": {
+                    "args": [
+                      "t13",
+                      "t14"
+                    ],
+                    "func": "checkSig",
+                    "kind": "call"
+                  }
+                },
+                {
+                  "name": "t16",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 148
+                  },
+                  "value": {
+                    "kind": "assert",
+                    "value": "t15"
+                  }
+                }
+              ]
             }
           },
           {
-            "name": "t13",
+            "name": "t25",
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 132
-            },
-            "value": {
-              "kind": "assert",
-              "value": "t12"
-            }
-          },
-          {
-            "name": "t14",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 133
+              "line": 152
             },
             "value": {
               "kind": "load_param",
@@ -2797,15 +2944,15 @@
             }
           },
           {
-            "name": "t15",
+            "name": "t26",
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 133
+              "line": 152
             },
             "value": {
               "args": [
-                "t14"
+                "t25"
               ],
               "func": "extractAmount",
               "kind": "call"
@@ -2816,172 +2963,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 133
-            },
-            "value": {
-              "kind": "load_const",
-              "value": "@ref:t15"
-            }
-          },
-          {
-            "name": "t16",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 134
-            },
-            "value": {
-              "kind": "load_param",
-              "name": "bsvFee"
-            }
-          },
-          {
-            "name": "t17",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 134
-            },
-            "value": {
-              "kind": "load_const",
-              "value": 0
-            }
-          },
-          {
-            "name": "t18",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 134
-            },
-            "value": {
-              "kind": "bin_op",
-              "left": "t16",
-              "op": "\u003e=",
-              "right": "t17"
-            }
-          },
-          {
-            "name": "t19",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 134
-            },
-            "value": {
-              "kind": "assert",
-              "value": "t18"
-            }
-          },
-          {
-            "name": "t20",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 135
-            },
-            "value": {
-              "kind": "load_param",
-              "name": "bsvFee"
-            }
-          },
-          {
-            "name": "t21",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 135
-            },
-            "value": {
-              "kind": "bin_op",
-              "left": "t20",
-              "op": "\u003c=",
-              "right": "sats"
-            }
-          },
-          {
-            "name": "t22",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 135
-            },
-            "value": {
-              "kind": "assert",
-              "value": "t21"
-            }
-          },
-          {
-            "name": "t23",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 136
-            },
-            "value": {
-              "kind": "load_prop",
-              "name": "lpPubKey"
-            }
-          },
-          {
-            "name": "t24",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 136
-            },
-            "value": {
-              "args": [
-                "t23"
-              ],
-              "func": "hash160",
-              "kind": "call"
-            }
-          },
-          {
-            "name": "lpPkh",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 136
-            },
-            "value": {
-              "kind": "load_const",
-              "value": "@ref:t24"
-            }
-          },
-          {
-            "name": "t25",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 137
-            },
-            "value": {
-              "kind": "load_param",
-              "name": "bsvFee"
-            }
-          },
-          {
-            "name": "t26",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 137
-            },
-            "value": {
-              "kind": "bin_op",
-              "left": "sats",
-              "op": "-",
-              "right": "t25"
-            }
-          },
-          {
-            "name": "payout",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 137
+              "line": 152
             },
             "value": {
               "kind": "load_const",
@@ -2993,11 +2975,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 138
+              "line": 153
             },
             "value": {
-              "kind": "load_prop",
-              "name": "tokenReserve"
+              "kind": "load_param",
+              "name": "bsvFee"
             }
           },
           {
@@ -3005,11 +2987,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 138
+              "line": 153
             },
             "value": {
               "kind": "load_const",
-              "value": "@this"
+              "value": 0
             }
           },
           {
@@ -3017,28 +2999,13 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 138
+              "line": 153
             },
             "value": {
-              "args": [
-                "t27",
-                "lpPkh"
-              ],
-              "kind": "method_call",
-              "method": "tokenP2pkh",
-              "object": "t28"
-            }
-          },
-          {
-            "name": "tokens",
-            "sourceLoc": {
-              "column": 1,
-              "file": "pool/Pool.runar.go",
-              "line": 138
-            },
-            "value": {
-              "kind": "load_const",
-              "value": "@ref:t29"
+              "kind": "bin_op",
+              "left": "t27",
+              "op": "\u003e=",
+              "right": "t28"
             }
           },
           {
@@ -3046,11 +3013,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 139
+              "line": 153
             },
             "value": {
-              "kind": "load_const",
-              "value": 0
+              "kind": "assert",
+              "value": "t29"
             }
           },
           {
@@ -3058,13 +3025,49 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 139
+              "line": 154
+            },
+            "value": {
+              "kind": "load_param",
+              "name": "bsvFee"
+            }
+          },
+          {
+            "name": "t32",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 154
             },
             "value": {
               "kind": "bin_op",
-              "left": "payout",
-              "op": "\u003e",
-              "right": "t30"
+              "left": "t31",
+              "op": "\u003c=",
+              "right": "sats"
+            }
+          },
+          {
+            "name": "t33",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 154
+            },
+            "value": {
+              "kind": "assert",
+              "value": "t32"
+            }
+          },
+          {
+            "name": "t34",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 155
+            },
+            "value": {
+              "kind": "load_prop",
+              "name": "lpPubKey"
             }
           },
           {
@@ -3072,63 +3075,26 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 139
+              "line": 155
             },
             "value": {
-              "cond": "t31",
-              "else": [
-                {
-                  "name": "t35",
-                  "value": {
-                    "kind": "load_const",
-                    "value": ""
-                  }
-                }
+              "args": [
+                "t34"
               ],
-              "kind": "if",
-              "then": [
-                {
-                  "name": "t32",
-                  "sourceLoc": {
-                    "column": 2,
-                    "file": "pool/Pool.runar.go",
-                    "line": 140
-                  },
-                  "value": {
-                    "kind": "load_const",
-                    "value": "@this"
-                  }
-                },
-                {
-                  "name": "t33",
-                  "sourceLoc": {
-                    "column": 2,
-                    "file": "pool/Pool.runar.go",
-                    "line": 140
-                  },
-                  "value": {
-                    "args": [
-                      "lpPkh"
-                    ],
-                    "kind": "method_call",
-                    "method": "p2pkh",
-                    "object": "t32"
-                  }
-                },
-                {
-                  "name": "t34",
-                  "sourceLoc": {
-                    "column": 2,
-                    "file": "pool/Pool.runar.go",
-                    "line": 140
-                  },
-                  "value": {
-                    "kind": "add_raw_output",
-                    "satoshis": "payout",
-                    "scriptBytes": "t33"
-                  }
-                }
-              ]
+              "func": "hash160",
+              "kind": "call"
+            }
+          },
+          {
+            "name": "lpPkh",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 155
+            },
+            "value": {
+              "kind": "load_const",
+              "value": "@ref:t35"
             }
           },
           {
@@ -3136,11 +3102,11 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 142
+              "line": 156
             },
             "value": {
-              "kind": "load_const",
-              "value": 1
+              "kind": "load_param",
+              "name": "bsvFee"
             }
           },
           {
@@ -3148,51 +3114,118 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 142
+              "line": 156
             },
             "value": {
-              "kind": "add_raw_output",
-              "satoshis": "t36",
-              "scriptBytes": "tokens"
+              "kind": "bin_op",
+              "left": "sats",
+              "op": "-",
+              "right": "t36"
+            }
+          },
+          {
+            "name": "payout",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 156
+            },
+            "value": {
+              "kind": "load_const",
+              "value": "@ref:t37"
             }
           },
           {
             "name": "t38",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 157
+            },
             "value": {
-              "kind": "load_param",
-              "name": "_changePKH"
+              "kind": "load_prop",
+              "name": "tokenReserve"
             }
           },
           {
             "name": "t39",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 157
+            },
             "value": {
-              "kind": "load_param",
-              "name": "_changeAmount"
+              "kind": "load_const",
+              "value": "@this"
             }
           },
           {
             "name": "t40",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 157
+            },
+            "value": {
+              "args": [
+                "t38",
+                "lpPkh"
+              ],
+              "kind": "method_call",
+              "method": "tokenP2pkh",
+              "object": "t39"
+            }
+          },
+          {
+            "name": "tokens",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 157
+            },
+            "value": {
+              "kind": "load_const",
+              "value": "@ref:t40"
+            }
+          },
+          {
+            "name": "t41",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 158
+            },
             "value": {
               "kind": "load_const",
               "value": 0
             }
           },
           {
-            "name": "t41",
+            "name": "t42",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 158
+            },
             "value": {
               "kind": "bin_op",
-              "left": "t39",
-              "op": "!==",
-              "right": "t40"
+              "left": "payout",
+              "op": "\u003e",
+              "right": "t41"
             }
           },
           {
-            "name": "t44",
+            "name": "t46",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 158
+            },
             "value": {
-              "cond": "t41",
+              "cond": "t42",
               "else": [
                 {
-                  "name": "t43",
+                  "name": "t46",
                   "value": {
                     "kind": "load_const",
                     "value": ""
@@ -3202,11 +3235,125 @@
               "kind": "if",
               "then": [
                 {
-                  "name": "t42",
+                  "name": "t43",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 159
+                  },
+                  "value": {
+                    "kind": "load_const",
+                    "value": "@this"
+                  }
+                },
+                {
+                  "name": "t44",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 159
+                  },
                   "value": {
                     "args": [
-                      "t38",
-                      "t39"
+                      "lpPkh"
+                    ],
+                    "kind": "method_call",
+                    "method": "p2pkh",
+                    "object": "t43"
+                  }
+                },
+                {
+                  "name": "t45",
+                  "sourceLoc": {
+                    "column": 2,
+                    "file": "pool/Pool.runar.go",
+                    "line": 159
+                  },
+                  "value": {
+                    "kind": "add_raw_output",
+                    "satoshis": "payout",
+                    "scriptBytes": "t44"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "t47",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 161
+            },
+            "value": {
+              "kind": "load_const",
+              "value": 1
+            }
+          },
+          {
+            "name": "t48",
+            "sourceLoc": {
+              "column": 1,
+              "file": "pool/Pool.runar.go",
+              "line": 161
+            },
+            "value": {
+              "kind": "add_raw_output",
+              "satoshis": "t47",
+              "scriptBytes": "tokens"
+            }
+          },
+          {
+            "name": "t49",
+            "value": {
+              "kind": "load_param",
+              "name": "_changePKH"
+            }
+          },
+          {
+            "name": "t50",
+            "value": {
+              "kind": "load_param",
+              "name": "_changeAmount"
+            }
+          },
+          {
+            "name": "t51",
+            "value": {
+              "kind": "load_const",
+              "value": 0
+            }
+          },
+          {
+            "name": "t52",
+            "value": {
+              "kind": "bin_op",
+              "left": "t50",
+              "op": "!==",
+              "right": "t51"
+            }
+          },
+          {
+            "name": "t55",
+            "value": {
+              "cond": "t52",
+              "else": [
+                {
+                  "name": "t54",
+                  "value": {
+                    "kind": "load_const",
+                    "value": ""
+                  }
+                }
+              ],
+              "kind": "if",
+              "then": [
+                {
+                  "name": "t53",
+                  "value": {
+                    "args": [
+                      "t49",
+                      "t50"
                     ],
                     "func": "buildChangeOutput",
                     "kind": "call"
@@ -3216,70 +3363,70 @@
             }
           },
           {
-            "name": "t45",
+            "name": "t56",
             "value": {
               "args": [
-                "t35",
-                "t37"
+                "t46",
+                "t48"
               ],
               "func": "cat",
               "kind": "call"
             }
           },
           {
-            "name": "t46",
+            "name": "t57",
             "value": {
               "args": [
-                "t45",
-                "t44"
+                "t56",
+                "t55"
               ],
               "func": "cat",
               "kind": "call"
             }
           },
           {
-            "name": "t47",
+            "name": "t58",
             "value": {
               "args": [
-                "t46"
+                "t57"
               ],
               "func": "hash256",
               "kind": "call"
             }
           },
           {
-            "name": "t48",
+            "name": "t59",
             "value": {
               "kind": "load_param",
               "name": "txPreimage"
             }
           },
           {
-            "name": "t49",
+            "name": "t60",
             "value": {
               "args": [
-                "t48"
+                "t59"
               ],
               "func": "extractOutputHash",
               "kind": "call"
             }
           },
           {
-            "name": "t50",
+            "name": "t61",
             "value": {
               "kind": "bin_op",
-              "left": "t47",
+              "left": "t58",
               "op": "===",
               "result_type": "bytes",
-              "right": "t49"
+              "right": "t60"
             }
           },
           {
-            "name": "t51",
+            "name": "t62",
             "value": {
               "isAutoInjectedStateCheck": true,
               "kind": "assert",
-              "value": "t50"
+              "value": "t61"
             }
           }
         ],
@@ -3287,7 +3434,7 @@
         "name": "close",
         "params": [
           {
-            "name": "lpSig",
+            "name": "sig",
             "type": "Sig"
           },
           {
@@ -3315,7 +3462,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "load_param",
@@ -3327,7 +3474,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "load_const",
@@ -3339,7 +3486,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "bin_op",
@@ -3353,7 +3500,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 147
+              "line": 166
             },
             "value": {
               "kind": "assert",
@@ -3365,7 +3512,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "load_prop",
@@ -3377,7 +3524,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "load_const",
@@ -3389,7 +3536,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "bin_op",
@@ -3403,7 +3550,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 148
+              "line": 167
             },
             "value": {
               "kind": "assert",
@@ -3415,7 +3562,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "kind": "load_param",
@@ -3427,7 +3574,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "kind": "load_const",
@@ -3439,7 +3586,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "args": [],
@@ -3453,7 +3600,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 149
+              "line": 168
             },
             "value": {
               "kind": "add_raw_output",
@@ -3478,7 +3625,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 159
+              "line": 178
             },
             "value": {
               "kind": "load_prop",
@@ -3490,7 +3637,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 159
+              "line": 178
             },
             "value": {
               "args": [
@@ -3505,7 +3652,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 159
+              "line": 178
             },
             "value": {
               "kind": "load_const",
@@ -3517,7 +3664,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "kind": "load_const",
@@ -3529,7 +3676,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "kind": "load_const",
@@ -3541,7 +3688,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "args": [
@@ -3558,7 +3705,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "kind": "load_const",
@@ -3570,7 +3717,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "kind": "load_const",
@@ -3582,7 +3729,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "args": [
@@ -3598,7 +3745,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "args": [
@@ -3614,7 +3761,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "args": [
@@ -3629,7 +3776,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 160
+              "line": 179
             },
             "value": {
               "kind": "load_const",
@@ -3641,7 +3788,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 161
+              "line": 180
             },
             "value": {
               "kind": "load_const",
@@ -3653,7 +3800,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 161
+              "line": 180
             },
             "value": {
               "kind": "load_const",
@@ -3665,7 +3812,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 162
+              "line": 181
             },
             "value": {
               "kind": "load_const",
@@ -3677,7 +3824,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 162
+              "line": 181
             },
             "value": {
               "kind": "bin_op",
@@ -3691,7 +3838,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 162
+              "line": 181
             },
             "value": {
               "cond": "t12",
@@ -3703,7 +3850,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 163
+                    "line": 182
                   },
                   "value": {
                     "kind": "load_const",
@@ -3715,7 +3862,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 163
+                    "line": 182
                   },
                   "value": {
                     "kind": "load_const",
@@ -3730,7 +3877,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "args": [
@@ -3745,7 +3892,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "kind": "bin_op",
@@ -3759,7 +3906,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "kind": "load_const",
@@ -3771,7 +3918,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "kind": "bin_op",
@@ -3785,7 +3932,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "args": [
@@ -3802,7 +3949,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 165
+              "line": 184
             },
             "value": {
               "kind": "load_const",
@@ -3814,7 +3961,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "kind": "load_prop",
@@ -3826,7 +3973,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "kind": "load_const",
@@ -3838,7 +3985,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "args": [
@@ -3854,7 +4001,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "kind": "load_const",
@@ -3866,7 +4013,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "args": [
@@ -3882,7 +4029,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "args": [
@@ -3898,7 +4045,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 169
+              "line": 188
             },
             "value": {
               "kind": "load_const",
@@ -3910,7 +4057,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 170
+              "line": 189
             },
             "value": {
               "kind": "get_state_script"
@@ -3921,7 +4068,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 170
+              "line": 189
             },
             "value": {
               "args": [
@@ -3944,7 +4091,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 175
+              "line": 194
             },
             "value": {
               "kind": "load_const",
@@ -3956,7 +4103,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 175
+              "line": 194
             },
             "value": {
               "kind": "load_const",
@@ -3968,7 +4115,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 176
+              "line": 195
             },
             "value": {
               "kind": "load_param",
@@ -3980,7 +4127,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 176
+              "line": 195
             },
             "value": {
               "cond": "t1",
@@ -3992,7 +4139,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 177
+                    "line": 196
                   },
                   "value": {
                     "kind": "load_param",
@@ -4004,7 +4151,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 177
+                    "line": 196
                   },
                   "value": {
                     "kind": "load_const",
@@ -4019,7 +4166,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 179
+              "line": 198
             },
             "value": {
               "kind": "load_const",
@@ -4047,7 +4194,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 184
+              "line": 203
             },
             "value": {
               "kind": "load_param",
@@ -4059,7 +4206,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 184
+              "line": 203
             },
             "value": {
               "kind": "load_const",
@@ -4071,7 +4218,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 184
+              "line": 203
             },
             "value": {
               "args": [
@@ -4087,7 +4234,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 184
+              "line": 203
             },
             "value": {
               "kind": "load_const",
@@ -4099,7 +4246,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 185
+              "line": 204
             },
             "value": {
               "kind": "load_param",
@@ -4111,7 +4258,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 185
+              "line": 204
             },
             "value": {
               "kind": "unary_op",
@@ -4124,7 +4271,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 185
+              "line": 204
             },
             "value": {
               "cond": "t4",
@@ -4136,7 +4283,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 186
+                    "line": 205
                   },
                   "value": {
                     "kind": "load_param",
@@ -4148,7 +4295,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 186
+                    "line": 205
                   },
                   "value": {
                     "kind": "load_param",
@@ -4160,7 +4307,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 186
+                    "line": 205
                   },
                   "value": {
                     "kind": "load_const",
@@ -4172,7 +4319,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 186
+                    "line": 205
                   },
                   "value": {
                     "args": [
@@ -4189,7 +4336,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 186
+                    "line": 205
                   },
                   "value": {
                     "kind": "load_const",
@@ -4204,7 +4351,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 188
+              "line": 207
             },
             "value": {
               "kind": "load_const",
@@ -4236,7 +4383,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "kind": "load_param",
@@ -4248,7 +4395,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "kind": "load_const",
@@ -4260,7 +4407,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "args": [
@@ -4276,7 +4423,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "kind": "load_param",
@@ -4288,7 +4435,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "kind": "load_const",
@@ -4300,7 +4447,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "args": [
@@ -4316,7 +4463,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 193
+              "line": 212
             },
             "value": {
               "args": [
@@ -4348,7 +4495,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_param",
@@ -4360,7 +4507,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_const",
@@ -4372,7 +4519,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_const",
@@ -4384,7 +4531,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "args": [
@@ -4401,7 +4548,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_const",
@@ -4413,7 +4560,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "bin_op",
@@ -4427,7 +4574,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_const",
@@ -4439,7 +4586,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "args": [
@@ -4455,7 +4602,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 202
+              "line": 221
             },
             "value": {
               "kind": "load_const",
@@ -4467,7 +4614,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 203
+              "line": 222
             },
             "value": {
               "kind": "load_param",
@@ -4479,7 +4626,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 203
+              "line": 222
             },
             "value": {
               "kind": "load_const",
@@ -4491,7 +4638,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 203
+              "line": 222
             },
             "value": {
               "kind": "bin_op",
@@ -4505,7 +4652,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 203
+              "line": 222
             },
             "value": {
               "cond": "t10",
@@ -4517,7 +4664,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 204
+                    "line": 223
                   },
                   "value": {
                     "kind": "load_param",
@@ -4529,7 +4676,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 204
+                    "line": 223
                   },
                   "value": {
                     "args": [
@@ -4544,7 +4691,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 204
+                    "line": 223
                   },
                   "value": {
                     "kind": "load_const",
@@ -4556,7 +4703,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 205
+                    "line": 224
                   },
                   "value": {
                     "args": [
@@ -4571,7 +4718,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 205
+                    "line": 224
                   },
                   "value": {
                     "kind": "load_const",
@@ -4583,7 +4730,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 205
+                    "line": 224
                   },
                   "value": {
                     "args": [
@@ -4599,7 +4746,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 205
+                    "line": 224
                   },
                   "value": {
                     "args": [
@@ -4615,7 +4762,7 @@
                   "sourceLoc": {
                     "column": 2,
                     "file": "pool/Pool.runar.go",
-                    "line": 205
+                    "line": 224
                   },
                   "value": {
                     "kind": "load_const",
@@ -4630,7 +4777,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 207
+              "line": 226
             },
             "value": {
               "kind": "load_const",
@@ -4642,7 +4789,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 207
+              "line": 226
             },
             "value": {
               "kind": "load_prop",
@@ -4654,7 +4801,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 207
+              "line": 226
             },
             "value": {
               "args": [
@@ -4670,7 +4817,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 207
+              "line": 226
             },
             "value": {
               "kind": "load_const",
@@ -4682,7 +4829,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 208
+              "line": 227
             },
             "value": {
               "kind": "load_const",
@@ -4694,7 +4841,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 208
+              "line": 227
             },
             "value": {
               "args": [
@@ -4710,7 +4857,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 208
+              "line": 227
             },
             "value": {
               "args": [
@@ -4738,7 +4885,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 212
+              "line": 231
             },
             "value": {
               "kind": "load_const",
@@ -4750,7 +4897,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 212
+              "line": 231
             },
             "value": {
               "kind": "load_param",
@@ -4762,7 +4909,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 212
+              "line": 231
             },
             "value": {
               "kind": "load_const",
@@ -4774,7 +4921,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 212
+              "line": 231
             },
             "value": {
               "args": [
@@ -4790,7 +4937,7 @@
             "sourceLoc": {
               "column": 1,
               "file": "pool/Pool.runar.go",
-              "line": 212
+              "line": 231
             },
             "value": {
               "args": [
@@ -4855,7 +5002,7 @@
       }
     ]
   },
-  "asm": "OP_NOP OP_CODESEPARATOR OP_DUP OP_0 OP_NUMEQUAL OP_IF OP_DROP OP_5 OP_PICK OP_DUP OP_0 OP_EQUAL OP_SWAP OP_1 OP_EQUAL OP_BOOLOR OP_VERIFY OP_DUP \u003craw 428 bytes\u003e OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_1 OP_SPLIT OP_SWAP \u003c00\u003e OP_CAT OP_BIN2NUM OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_DROP OP_ELSE OP_DUP \u003cfe00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_4 OP_SPLIT OP_NIP OP_ELSE OP_DUP \u003cff00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_8 OP_SPLIT OP_NIP OP_ELSE OP_DROP OP_2 OP_SPLIT OP_NIP OP_ENDIF OP_ENDIF OP_ENDIF OP_11 OP_PICK OP_SIZE OP_2 OP_SUB OP_ROT OP_SWAP OP_SPLIT OP_SIZE \u003c6c\u003e OP_NUMEQUALVERIFY OP_1 OP_SPLIT OP_DROP \u003c6a\u003e OP_EQUALVERIFY \u003c61ab\u003e OP_SWAP OP_CAT OP_EQUALVERIFY OP_VERIFY OP_DUP OP_SIZE OP_4 OP_SUB OP_SPLIT OP_NIP \u003c00\u003e OP_CAT OP_BIN2NUM \u003c41\u003e OP_NUMEQUALVERIFY OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c2c\u003e OP_SUB OP_SPLIT OP_DROP OP_SIZE OP_8 OP_SUB OP_SPLIT OP_DROP OP_SIZE \u003c6b\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP \u003c21\u003e OP_SPLIT \u003c21\u003e OP_SPLIT OP_12 OP_ROLL OP_2 OP_PICK OP_CHECKSIGVERIFY OP_10 OP_PICK OP_0 OP_GREATERTHAN OP_VERIFY OP_2 OP_PICK OP_HASH160 OP_2 OP_PICK OP_HASH160 OP_6 OP_PICK OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_DROP OP_BIN2NUM OP_13 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_14 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_15 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_16 OP_ROLL OP_3 OP_PICK OP_SUB OP_2 OP_PICK OP_SUB OP_OVER OP_SUB OP_0 OP_OVER OP_SWAP OP_GREATERTHAN OP_VERIFY OP_DUP OP_5 OP_PICK OP_MUL OP_11 OP_PICK OP_2 OP_PICK OP_ADD OP_DIV OP_5 OP_PICK OP_OVER OP_SUB OP_12 OP_PICK OP_3 OP_PICK OP_ADD \u003c13\u003e OP_PICK OP_IF OP_13 OP_PICK OP_4 OP_PICK OP_SWAP OP_MUL OP_8 OP_PICK OP_5 OP_PICK OP_ADD OP_DIV OP_8 OP_ROLL OP_5 OP_ROLL OP_ADD OP_13 OP_PICK OP_2 OP_PICK OP_SUB OP_2 OP_PICK OP_2 OP_PICK OP_2 OP_PICK OP_ROT OP_ROT OP_ROT OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ELSE OP_2 OP_PICK OP_2 OP_PICK OP_2 OP_PICK OP_ROT OP_ROT OP_ROT OP_10 OP_ROLL OP_DROP OP_6 OP_ROLL OP_DROP OP_ENDIF OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_VERIFY OP_11 OP_ROLL OP_DROP \u003c11\u003e OP_ROLL OP_10 OP_ROLL OP_DROP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_VERIFY OP_OVER OP_0 OP_GREATERTHAN OP_VERIFY OP_11 OP_PICK \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_0 OP_1 OP_2 OP_PICK OP_ROT OP_SPLIT OP_NIP OP_SWAP OP_SPLIT OP_DROP OP_0 OP_1 OP_NUM2BIN OP_CAT OP_BIN2NUM OP_1 \u003cfd00\u003e OP_ROT OP_SWAP OP_NUMEQUAL OP_IF OP_3 OP_ELSE OP_DUP OP_ENDIF OP_NIP OP_OVER OP_SIZE OP_NIP OP_OVER OP_SUB \u003c6b\u003e OP_SUB OP_ROT OP_ROT OP_SPLIT OP_NIP OP_SWAP OP_SPLIT OP_DROP OP_2 OP_PICK OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT \u003c61ab\u003e OP_ROT OP_CAT OP_CAT OP_DUP OP_3 OP_ROLL OP_8 OP_NUM2BIN OP_12 OP_ROLL OP_CAT OP_3 OP_ROLL OP_CAT OP_10 OP_ROLL OP_CAT OP_CAT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_ROT OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_13 OP_PICK OP_NOT OP_3 OP_PICK OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_13 OP_ROLL OP_14 OP_PICK OP_NOT OP_5 OP_ROLL OP_ROT OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_ROT OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_13 OP_PICK OP_7 OP_PICK OP_10 OP_ROLL OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_15 OP_PICK OP_9 OP_PICK OP_12 OP_ROLL OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_16 OP_ROLL \u003c11\u003e OP_PICK OP_12 OP_PICK OP_ROT OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_0 OP_16 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c13\u003e OP_PICK OP_16 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_7 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_16 OP_ROLL OP_DROP OP_7 OP_ROLL OP_DROP OP_ENDIF OP_0 OP_15 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c12\u003e OP_PICK OP_15 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_5 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_15 OP_ROLL OP_DROP OP_5 OP_ROLL OP_DROP OP_ENDIF OP_0 OP_14 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c11\u003e OP_ROLL OP_14 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_3 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 \u003c12\u003e OP_ROLL OP_DROP OP_14 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ENDIF OP_15 OP_ROLL OP_15 OP_ROLL OP_0 OP_OVER OP_SWAP OP_NUMEQUAL OP_NOT OP_IF \u003c1976a914\u003e OP_ROT OP_CAT \u003c88ac\u003e OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_ROT OP_DROP OP_NIP OP_ENDIF OP_12 OP_ROLL OP_11 OP_ROLL OP_CAT OP_4 OP_ROLL OP_CAT OP_3 OP_ROLL OP_CAT OP_ROT OP_CAT OP_SWAP OP_CAT OP_HASH256 OP_9 OP_ROLL OP_SIZE \u003c28\u003e OP_SUB OP_SPLIT OP_NIP \u003c20\u003e OP_SPLIT OP_DROP OP_EQUAL OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_ELSE OP_1 OP_NUMEQUALVERIFY OP_DUP \u003craw 428 bytes\u003e OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_1 OP_SPLIT OP_SWAP \u003c00\u003e OP_CAT OP_BIN2NUM OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_DROP OP_ELSE OP_DUP \u003cfe00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_4 OP_SPLIT OP_NIP OP_ELSE OP_DUP \u003cff00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_8 OP_SPLIT OP_NIP OP_ELSE OP_DROP OP_2 OP_SPLIT OP_NIP OP_ENDIF OP_ENDIF OP_ENDIF OP_7 OP_PICK OP_SIZE OP_2 OP_SUB OP_ROT OP_SWAP OP_SPLIT OP_SIZE \u003c6c\u003e OP_NUMEQUALVERIFY OP_1 OP_SPLIT OP_DROP \u003c6a\u003e OP_EQUALVERIFY \u003c61ab\u003e OP_SWAP OP_CAT OP_EQUALVERIFY OP_VERIFY OP_DUP OP_SIZE OP_4 OP_SUB OP_SPLIT OP_NIP \u003c00\u003e OP_CAT OP_BIN2NUM \u003c41\u003e OP_NUMEQUALVERIFY OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c2c\u003e OP_SUB OP_SPLIT OP_DROP OP_SIZE OP_8 OP_SUB OP_SPLIT OP_DROP OP_SIZE \u003c6b\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP \u003c21\u003e OP_SPLIT \u003c21\u003e OP_SPLIT OP_8 OP_ROLL OP_3 OP_PICK OP_CHECKSIGVERIFY OP_4 OP_PICK OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_DROP OP_BIN2NUM OP_8 OP_PICK OP_0 OP_GREATERTHANOREQUAL OP_VERIFY OP_8 OP_PICK OP_OVER OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_PICK OP_HASH160 OP_9 OP_ROLL OP_ROT OP_SWAP OP_SUB OP_5 OP_PICK OP_2 OP_PICK OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF OP_3 OP_ROLL \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_3 OP_ROLL OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_4 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ENDIF OP_1 OP_ROT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_9 OP_ROLL OP_9 OP_ROLL OP_0 OP_OVER OP_SWAP OP_NUMEQUAL OP_NOT OP_IF \u003c1976a914\u003e OP_ROT OP_CAT \u003c88ac\u003e OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_ROT OP_DROP OP_NIP OP_ENDIF OP_ROT OP_ROT OP_CAT OP_SWAP OP_CAT OP_HASH256 OP_6 OP_ROLL OP_SIZE \u003c28\u003e OP_SUB OP_SPLIT OP_NIP \u003c20\u003e OP_SPLIT OP_DROP OP_EQUAL OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_ENDIF",
+  "asm": "OP_NOP OP_CODESEPARATOR OP_DUP OP_0 OP_NUMEQUAL OP_IF OP_DROP OP_5 OP_PICK OP_DUP OP_0 OP_EQUAL OP_SWAP OP_1 OP_EQUAL OP_BOOLOR OP_VERIFY OP_DUP \u003craw 428 bytes\u003e OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_1 OP_SPLIT OP_SWAP \u003c00\u003e OP_CAT OP_BIN2NUM OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_DROP OP_ELSE OP_DUP \u003cfe00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_4 OP_SPLIT OP_NIP OP_ELSE OP_DUP \u003cff00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_8 OP_SPLIT OP_NIP OP_ELSE OP_DROP OP_2 OP_SPLIT OP_NIP OP_ENDIF OP_ENDIF OP_ENDIF OP_11 OP_PICK OP_SIZE OP_2 OP_SUB OP_ROT OP_SWAP OP_SPLIT OP_SIZE \u003c6c\u003e OP_NUMEQUALVERIFY OP_1 OP_SPLIT OP_DROP \u003c6a\u003e OP_EQUALVERIFY \u003c61ab\u003e OP_SWAP OP_CAT OP_EQUALVERIFY OP_VERIFY OP_DUP OP_SIZE OP_4 OP_SUB OP_SPLIT OP_NIP \u003c00\u003e OP_CAT OP_BIN2NUM \u003c41\u003e OP_NUMEQUALVERIFY OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c2c\u003e OP_SUB OP_SPLIT OP_DROP OP_SIZE OP_8 OP_SUB OP_SPLIT OP_DROP OP_SIZE \u003c6b\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP \u003c21\u003e OP_SPLIT \u003c21\u003e OP_SPLIT OP_12 OP_ROLL OP_2 OP_PICK OP_CHECKSIGVERIFY OP_10 OP_PICK OP_0 OP_GREATERTHAN OP_VERIFY OP_2 OP_PICK OP_HASH160 OP_2 OP_PICK OP_HASH160 OP_6 OP_PICK OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_DROP OP_BIN2NUM OP_13 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_14 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_15 OP_PICK OP_0 OP_MUL \u003c0f27\u003e OP_ADD \u003c1027\u003e OP_DIV OP_16 OP_ROLL OP_3 OP_PICK OP_SUB OP_2 OP_PICK OP_SUB OP_OVER OP_SUB OP_0 OP_OVER OP_SWAP OP_GREATERTHAN OP_VERIFY OP_DUP OP_5 OP_PICK OP_MUL OP_11 OP_PICK OP_2 OP_PICK OP_ADD OP_DIV OP_5 OP_PICK OP_OVER OP_SUB OP_12 OP_PICK OP_3 OP_PICK OP_ADD \u003c13\u003e OP_PICK OP_IF OP_13 OP_PICK OP_4 OP_PICK OP_SWAP OP_MUL OP_8 OP_PICK OP_5 OP_PICK OP_ADD OP_DIV OP_8 OP_ROLL OP_5 OP_ROLL OP_ADD OP_13 OP_PICK OP_2 OP_PICK OP_SUB OP_2 OP_PICK OP_2 OP_PICK OP_2 OP_PICK OP_ROT OP_ROT OP_ROT OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ELSE OP_2 OP_PICK OP_2 OP_PICK OP_2 OP_PICK OP_ROT OP_ROT OP_ROT OP_10 OP_ROLL OP_DROP OP_6 OP_ROLL OP_DROP OP_ENDIF OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_VERIFY OP_11 OP_ROLL OP_DROP \u003c11\u003e OP_ROLL OP_10 OP_ROLL OP_DROP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_VERIFY OP_OVER OP_0 OP_GREATERTHAN OP_VERIFY OP_11 OP_PICK \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_0 OP_1 OP_2 OP_PICK OP_ROT OP_SPLIT OP_NIP OP_SWAP OP_SPLIT OP_DROP OP_0 OP_1 OP_NUM2BIN OP_CAT OP_BIN2NUM OP_1 \u003cfd00\u003e OP_ROT OP_SWAP OP_NUMEQUAL OP_IF OP_3 OP_ELSE OP_DUP OP_ENDIF OP_NIP OP_OVER OP_SIZE OP_NIP OP_OVER OP_SUB \u003c6b\u003e OP_SUB OP_ROT OP_ROT OP_SPLIT OP_NIP OP_SWAP OP_SPLIT OP_DROP OP_2 OP_PICK OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT \u003c61ab\u003e OP_ROT OP_CAT OP_CAT OP_DUP OP_3 OP_ROLL OP_8 OP_NUM2BIN OP_12 OP_ROLL OP_CAT OP_3 OP_ROLL OP_CAT OP_10 OP_ROLL OP_CAT OP_CAT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_ROT OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_13 OP_PICK OP_NOT OP_3 OP_PICK OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_13 OP_ROLL OP_14 OP_PICK OP_NOT OP_5 OP_ROLL OP_ROT OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_ROT OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_13 OP_PICK OP_7 OP_PICK OP_10 OP_ROLL OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_15 OP_PICK OP_9 OP_PICK OP_12 OP_ROLL OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_16 OP_ROLL \u003c11\u003e OP_PICK OP_12 OP_PICK OP_ROT OP_ROT OP_OVER \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SWAP OP_NOT OP_IF OP_ROT OP_ROT OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_NIP OP_ELSE OP_ROT OP_DROP OP_NIP OP_DUP OP_ENDIF OP_NIP OP_DUP OP_DUP OP_0 OP_16 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c13\u003e OP_PICK OP_16 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_7 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_16 OP_ROLL OP_DROP OP_7 OP_ROLL OP_DROP OP_ENDIF OP_0 OP_15 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c12\u003e OP_PICK OP_15 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_5 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_15 OP_ROLL OP_DROP OP_5 OP_ROLL OP_DROP OP_ENDIF OP_0 OP_14 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF \u003c11\u003e OP_ROLL OP_14 OP_ROLL OP_SWAP OP_1 OP_SWAP OP_IF OP_SWAP OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP OP_3 OP_ROLL OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 \u003c12\u003e OP_ROLL OP_DROP OP_14 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ENDIF OP_15 OP_ROLL OP_15 OP_ROLL OP_0 OP_OVER OP_SWAP OP_NUMEQUAL OP_NOT OP_IF \u003c1976a914\u003e OP_ROT OP_CAT \u003c88ac\u003e OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_ROT OP_DROP OP_NIP OP_ENDIF OP_12 OP_ROLL OP_11 OP_ROLL OP_CAT OP_4 OP_ROLL OP_CAT OP_3 OP_ROLL OP_CAT OP_ROT OP_CAT OP_SWAP OP_CAT OP_HASH256 OP_9 OP_ROLL OP_SIZE \u003c28\u003e OP_SUB OP_SPLIT OP_NIP \u003c20\u003e OP_SPLIT OP_DROP OP_EQUAL OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_ELSE OP_1 OP_NUMEQUALVERIFY OP_DUP \u003craw 428 bytes\u003e OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_DROP OP_1 OP_SPLIT OP_SWAP \u003c00\u003e OP_CAT OP_BIN2NUM OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_DROP OP_ELSE OP_DUP \u003cfe00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_4 OP_SPLIT OP_NIP OP_ELSE OP_DUP \u003cff00\u003e OP_NUMEQUAL OP_IF OP_DROP OP_8 OP_SPLIT OP_NIP OP_ELSE OP_DROP OP_2 OP_SPLIT OP_NIP OP_ENDIF OP_ENDIF OP_ENDIF OP_7 OP_PICK OP_SIZE OP_2 OP_SUB OP_ROT OP_SWAP OP_SPLIT OP_SIZE \u003c6c\u003e OP_NUMEQUALVERIFY OP_1 OP_SPLIT OP_DROP \u003c6a\u003e OP_EQUALVERIFY \u003c61ab\u003e OP_SWAP OP_CAT OP_EQUALVERIFY OP_VERIFY OP_DUP OP_SIZE OP_4 OP_SUB OP_SPLIT OP_NIP \u003c00\u003e OP_CAT OP_BIN2NUM \u003c41\u003e OP_NUMEQUALVERIFY OP_DUP \u003c68\u003e OP_SPLIT OP_NIP OP_SIZE \u003c2c\u003e OP_SUB OP_SPLIT OP_DROP OP_SIZE OP_8 OP_SUB OP_SPLIT OP_DROP OP_SIZE \u003c6b\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP \u003c21\u003e OP_SPLIT \u003c21\u003e OP_SPLIT OP_7 OP_PICK OP_0 OP_GREATERTHAN OP_IF OP_8 OP_ROLL OP_3 OP_PICK OP_CHECKSIGVERIFY OP_ELSE OP_8 OP_ROLL OP_3 OP_PICK OP_3 OP_PICK OP_0 OP_3 OP_ROLL OP_1 OP_4 OP_ROLL OP_4 OP_ROLL OP_2 OP_CHECKMULTISIGVERIFY OP_ENDIF OP_4 OP_PICK OP_SIZE \u003c34\u003e OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_DROP OP_BIN2NUM OP_8 OP_PICK OP_0 OP_GREATERTHANOREQUAL OP_VERIFY OP_8 OP_PICK OP_OVER OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_PICK OP_HASH160 OP_9 OP_ROLL OP_ROT OP_SWAP OP_SUB OP_5 OP_PICK OP_2 OP_PICK OP_SWAP OP_DUP OP_0 OP_16 OP_ROT OP_ROT OP_MAX OP_SWAP OP_MIN \u003c50\u003e OP_ADD OP_1 OP_NUM2BIN OP_OVER OP_16 OP_GREATERTHAN OP_IF OP_SWAP OP_DUP OP_SIZE OP_NIP OP_1 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_NIP OP_DUP OP_ENDIF OP_NIP \u003c20\u003e OP_0 OP_CAT \u003c6d\u003e OP_ROT OP_SWAP OP_CAT OP_CAT OP_SWAP \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_CAT OP_DUP OP_0 OP_3 OP_PICK OP_SWAP OP_GREATERTHAN OP_IF OP_3 OP_ROLL \u003c76a914\u003e OP_SWAP \u003c88ac\u003e OP_CAT OP_CAT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_3 OP_ROLL OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_4 OP_ROLL OP_DROP OP_3 OP_ROLL OP_DROP OP_ENDIF OP_1 OP_ROT OP_SIZE OP_DUP \u003cfd00\u003e OP_LESSTHAN OP_IF OP_2 OP_NUM2BIN OP_1 OP_SPLIT OP_DROP OP_ELSE OP_DUP \u003c000001\u003e OP_LESSTHAN OP_IF OP_3 OP_NUM2BIN OP_2 OP_SPLIT OP_DROP \u003cfd\u003e OP_SWAP OP_CAT OP_ELSE OP_DUP \u003c0000000001\u003e OP_LESSTHAN OP_IF OP_5 OP_NUM2BIN OP_4 OP_SPLIT OP_DROP \u003cfe\u003e OP_SWAP OP_CAT OP_ELSE OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_DROP \u003cff\u003e OP_SWAP OP_CAT OP_ENDIF OP_ENDIF OP_ENDIF OP_SWAP OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_9 OP_ROLL OP_9 OP_ROLL OP_0 OP_OVER OP_SWAP OP_NUMEQUAL OP_NOT OP_IF \u003c1976a914\u003e OP_ROT OP_CAT \u003c88ac\u003e OP_CAT OP_SWAP OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_ELSE OP_0 OP_ROT OP_DROP OP_NIP OP_ENDIF OP_ROT OP_ROT OP_CAT OP_SWAP OP_CAT OP_HASH256 OP_6 OP_ROLL OP_SIZE \u003c28\u003e OP_SUB OP_SPLIT OP_NIP \u003c20\u003e OP_SPLIT OP_DROP OP_EQUAL OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_NIP OP_ENDIF",
   "buildTimestamp": "reproducible: go run ./gen/vectors",
   "codeSeparatorIndex": 1,
   "codeSeparatorIndices": [
@@ -4896,13 +5043,13 @@
       "paramIndex": 4
     },
     {
-      "byteOffset": 2389,
+      "byteOffset": 2412,
       "paramIndex": 4
     }
   ],
   "contractName": "Pool",
   "parentClass": "StatefulSmartContract",
-  "script": "61ab76009c637555797600877c51879b697676aa517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8100011f80517e9321414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff007d97785296789f527952798d9495937776927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e827c7e23022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798027c7e827c7e01307c7e01417e2102b405d7f0322a89d0f9f3a98e6f938fdc1c969a8d1382a2bf66a71ae74a1e83b0ad7601687f77820134947f75517f7c01007e817602fd009f6375677602fe009c6375547f77677602ff009c6375587f776775527f776868685b798252947b7c7f82016c9d517f75016a880261ab7c7e8869768254947f7701007e8101419d7601687f7782012c947f758258947f7582016b947f77587f7c817c01217f01217f5c7a5279ad5a7900a0695279a95279a95679820134947f77587f75815d790095020f2793021027965e790095020f2793021027965f790095020f279302102796607a537994527994789400787ca069765579955b7952799396557978945c79537993011379635d7954797c95587955799396587a557a935d795279945279527952797b7b7b537a75537a75537a75675279527952797b7b7b5a7a75567a7568537a75537a75537a750053797ca0695b7a7501117a5a7a750053797ca0697800a0695b7901687f77820134947f75005152797b7f777c7f750051807e815102fd007b7c9c6353677668777882777894016b947b7b7f777c7f7552797600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e0261ab7b7e7e76537a58805c7a7e537a7e5a7a7e7e827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7b58807c7e5d799153797c517c637c67777668775d7a5e7991557a7b7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7b58807c7e5d7957795a7a7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776765f7959795c7a7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b75777668777676607a0111795c797b7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776760060797ca063011379607a7c517c637c6777766877577a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e6700607a75577a7568005f797ca0630112795f7a7c517c637c6777766877557a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e67005f7a75557a7568005e797ca06301117a5e7a7c517c637c6777766877537a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e670001127a755e7a75537a75685f7a5f7a00787c9c9163041976a9147b7e0288ac7e7c58807c7e67007b7577685c7a5b7a7e547a7e537a7e7b7e7c7eaa597a820128947f7701207f758777777777777777777767519d7676aa517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8100011f80517e9321414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff007d97785296789f527952798d9495937776927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e827c7e23022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798027c7e827c7e01307c7e01417e2102b405d7f0322a89d0f9f3a98e6f938fdc1c969a8d1382a2bf66a71ae74a1e83b0ad7601687f77820134947f75517f7c01007e817602fd009f6375677602fe009c6375547f77677602ff009c6375587f776775527f7768686857798252947b7c7f82016c9d517f75016a880261ab7c7e8869768254947f7701007e8101419d7601687f7782012c947f758258947f7582016b947f77587f7c817c01217f01217f587a5379ad5479820134947f77587f7581587900a269587978a1695379a9597a7b7c94557952797c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e760053797ca063537a0376a9147c0288ac7e7e827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e537a58807c7e6700547a75537a7568517b827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e597a597a00787c9c9163041976a9147b7e0288ac7e7c58807c7e67007b7577687b7b7e7c7eaa567a820128947f7701207f758777777777777768",
+  "script": "61ab76009c637555797600877c51879b697676aa517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8100011f80517e9321414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff007d97785296789f527952798d9495937776927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e827c7e23022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798027c7e827c7e01307c7e01417e2102b405d7f0322a89d0f9f3a98e6f938fdc1c969a8d1382a2bf66a71ae74a1e83b0ad7601687f77820134947f75517f7c01007e817602fd009f6375677602fe009c6375547f77677602ff009c6375587f776775527f776868685b798252947b7c7f82016c9d517f75016a880261ab7c7e8869768254947f7701007e8101419d7601687f7782012c947f758258947f7582016b947f77587f7c817c01217f01217f5c7a5279ad5a7900a0695279a95279a95679820134947f77587f75815d790095020f2793021027965e790095020f2793021027965f790095020f279302102796607a537994527994789400787ca069765579955b7952799396557978945c79537993011379635d7954797c95587955799396587a557a935d795279945279527952797b7b7b537a75537a75537a75675279527952797b7b7b5a7a75567a7568537a75537a75537a750053797ca0695b7a7501117a5a7a750053797ca0697800a0695b7901687f77820134947f75005152797b7f777c7f750051807e815102fd007b7c9c6353677668777882777894016b947b7b7f777c7f7552797600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e0261ab7b7e7e76537a58805c7a7e537a7e5a7a7e7e827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7b58807c7e5d799153797c517c637c67777668775d7a5e7991557a7b7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7b58807c7e5d7957795a7a7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776765f7959795c7a7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b75777668777676607a0111795c797b7b780376a9147c0288ac7e7e7c91637b7b7c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e7677677b757776687776760060797ca063011379607a7c517c637c6777766877577a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e6700607a75577a7568005f797ca0630112795f7a7c517c637c6777766877557a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e67005f7a75557a7568005e797ca06301117a5e7a7c517c637c6777766877537a827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e670001127a755e7a75537a75685f7a5f7a00787c9c9163041976a9147b7e0288ac7e7c58807c7e67007b7577685c7a5b7a7e547a7e537a7e7b7e7c7eaa597a820128947f7701207f758777777777777777777767519d7676aa517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8100011f80517e9321414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff007d97785296789f527952798d9495937776927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f76927f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e827c7e23022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798027c7e827c7e01307c7e01417e2102b405d7f0322a89d0f9f3a98e6f938fdc1c969a8d1382a2bf66a71ae74a1e83b0ad7601687f77820134947f75517f7c01007e817602fd009f6375677602fe009c6375547f77677602ff009c6375587f776775527f7768686857798252947b7c7f82016c9d517f75016a880261ab7c7e8869768254947f7701007e8101419d7601687f7782012c947f758258947f7582016b947f77587f7c817c01217f01217f577900a063587a5379ad67587a5379537900537a51547a547a52af685479820134947f77587f7581587900a269587978a1695379a9597a7b7c94557952797c7600607b7ba47ca301509351807860a0637c76827751807c7e67777668770120007e016d7b7c7e7e7c0376a9147c0288ac7e7e7e760053797ca063537a0376a9147c0288ac7e7e827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e537a58807c7e6700547a75537a7568517b827602fd009f635280517f756776030000019f635380527f7501fd7c7e67760500000000019f635580547f7501fe7c7e675980587f7501ff7c7e6868687c7e7c58807c7e597a597a00787c9c9163041976a9147b7e0288ac7e7c58807c7e67007b7577687b7b7e7c7eaa567a820128947f7701207f758777777777777768",
   "stateFields": [
     {
       "index": 0,

@@ -3,24 +3,27 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.10.1** (0.10.0 with skein-1color 0.10.1's pages), the Open Exchange as 0.9.1 left it (David Case,
-2026-10-08/09; docs/AMM.md "The pool rule", "The claim and the listing",
-"Prices"): the contract is Swap and Close (`Close(lpSig, bsvFee)`, the LP's
-alone, everything out; AddLiquidity and RemoveLiquidity are gone: a
-position is deployed or closed); the fees are the validator's, skein-wide
-(`config.amm.ammValidator`, `amm.pool.terms`), and a deploy whose pool
-fields differ is refused; the LP DELIVERS the deploy (every input
-SIGHASH_SINGLE over its own output, one token unit left) through
-`amm.pool.submit`, and the validator appends its claim (one unit, P2PKH to
-the pool's validator key, its payload that key's signature over the pool's
-script and the first token input), broadcasts it through its overlay and
-files the claim in its wallet; `ls_amm` lists a pool only while its contract
-output and its claim are unspent and the claim verifies, and beats its
-prices (per token, per validator, its listed pools' totals) on
-`ls_amm-live`; the validator rescinds by spending the claim (root's
-`rescind`, the wallet's caller input, shruggr/skein#93); the pages are the
-Open Exchange (Landing, Swap, Liquidity, Your tokens, Settings), at the
-origin root by a root route. On skein-overlay 0.14.0 and skein-1color 0.10.0
+and its pages. Version **0.11.0** (David Case, 2026-10-21; docs/AMM.md
+"The pool rule", "The deploy and the affirmation", "The listing",
+"Prices"): pool deploys move to the BRC-207 wallet module, so the
+validator no longer appends a claim to a delivered deploy. Before the LP's
+wallet builds the deploy, the page asks this skein's validator
+(`amm.pool.affirm`) to affirm the proposed pool: it checks it against its
+terms (`config.amm.ammValidator`, `amm.pool.terms`; the fees are the
+validator's, skein-wide) and answers its signature, by the pool's validator
+key, over the pool's parameters and the hash of the terms; the deploy's
+pool output carries it as its BRC-162 payload, and the deploy reaches the
+overlay through the token topic like any token transaction. `ls_amm` lists
+a deploy's pool only when that signature verifies, a swap's continuation of
+a listed pool with it, and beats its prices (per token, per validator, its
+listed pools' totals) on `ls_amm-live`. The contract is Swap and Close
+(`Close(sig, bsvFee)`: the LP's with any bsvFee, or the current
+validator's with bsvFee 0; everything out to the LP either way); delisting
+is the validator's Close (root's `close`, the pool a caller input of the
+instance's wallet, shruggr/skein#93). The pages are the Open Exchange
+(Landing, Swap, Liquidity, Your tokens, Settings), at the origin root by a
+root route; their deploy is not yet on the affirmation (docs/AMM.md "Not
+wired"). On skein-overlay 0.14.0 and skein-1color 0.10.0
 (0.10.0: the 1Color rename, BRC-207's wire names, and the image moved here
 from skein, shruggr/skein#152; CHANGELOG.md). Earlier versions are in
 CHANGELOG.md. Ported from amm-poc (b-open-io/amm-poc, its `programs/`,
@@ -48,8 +51,8 @@ were.
 | `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.14.0's build (0.14.0: a topic's beat also carries its tip anchor; the reads `/holds`, `/anchors`, `/admitted` are the engine's, not routed by this manifest): serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`, only in `amm/register`, root's) and, always (a market and a validator; `config.overlay.market` / `.validator` give the ms, absent here: 40 000 / 30 000), asks liveness of and beacons each registered token's `tm_color_<txid>_0-live` (the body its view digest) and each registered lookup's `<service>-live`, takes submissions by message (box `amm/submit`, answered to the sender's box) and by `POST /submit` (BRC-22: the STEAK) |
 | `color-topic` | `bin/color-topic.wasm` | skein-1color 0.10.0's topic manager: one topic per token, `tm_color_<assetId>` (`tm_color_<txid>_0`), judged by the BRC-162 rules alone; the discovery topic `tm_color` |
 | `color-lookup` | `bin/color-lookup.wasm` | skein-1color 0.10.0's lookups `ls_color` (a token's value and authority outputs, one output), `ls_color_deploys` (a token's deploy output) and each token's `ls_color_<assetId>` (BRC-207), one index; the token list (the read route `/color/tokens`, its filter `tokens`) |
-| `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (contract output and claim unspent, the claim verified) of every token topic the overlay serves, each query naming its token; its beat, the prices |
-| `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last; takes an LP's delivered deploy at its terms and appends its claim; submits to its own overlay by message and answers on the engine's answer (`swap`, `deploy`, libp2p direct calls); files the claim in the wallet; root's `rescind` (box `amm/validator`) |
+| `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (an affirmed deploy's pool and its continuations, unspent) of every token topic the overlay serves, each query naming its token; its beat, the prices |
+| `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last and submits it to its own overlay by message, answering on the engine's answer (`swap`, a libp2p direct call); affirms an LP's proposed pool at its terms (`affirm`, called in-VM by amm-p2p, 0.11.0); root's `close` (box `amm/validator`): the contract's Close on the validator's path, the pool a caller input of the instance's wallet |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1` with `terms`: a transaction carried to the validator the caller names), the holders' listing requests (box `amm/requests`), the reads `/requests` and `/spends`, and the pages (`www/`, served from the app's own tree) |
 | | `src/pool.zig` | the Pool contract as the overlay sees it: recognising a pool, its state, the pool checks (module `pool`, over the `1color` module's parser) |
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
@@ -161,9 +164,8 @@ wildcard DNS, `<host>/@<handle>/amm`).
    signed beat every `every` ms — the frame carries the instance's identity
    key (`sender`), the gossip message its peer ID (`from`), the body the
    topic's view digest `{view: {count, digest}}`, re-declared when it
-   changes — and amm-validator signs swaps and takes an LP's delivered
-   deploy (appending its claim) for every registered token, refusing any
-   other `not_validating`. A deregister
+   changes — and amm-validator signs swaps and affirms an LP's proposed
+   pool for every registered token, refusing any other `not_validating`. A deregister
    reverses both (`unliveness`, `unbeacon`). The ms are
    `config.overlay.market: {window}` / `config.overlay.validator: {every}`
    (e.g. at install, `--config '{"overlay": {"market": {"window": 40000},
@@ -178,16 +180,16 @@ wildcard DNS, `<host>/@<handle>/amm`).
    `.live` read, takes each beat's `sender` (the validator) and `from` (its
    peer ID), plans only over the pools whose validator beat within the window, and sends
    `amm.swap.submit` with that validator's `peerId` beside its `validator`
-   key (`amm.pool.submit` the same: the Liquidity page names this skein's
-   own validator, `amm.pool.terms`). The relay looks at no liveness: it dials `peerId`, or, when
+   key (a deploy names this skein's own validator, `amm.pool.terms`, and
+   asks it `amm.pool.affirm`). The relay looks at no liveness: it dials `peerId`, or, when
    `peerId` is its own node's, calls its own `amm-validator` in-VM with the
    same package, as the front door calls the route's handler for a frame.
 5. **The terms** (0.9.0, David Case 2026-10-09: "Fees are the
    validator's"): `config.amm.ammValidator` `{lpFeeBps, validatorFeeBps,
    commissionBps}` (here 30, 5, 0; at install, `--config`). Every pool this
    skein hosts carries them exactly: an LP posting here accepts them, and
-   the validator refuses a deploy whose pool fields differ
-   (`fees_unacceptable`). The pages read them with `amm.pool.terms`.
+   the validator affirms no pool whose fees differ (`fees_unacceptable`).
+   The pages read them with `amm.pool.terms`.
 6. **The pages** at `<base>/` (and at the origin's root, below), served
    from the app's own tree (`www/`): the Open Exchange — Landing (the
    hosted tokens, their prices from the beats), Swap, Liquidity (deploy a
@@ -211,20 +213,24 @@ wildcard DNS, `<host>/@<handle>/amm`).
    skein routes add --transport http --prefix --filters amm.page --settings '{"root":"www","index":"index.html"}' / <origin>
    ```
 
-7. **Rescind** (0.9.0): the validator withdraws a pool's listing by
-   spending its claim — root's message in `amm/validator`:
+7. **Close by the validator** (0.11.0, in place of 0.9.0's rescind): the
+   validator delists a pool by the contract's Close — root's message in
+   `amm/validator`:
 
    ```
    box:  amm/validator
-   body: {"fn": "rescind", "args": {"pool": "<deploy txid>.0"}}
+   body: {"fn": "close", "args": {"pool": "<txid>.<vout>"}}
    ```
 
-   amm-validator has the instance's wallet spend the claim as a caller input
-   (createAction with the claim's unlocking script to come, then signAction
-   with the validator key's signature; shruggr/skein#93), burns its unit,
-   submits the rescind to the overlay and answers root `{fn: "rescind",
-   request, result}`. `ls_amm` lists the pool no more; the LP's page shows
-   it as withdrawn and offers Close.
+   `pool` is any of the pool's outputs (its deploy's `<txid>.0` too):
+   amm-validator follows it to the newest, has the instance's wallet build
+   the Close with the pool as a caller input (createAction with the pool's
+   unlocking script to come, the contract's two outputs to the LP key; then
+   signAction with the Rúnar call, `sig` the pool's current validator key's,
+   bsvFee 0, the wallet paying the fee and keeping its change;
+   shruggr/skein#93), submits it to the overlay and answers root `{fn:
+   "close", request, result}`. The LP gets every sat and every token, as on
+   its own Close; `ls_amm` lists the pool no more.
 
 **Submit and look up** (BRC-22, synchronous: skein-overlay 0.9.1; by message instead, answered later to the submitter's box; BRC-24):
 
@@ -281,11 +287,11 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.10.1 |
+| this app | 0.11.0 |
 | skein-overlay | v0.14.0 (385e1b9) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.10.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
-| skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the rescind's createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
+| skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.0) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions` 0.0.228, `@1sat/connect` 0.0.99, `@1sat/react` 0.0.97, `@1sat/templates` 0.0.39 (the `Mandala` template from b-open-io/1sat-sdk#92, aff025c3, unpublished; before 0.8.0, 183c0ce3), `@bsv/sdk` 2.8.10, `@ipld/dag-cbor` 10.0.2 and `cborg` 6.1.4 for the template (`web/ui/package-lock.json`) |

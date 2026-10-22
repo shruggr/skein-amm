@@ -204,6 +204,15 @@ type call struct {
 	poolIndex int
 }
 
+// affirmedScript is the pool's deploy script with a payload (the affirmation,
+// 0.11.0): `<push payload> OP_DROP` after the prefix's OP_2DROP.
+func (f *fixture) affirmedScript(p pool, payload []byte) []byte {
+	s := append(append(tokenPrefix(p.tokens), pushData(payload)...), 0x75)
+	s = append(s, f.code...)
+	s = append(s, 0x6a)
+	return append(s, p.state()...)
+}
+
 // separatorScriptCode is the locking script after the pool's OP_CODESEPARATOR.
 func separatorScriptCode(lock []byte) []byte {
 	off := 1 + 32 // push assetId
@@ -214,6 +223,9 @@ func separatorScriptCode(lock []byte) []byte {
 		off += 1 + int(op)
 	}
 	off++ // OP_2DROP
+	if lock[off] != 0x61 { // a payload: one push, then OP_DROP
+		off += 1 + int(lock[off]) + 1
+	}
 	if lock[off] != 0x61 || lock[off+1] != 0xab {
 		panic("separator not where expected")
 	}
@@ -519,7 +531,7 @@ func TestSwapZeroFeeRates(t *testing.T) {
 	}
 }
 
-// closeCall is the LP's Close leaving bsvFee for the miner: the BSV payout
+// closeCall is a Close (the LP's; set signers[0] for the validator's) leaving bsvFee for the miner: the BSV payout
 // (pool sats - bsvFee, when nonzero) to the LP's key, then every token to it.
 func (f *fixture) closeCall(p pool, bsvFee int64) call {
 	var outs []out
@@ -568,10 +580,39 @@ func TestClose(t *testing.T) {
 		c.outs[0].sats = p.bsv + 1
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("not the LP", func(t *testing.T) {
+	t.Run("not the LP, bsvFee > 0: the validator's signature is refused", func(t *testing.T) {
 		c := f.closeCall(p, 500)
 		c.signers[0] = p.validator
 		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("the validator, bsvFee 0: everything out to the LP (0.11.0)", func(t *testing.T) {
+		c := f.closeCall(p, 0)
+		c.signers[0] = p.validator
+		mustPass(t, f.run(t, p, c))
+	})
+	t.Run("the validator, bsvFee 1: refused", func(t *testing.T) {
+		c := f.closeCall(p, 1)
+		c.signers[0] = p.validator
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("the validator, bsvFee 0, the BSV to the validator: refused", func(t *testing.T) {
+		c := f.closeCall(p, 0)
+		c.signers[0] = p.validator
+		c.outs[0].script = p2pkh(pkh(p.validator))
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("neither key, bsvFee 0: refused", func(t *testing.T) {
+		c := f.closeCall(p, 0)
+		c.signers[0] = key(t, 50)
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("a deploy's output with the affirmation payload closes the same (the payload sits before the separator)", func(t *testing.T) {
+		pp := p
+		pp.lock = f.affirmedScript(p, bytes.Repeat([]byte{0x30}, 71))
+		mustPass(t, f.run(t, pp, f.closeCall(pp, 500)))
+		c := f.closeCall(pp, 0)
+		c.signers[0] = p.validator
+		mustPass(t, f.run(t, pp, c))
 	})
 	t.Run("the payout understates bsvFee's remainder", func(t *testing.T) {
 		c := f.closeCall(p, 500)
@@ -734,4 +775,19 @@ func TestSwapZeroCommission(t *testing.T) {
 			mustFail(t, f.run(t, p, c))
 		})
 	}
+}
+
+// A Swap of a deploy's pool output, whose prefix carries the affirmation as its payload
+// (0.11.0): the contract never reads the prefix, so it swaps as any pool, and the
+// continuation it writes carries no payload.
+func TestSwapAffirmedDeploy(t *testing.T) {
+	f := newFixture(t, 30, 5, 0)
+	p := pool{bsv: 1_000_000, tokens: 5_000_000, lp: key(t, 10), validator: key(t, 20)}
+	p.lock = f.affirmedScript(p, bytes.Repeat([]byte{0x30}, 71))
+	r := f.expectSwap(p, 20_000, true)
+	c := f.swapCall(p, 20_000, true, r)
+	if bytes.Contains(c.outs[0].script, bytes.Repeat([]byte{0x30}, 71)) {
+		t.Fatal("the continuation carries the payload")
+	}
+	mustPass(t, f.run(t, p, c))
 }

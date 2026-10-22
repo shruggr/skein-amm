@@ -6,6 +6,11 @@
  *
  *   0x20 <assetId:32> <push tokenReserve> OP_2DROP || code || OP_RETURN || state
  *
+ * A deploy's pool output (skein-amm 0.11.0) carries the validator's affirmation as its 1Color
+ * payload, `<push signature> OP_DROP` after OP_2DROP (`lockDeploy`'s `affirmation`): the
+ * ValidatorPubKey's DER signature over sha256 of `affirmationMessage` (docs/AMM.md "The
+ * affirmation"). The contract never reads the prefix; every continuation it writes has no payload.
+ *
  * `code` is the artifact's template with the readonly constructor args
  * (assetId, lpFeeBps, validatorFeeBps, commissionBps) spliced in; `state` is TokenReserve
  * (8 bytes LE sign-magnitude) ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity.
@@ -91,6 +96,8 @@ export interface Pool {
   code: string;
   /** `code || OP_RETURN || state` (hex): the script runar-sdk sees. */
   contractScript: string;
+  /** A deploy's affirmation (0.11.0): the 1Color payload, a DER signature (hex); absent on a continuation. */
+  affirmation?: string;
 }
 
 /** A pool output being spent. */
@@ -179,7 +186,7 @@ export interface SwapExpectation {
 }
 
 export interface CloseParams extends CallCommon {
-  /** The miner fee left from the pool's sats (0 <= bsvFee <= the pool's sats; 0: funded from `inputs`). */
+  /** The miner fee left from the pool's sats (0 <= bsvFee <= the pool's sats; 0: funded from `inputs`). The LP's Close; the validator's (bsvFee 0) is amm-validator's (0.11.0). */
   bsvFee: bigint;
   /** The LP's key; when given, the LP slot is signed here. */
   lpKey?: PoolSigner;
@@ -276,6 +283,20 @@ function stateHex(state: PoolFields): string {
   return serializeState(poolArtifact.stateFields!, { ...state });
 }
 
+/** The affirmation message's tag (0.11.0). */
+const AFFIRM_TAG = "skein-amm affirm 1";
+
+/** `n` as 8 bytes, little-endian two's complement (an int64 or a uint64 below 2^63). */
+function le64(n: bigint): number[] {
+  let v = BigInt.asUintN(64, n);
+  const out: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    out.push(Number(v & 0xffn));
+    v >>= 8n;
+  }
+  return out;
+}
+
 function isHex(s: unknown, bytes: number): s is string {
   return typeof s === "string" && s.length === bytes * 2 && /^[0-9a-f]*$/.test(s);
 }
@@ -286,16 +307,16 @@ function isHex(s: unknown, bytes: number): s is string {
 
 export class PoolTemplate {
   /**
-   * Decodes a pool locking script: a 1Color value prefix with a 32-byte id and
-   * no payload, then the Pool artifact (template bytes between the constructor
-   * slots), then the state. Also requires prefix id == assetId and prefix
-   * amount == TokenReserve (the admission check of Pool.runar.go's doc).
-   * Returns null for anything else.
+   * Decodes a pool locking script: a 1Color value prefix with a 32-byte id (and,
+   * on a deploy, the affirmation as its payload, 0.11.0), then the Pool artifact
+   * (template bytes between the constructor slots), then the state. Also requires
+   * prefix id == assetId and prefix amount == TokenReserve (the admission check of
+   * Pool.runar.go's doc). Returns null for anything else.
    */
   static decode(script: string | LockingScript | number[]): Pool | null {
     const bytes = Array.isArray(script) ? script : fromHex(scriptHex(script));
     const prefix = decodeMandala(bytes);
-    if (!prefix || prefix.role !== "value" || prefix.payload !== undefined) return null;
+    if (!prefix || prefix.role !== "value") return null;
     if (prefix.idBytes?.length !== 32) return null;
 
     const contractScript = toHex(bytes.slice(prefix.length));
@@ -322,6 +343,7 @@ export class PoolTemplate {
       state: { tokenReserve, lpPubKey, validatorPubKey, validatorIdentity },
       code: contractScript.slice(0, opReturn),
       contractScript,
+      ...(prefix.payload !== undefined ? { affirmation: toHex(prefix.payload) } : {}),
     };
   }
 
@@ -329,15 +351,68 @@ export class PoolTemplate {
    * The pool locking script for `args` and `state`: the 1Color prefix for
    * TokenReserve (which the contract writes itself on every continuation, but
    * nothing on chain writes for a deploy) in front of runar-sdk's locking
-   * script for the constructor args.
+   * script for the constructor args. With `affirmation` (0.11.0: the validator's
+   * DER signature, hex, from `amm.pool.affirm`), the prefix carries it as its
+   * payload, `<push affirmation> OP_DROP`: the deploy's pool output.
    */
-  static lockDeploy(args: PoolArgs, state: PoolFields): LockingScript {
+  static lockDeploy(args: PoolArgs, state: PoolFields, affirmation?: string): LockingScript {
     if (!isHex(args.assetId, 32)) throw new Error("lockDeploy: assetId must be 32 bytes of hex");
     for (const k of ["lpPubKey", "validatorPubKey", "validatorIdentity"] as const) {
       PublicKey.fromString(state[k]); // throws on a malformed key
     }
     const contract = new RunarContract(poolArtifact, ctorArgs(args, state));
-    return LockingScript.fromHex(tokenPrefixHex(args.assetId, state.tokenReserve) + contract.getLockingScript());
+    let payload = "";
+    if (affirmation !== undefined) {
+      const sig = affirmation.toLowerCase();
+      if (!/^[0-9a-f]*$/.test(sig) || sig.length === 0 || sig.length > 0x4b * 2 || sig.length % 2 !== 0) throw new Error("lockDeploy: the affirmation must be a DER signature, hex");
+      payload = encodePushData(sig) + "75"; // OP_DROP
+    }
+    return LockingScript.fromHex(tokenPrefixHex(args.assetId, state.tokenReserve) + payload + contract.getLockingScript());
+  }
+
+  /**
+   * sha256 of the terms' canonical bytes (0.11.0): lpFeeBps ‖ validatorFeeBps ‖
+   * commissionBps, each a two's-complement int64, little-endian (src/pool.zig
+   * `termsHash`).
+   */
+  static termsHash(args: Pick<PoolArgs, "lpFeeBps" | "validatorFeeBps" | "commissionBps">): number[] {
+    return Hash.sha256([...le64(args.lpFeeBps), ...le64(args.validatorFeeBps), ...le64(args.commissionBps)]) as number[];
+  }
+
+  /**
+   * The bytes the validator's affirmation signs (0.11.0, docs/AMM.md "The
+   * affirmation"; src/pool.zig `affirmMessage`): "skein-amm affirm 1" ‖ AssetId
+   * (32, wire order) ‖ LpFeeBps ‖ ValidatorFeeBps ‖ CommissionBps (int64 LE) ‖
+   * TokenReserve ‖ the pool output's satoshis (uint64 LE) ‖ LpPubKey ‖
+   * ValidatorPubKey ‖ ValidatorIdentity (33 each) ‖ termsHash. 221 bytes.
+   */
+  static affirmationMessage(pool: { args: PoolArgs; state: PoolFields }, satoshis: bigint): number[] {
+    const { args, state } = pool;
+    return [
+      ...Utils.toArray(AFFIRM_TAG, "utf8"),
+      ...fromHex(args.assetId),
+      ...le64(args.lpFeeBps),
+      ...le64(args.validatorFeeBps),
+      ...le64(args.commissionBps),
+      ...le64(state.tokenReserve),
+      ...le64(satoshis),
+      ...fromHex(state.lpPubKey),
+      ...fromHex(state.validatorPubKey),
+      ...fromHex(state.validatorIdentity),
+      ...PoolTemplate.termsHash(args),
+    ];
+  }
+
+  /** Whether the pool output (`script`, holding `satoshis`) is an affirmed deploy's: its payload the ValidatorPubKey's signature of its affirmation (amm-lookup's listing rule). */
+  static affirmed(script: string | LockingScript | number[], satoshis: bigint): boolean {
+    const pool = PoolTemplate.decode(script);
+    if (!pool?.affirmation) return false;
+    try {
+      const message = PoolTemplate.affirmationMessage(pool, satoshis); // PublicKey.verify hashes it (sha256)
+      return PublicKey.fromString(pool.state.validatorPubKey).verify(message, Signature.fromDER(fromHex(pool.affirmation)));
+    } catch {
+      return false;
+    }
   }
 
   /** The continuation script: `code` kept byte for byte, prefix and state rewritten. */
@@ -523,7 +598,9 @@ export class PoolTemplate {
 
   /**
    * Close (method 1; skein-amm 0.9.0, David Case 2026-10-09: a position is
-   * deployed or closed, never resized in place). LP-only. Outputs: 0 the BSV
+   * deployed or closed, never resized in place). The LP's, built here (0.11.0: the
+   * contract also takes the current validator's signature at bsvFee 0, amm-validator's
+   * Close, paying the LP the same). Outputs: 0 the BSV
    * payout (the pool's sats less `bsvFee`, to the LP key's P2PKH; only when
    * nonzero), then every token to the same key, then change. No continuation.
    */

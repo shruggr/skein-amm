@@ -26,7 +26,14 @@
 // The script cannot see token inputs, so every method that brings tokens in
 // requires the validator's signature: the validator's role is to confirm the
 // token inputs are valid and cover the token outputs. Two methods (skein-amm
-// 0.9.0, David Case 2026-10-09): Swap, the validator's; Close, the LP's.
+// 0.9.0, David Case 2026-10-09): Swap, the validator's; Close, the LP's or
+// (0.11.0) the validator's, always paying the LP.
+//
+// The deploy's pool output carries the validator's affirmation as its BRC-162
+// payload (skein-amm 0.11.0, docs/AMM.md "The affirmation"): the prefix is
+// `0x20 <assetId:32> <push tokenReserve> OP_2DROP <push affirmation> OP_DROP`,
+// before the code, so the contract never sees it and every continuation it
+// writes has no payload.
 package pool
 
 import runar "github.com/icellan/runar/packages/runar-go"
@@ -36,8 +43,7 @@ type Pool struct {
 
 	TokenReserve runar.Bigint
 	// The validator's key rotates: it names its next key on every Swap it
-	// signs. The LP's key is the pool's for its life (Close is its only
-	// spend). Payouts go to Hash160 of the current key. Next keys are derived
+	// signs. The LP's key is the pool's for its life. Payouts go to Hash160 of the current key. Next keys are derived
 	// off-chain so wallets can find their payouts from overlay data.
 	LpPubKey        runar.PubKey
 	ValidatorPubKey runar.PubKey
@@ -118,18 +124,31 @@ func (c *Pool) Swap(validatorSig runar.Sig, nextValidatorPubKey runar.PubKey, am
 	}
 }
 
-// Close pays the whole pool out to the LP and ends it: the LP's alone (David
-// Case, 2026-10-09: a position is deployed or closed, never resized in place;
-// resizing is a Close and a new deploy). bsvFee (0 <= bsvFee <= the pool's
-// sats) is left for the miner; the rest of the BSV goes to P2PKH of the LP key
-// (an output only when nonzero), then every token to the same key in one
-// BRC-162 value output. No continuation. bsvFee = 0 pays everything out: the
-// LP funds the miner fee (and the token output's sat) from another input,
-// with Rúnar's change output after the contract's.
+// Close pays the whole pool out to the LP and ends it (David Case, 2026-10-09:
+// a position is deployed or closed, never resized in place; resizing is a
+// Close and a new deploy). Either party may close it (skein-amm 0.11.0, David
+// Case 2026-10-21: delisting is the contract's Close): the LP, with any bsvFee
+// (0 <= bsvFee <= the pool's sats, left for the miner), or the current
+// validator, with bsvFee = 0 only: the validator pays the miner fee from an
+// input of its own, so it cannot spend the pool's sats as fee. The payout is
+// the same either way, always to the LP key: the pool's sats less bsvFee to
+// P2PKH of the LP key (an output only when nonzero), then every token to the
+// same key in one BRC-162 value output. No continuation. bsvFee = 0 pays
+// everything out: the closer funds the miner fee (and the token output's sat)
+// from another input, with Rúnar's change output after the contract's.
+//
+// The signature is checked against the LP key alone when bsvFee > 0, and as
+// one of the two keys (LP, then validator) when bsvFee = 0: a 1-of-2
+// OP_CHECKMULTISIG, so a validator's signature is never a failed OP_CHECKSIG
+// against the LP key (NULLFAIL).
 //
 // Outputs: 0 the BSV payout (when nonzero), then the tokens.
-func (c *Pool) Close(lpSig runar.Sig, bsvFee runar.Bigint) {
-	runar.Assert(runar.CheckSig(lpSig, c.LpPubKey))
+func (c *Pool) Close(sig runar.Sig, bsvFee runar.Bigint) {
+	if bsvFee > 0 {
+		runar.Assert(runar.CheckSig(sig, c.LpPubKey))
+	} else {
+		runar.Assert(runar.CheckMultiSig([1]runar.Sig{sig}, [2]runar.PubKey{c.LpPubKey, c.ValidatorPubKey}))
+	}
 	sats := runar.ExtractAmount(c.TxPreimage)
 	runar.Assert(bsvFee >= 0)
 	runar.Assert(bsvFee <= sats)

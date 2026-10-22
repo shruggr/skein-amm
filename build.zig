@@ -4,8 +4,8 @@
 // built on the skein), and this repo's own programs:
 //
 //   amm-lookup      ls_amm: the listed pools over every token topic served; the prices beat   programs/amm-lookup
-//   amm-validator   the validator: swap, deploy (libp2p direct calls); the claim; rescind      programs/amm-validator
-//   amm-p2p         the relay (amm.swap/1, amm.pool/1), the listing requests,     programs/amm-p2p
+//   amm-validator   the validator: swap (a libp2p direct call), affirm; root's close         programs/amm-validator
+//   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the listing requests, programs/amm-p2p
 //                   the reads /requests and /spends, and its pages (www/, files.serve)
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the

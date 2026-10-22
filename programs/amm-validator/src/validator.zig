@@ -1,6 +1,7 @@
 //! The validator's decisions, independent of how a request arrives (a
 //! direct call, skein#51: what libp2p calls a stream): `spend` for the
-//! `swap` and `addLiquidity` calls, `deploy` for the `deploy` call.
+//! `swap` call, `affirm` for the `affirm` call (0.11.0: a proposed pool checked against the
+//! terms and signed before the LP's wallet builds the deploy).
 //!
 //! A spend is signed only if, in order:
 //!   1. the transaction parses and spends the named pool outpoint;
@@ -72,47 +73,44 @@ const Transaction = bsvz.transaction.Transaction;
 const View = view_mod.View;
 pub const Outpoint = view_mod.Outpoint;
 
-/// Which direct call: the route's fn (`libp2p:/amm-validator/1/<name>`). 0.9.0: `addLiquidity`
-/// is gone with the contract's AddLiquidity (David Case 2026-10-09).
+/// Which direct call: the route's fn (`libp2p:/amm-validator/1/swap`, or `affirm`, called
+/// in-VM by amm-p2p's `amm.pool.affirm`). 0.9.0: `addLiquidity` is gone with the contract's
+/// AddLiquidity; 0.11.0: `deploy` (a delivered deploy, claimed) is gone, `affirm` replaces it.
 pub const Op = enum {
     swap,
-    deploy,
+    affirm,
 
     pub fn name(self: Op) []const u8 {
         return switch (self) {
             .swap => "swap",
-            .deploy => "deploy",
+            .affirm => "affirm",
         };
     }
     pub fn parse(s: []const u8) ?Op {
-        inline for (.{ Op.swap, Op.deploy }) |b| if (std.mem.eql(u8, s, b.name())) return b;
+        inline for (.{ Op.swap, Op.affirm }) |b| if (std.mem.eql(u8, s, b.name())) return b;
         return null;
     }
     pub fn method(self: Op) ?pool.Method {
         return switch (self) {
             .swap => .swap,
-            .deploy => null,
+            .affirm => null,
         };
     }
 };
 
 /// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"): skein-wide
 /// config (`config.amm.ammValidator`, main.zig `settings`), the fees every pool it hosts carries.
-/// An LP posting here accepts them; a deploy whose pool fields differ is refused.
-pub const Terms = struct {
-    lp_fee_bps: i64 = 30,
-    validator_fee_bps: i64 = 5,
-    commission_bps: i64 = 0,
-};
+/// An LP posting here accepts them; a pool whose fees differ is not affirmed (0.11.0).
+pub const Terms = pool.Terms;
 
 pub const Config = struct {
     /// This instance's root identity key: pools naming it are ours.
     identity: [33]u8,
-    /// The deploy terms, exactly (0.9.0).
+    /// The terms a pool must carry exactly to be affirmed (0.9.0; 0.11.0).
     terms: Terms = .{},
     now_ms: i64 = 0,
     /// The topics this instance validates: the engine's registered set (the head
-    /// `<app>/topics`; main.zig `validatedSet`). A swap or a deploy for a token whose topic is not
+    /// `<app>/topics`; main.zig `validatedSet`). A swap or an affirm for a token whose topic is not
     /// in it is refused `not_validating`, before anything is checked or signed. Empty: nothing is
     /// signed.
     validated: []const []const u8 = &.{},
@@ -166,21 +164,11 @@ pub const Reason = enum {
     /// resubmission of a transaction already rejected.
     rejected,
     pool_not_at_output_0,
-    /// A deploy's pool fields differ from this validator's terms (0.9.0): detail which.
+    /// A proposed pool's fees differ from this validator's terms (0.9.0; 0.11.0 at affirm): detail which.
     fees_unacceptable,
     wrong_validator_key,
     /// A Swap's outputs are not the contract's: detail which.
     bad_outputs,
-    /// A delivered deploy (0.9.0) whose inputs and outputs are not paired one to one (output i
-    /// for input i), the claim to come after them.
-    not_paired,
-    /// A delivered deploy input not signed SIGHASH_SINGLE|FORKID (0x43): appending the claim
-    /// would break it. Detail the input.
-    bad_sighash,
-    /// A delivered deploy that does not leave exactly one token unit unassigned for the claim.
-    unassigned_not_one,
-    /// The LP's inputs do not cover the delivered outputs and the claim's sat.
-    claim_unfunded,
     /// The pool's token topic is not one this instance validates (`Config.validated`; 0.6.0: registered, with `config.overlay.validator` set): detail the topic.
     not_validating,
 };
@@ -221,18 +209,16 @@ pub const Submission = struct {
     pool: Outpoint,
     ancestry: ?beef.Beef = null,
     parents: []const Parent = &.{},
-    /// A deploy's claim (0.9.0): its output index and the key ID it is locked to (the validator
-    /// key's, `<first token input>`), for filing it in the validator's wallet (main.zig).
-    claim: ?struct { vout: u32, key_id: []const u8 } = null,
 };
 
 pub const Reply = union(enum) {
     /// A spend: the transaction with our signature, and what its submission
-    /// needs (null only for a deploy, whose `tx` is also null: consent,
-    /// nothing signed). From `spend`, `tx`/`txid` mean "signed"; the direct
+    /// needs. From `spend`, `tx`/`txid` mean "signed"; the direct
     /// call's answer (messages.zig `answerFromState`) is read after the
     /// submission's thread came to rest, and there `ok` means admitted.
-    ok: struct { tx: ?[]const u8 = null, txid: ?[32]u8 = null, submission: ?Submission = null },
+    /// An affirmation (0.11.0): `signature` alone, the DER signature the deploy's pool output
+    /// carries as its payload; nothing is submitted.
+    ok: struct { tx: ?[]const u8 = null, txid: ?[32]u8 = null, submission: ?Submission = null, signature: ?[]const u8 = null },
     /// `txid`: the signed transaction's, when the refusal is about it (after signing).
     refused: struct { reason: Reason, detail: ?[]const u8 = null, newest: ?Newest = null, txid: ?[32]u8 = null },
 };
@@ -424,7 +410,7 @@ pub const SpendRequest = struct {
 /// messages.zig `finishSpend`, which routes the signed BEEF through skein's
 /// `submit.route`.
 pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: View, oracle: Oracle) !Reply {
-    const method = op.method() orelse return refuse(.bad_request, "deploy is not a spend");
+    const method = op.method() orelse return refuse(.bad_request, "affirm is not a spend");
     // 1. The transaction, and the pool input.
     const sub = subjectOf(a, req.tx) orelse return refuse(.bad_transaction, null);
     const tx = sub.tx;
@@ -644,145 +630,52 @@ pub fn signedSpend(a: std.mem.Allocator, v: View, sp: [32]u8, sub: Subject, pi: 
     return if (std.mem.eql(u8, try bare.serialize(a), sub.raw)) raw else null;
 }
 
-pub const DeployRequest = struct {
-    tx: []const u8,
-    /// The pool's output index: always 0 (one pool per deploy, at output 0).
-    pool: u32,
+/// A proposed pool, as the LP's page asks it affirmed (0.11.0): the pool output's locking script
+/// as the deploy will carry it but without the payload, its satoshis, and the deploy's first
+/// token input (the outpoint keying the pool's first validator key).
+pub const AffirmRequest = struct {
+    pool: []const u8,
+    satoshis: u64,
+    key_input: Outpoint,
 };
 
-/// The sighash a delivered deploy's inputs are signed with (0.9.0): SIGHASH_SINGLE|FORKID, each
-/// input over its own output only, so the claim can be appended after them.
-pub const sighash_single_forkid: u8 = 0x43;
-
-/// The deploy this instance holds for a delivered request: a held spender of the request's input
-/// 0 with the same inputs, the delivered outputs first and one more (the claim). → its bytes and
-/// txid, or null.
-pub fn claimedHeld(a: std.mem.Allocator, v: View, sub: Subject) !?struct { raw: []const u8, txid: [32]u8 } {
-    if (sub.tx.inputs.len == 0) return null;
-    const first = sub.tx.inputs[0].previous_outpoint;
-    for (try v.spenders(a, .{ .txid = first.txid.bytes, .vout = first.index })) |sp| {
-        const raw = (try v.rawTx(a, sp)) orelse continue;
-        const t = Transaction.parse(a, raw) catch continue;
-        if (t.inputs.len != sub.tx.inputs.len or t.outputs.len != sub.tx.outputs.len + 1) continue;
-        const same = for (t.inputs, sub.tx.inputs) |x, y| {
-            if (!std.mem.eql(u8, &x.previous_outpoint.txid.bytes, &y.previous_outpoint.txid.bytes) or x.previous_outpoint.index != y.previous_outpoint.index or
-                !std.mem.eql(u8, x.unlocking_script.bytes, y.unlocking_script.bytes)) break false;
-        } else for (sub.tx.outputs, t.outputs[0..sub.tx.outputs.len]) |x, y| {
-            if (x.satoshis != y.satoshis or !std.mem.eql(u8, x.locking_script.bytes, y.locking_script.bytes)) break false;
-        } else true;
-        if (same) return .{ .raw = raw, .txid = sp };
-    }
-    return null;
-}
-
-/// The sighash byte of a P2PKH-style unlocking script's signature (its first push's last byte).
-fn sighashOf(unlocking: []const u8) ?u8 {
-    const sig = brc162.readPush(unlocking, 0) orelse return null;
-    if (sig.data.len < 9) return null;
-    return sig.data[sig.data.len - 1];
-}
-
-/// A deploy the LP delivers (0.9.0, David Case 2026-10-09: "Deploy is delivered, not broadcast";
-/// the marketplace relay's `amm.pool.submit`): every input signed SIGHASH_SINGLE|FORKID and paired
-/// with its own output — input 0, the LP's first token input, with the pool at output 0; each
-/// further input with an LP output (token change, or sats change) — leaving exactly one token
-/// unit unassigned. The validator checks it against its terms, appends the claim (pool.zig: one
-/// unit, P2PKH to the pool's validator key, its payload that key's signature over the pool
-/// output's script and the first token input, through the signer) and returns the claimed deploy
-/// with what its submission needs (the topic, the ancestry, the unproven parents, the claim to
-/// file). A deploy this instance already holds claimed (a retry) is routed again.
-pub fn deploy(a: std.mem.Allocator, req: DeployRequest, cfg: Config, v: View, oracle: Oracle) !Reply {
-    const sub = subjectOf(a, req.tx) orelse return refuse(.bad_transaction, null);
-    const tx = sub.tx;
-    if (req.pool != 0) return refuse(.pool_not_at_output_0, null);
-    if (tx.outputs.len == 0) return refuse(.not_a_pool, null);
-    const p = poolAt(tx.outputs[0].locking_script.bytes) orelse return refuse(.not_a_pool, null);
-    if (!std.mem.eql(u8, &p.pool.identity, &cfg.identity)) return refuse(.not_our_pool, null);
-    const id = p.pool.asset_id;
-    const topic = try topicOf(a, id);
+/// The affirmation (skein-amm 0.11.0, David Case 2026-10-21; docs/AMM.md "The affirmation").
+/// Before the LP's wallet builds the deploy, the validator checks the proposed pool and answers
+/// its signature, by the pool's validator key, of the pool's parameters and the hash of the terms
+/// it agreed to (pool.zig `affirmMessage`); the deploy's pool output carries it as its payload,
+/// and amm-lookup lists the pool only when it verifies. Checked, in order: the script is a pool
+/// (the Pool code, a 32-byte id at output 0's form, its prefix agreeing with the state) with no
+/// payload; its ValidatorIdentity is ours; its token's topic is one this instance validates; its
+/// fees are our terms, exactly; its reserves are positive; its ValidatorPubKey is our child of
+/// `key_input` (the key this validator signs the pool's first swap with) and the signer agrees.
+/// Then the signer signs the affirmation digest. Nothing is submitted or recorded: the deploy is
+/// the LP's wallet's, submitted to the token topic like any token transaction.
+pub fn affirm(a: std.mem.Allocator, req: AffirmRequest, cfg: Config, oracle: Oracle) !Reply {
+    const tok = brc162.decode(req.pool) orelse return refuse(.not_a_pool, null);
+    if (tok.role != .value) return refuse(.not_a_pool, null);
+    if (tok.payload != null) return refuse(.bad_request, "the pool script carries a payload: want it as the deploy will carry it, without the affirmation");
+    const p = (pool.parse(tok.lock) catch return refuse(.bad_pool, "malformed")) orelse return refuse(.not_a_pool, null);
+    const id = tok.id orelse return refuse(.bad_pool, "no token id");
+    if (id.vout != 0 or !std.mem.eql(u8, &id.txid, &p.asset_id) or tok.amount != p.token_reserve) return refuse(.bad_pool, "prefix_mismatch");
+    if (!std.mem.eql(u8, &p.identity, &cfg.identity)) return refuse(.not_our_pool, null);
+    const topic = try topicOf(a, p.asset_id);
     if (!validating(cfg, topic)) return notValidating(a, topic);
-    if (try claimedHeld(a, v, sub)) |held| return .{ .ok = .{ .tx = held.raw, .txid = held.txid, .submission = .{
-        .topic = topic,
-        .pool = .{ .txid = held.txid, .vout = 0 },
-        .ancestry = sub.ancestry,
-    } } };
 
     // Our terms, exactly (0.9.0: the validator's fees; the LP accepts them).
     const t = cfg.terms;
-    if (p.pool.lp_fee_bps != t.lp_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "lpFeeBps: the terms are {d}", .{t.lp_fee_bps}));
-    if (p.pool.validator_fee_bps != t.validator_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "validatorFeeBps: the terms are {d}", .{t.validator_fee_bps}));
-    if (p.pool.commission_bps != t.commission_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "commissionBps: the terms are {d}", .{t.commission_bps}));
+    if (p.lp_fee_bps != t.lp_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "lpFeeBps: the terms are {d}", .{t.lp_fee_bps}));
+    if (p.validator_fee_bps != t.validator_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "validatorFeeBps: the terms are {d}", .{t.validator_fee_bps}));
+    if (p.commission_bps != t.commission_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "commissionBps: the terms are {d}", .{t.commission_bps}));
+    if (req.satoshis == 0 or p.token_reserve == 0) return refuse(.bad_request, "the pool's reserves must be positive");
 
-    // Delivered: paired, every input SIGHASH_SINGLE|FORKID.
-    if (tx.outputs.len != tx.inputs.len) return refuse(.not_paired, try std.fmt.allocPrint(a, "{d} inputs, {d} outputs", .{ tx.inputs.len, tx.outputs.len }));
-    for (tx.inputs, 0..) |in, i| {
-        if (in.unlocking_script.bytes.len == 0) return refuse(.missing_signature, try std.fmt.allocPrint(a, "input {d}", .{i}));
-        if (sighashOf(in.unlocking_script.bytes) != sighash_single_forkid) return refuse(.bad_sighash, try std.fmt.allocPrint(a, "input {d}", .{i}));
-    }
-
-    // Our topic would admit it, the pool with it, and the pool checks pass; input 0 is the first
-    // token input; exactly one unit is left for the claim.
-    const previous = try v.previousCoins(a, topic, tx);
-    const rtx = try rulesTx(a, v, sub, (try tx.txid(a)).bytes);
-    const judged = switch (try judge(a, id, rtx, previous)) {
-        .refused => |r| return r,
-        .ok => |x| x,
-    };
-    if (judged.verdict.outputs_to_admit.len == 0 or judged.verdict.outputs_to_admit[0] != 0) return refuse(.topic_refused, "the pool is not admitted");
-    const j = judged.j;
-    if (j.inputs.len == 0) return refuse(.topic_refused, "no token input");
-    if (j.inputs[0].index != 0) return refuse(.pool_not_first_token_input, "input 0 is not the first token input");
-    var in_sum: u128 = 0;
-    var out_sum: u128 = 0;
-    for (j.inputs) |x| in_sum += x.token.amount;
-    for (j.outputs) |x| out_sum += x.token.amount;
-    if (in_sum != out_sum + pool.claim_amount) return refuse(.unassigned_not_one, try std.fmt.allocPrint(a, "{d} in, {d} out", .{ in_sum, out_sum }));
-    // The LP's inputs cover the delivered outputs and the claim's sat (when every source is known).
-    var sats_in: u64 = 0;
-    const known = for (tx.inputs) |in| {
-        const s = (try sourceOf(a, v, sub, in)) orelse break false;
-        sats_in += s.satoshis;
-    } else true;
-    if (known) {
-        var sats_out: u64 = 0;
-        for (tx.outputs) |o| sats_out += @intCast(o.satoshis);
-        if (sats_in < sats_out + 1) return refuse(.claim_unfunded, try std.fmt.allocPrint(a, "{d} in, {d} out and the claim's sat", .{ sats_in, sats_out }));
-    }
-
-    // The signing key in state is our child of the LP's first token input, and the oracle agrees
-    // it is a key we hold.
-    const first = rtx.inputs[0];
-    const key_op: Outpoint = .{ .txid = first.txid, .vout = first.vout };
-    if (!std.mem.eql(u8, &try pool.validatorKey(a, cfg.identity, key_op.txid, key_op.vout), &p.pool.validator)) return refuse(.wrong_validator_key, null);
-    const key_id = try keyIdOf(a, key_op);
+    // The pool's key: our child of the deploy's first token input, and the signer agrees.
+    if (!std.mem.eql(u8, &try pool.validatorKey(a, cfg.identity, req.key_input.txid, req.key_input.vout), &p.validator))
+        return refuse(.wrong_validator_key, "the ValidatorPubKey is not our child of keyInput");
+    const key_id = try keyIdOf(a, req.key_input);
     const ours = oracle.publicKey(a, key_id) catch |e| return refuse(.oracle_failed, @errorName(e));
-    if (!std.mem.eql(u8, &ours, &p.pool.validator)) return refuse(.wrong_validator_key, "the oracle's key differs");
+    if (!std.mem.eql(u8, &ours, &p.validator)) return refuse(.wrong_validator_key, "the signer's key differs");
 
-    // Complete: the LP's signatures on every input, and the unproven parents we do not hold.
-    if (try inputsSigned(a, v, sub, tx, null)) |r| return r;
-    const parents = switch (try completeParents(a, v, sub)) {
-        .refused => |r| return r,
-        .ok => |ps| ps,
-    };
-
-    // The claim, appended.
-    const pool_script = tx.outputs[0].locking_script.bytes;
-    const der = oracle.sign(a, key_id, pool.claimDigest(pool_script, key_op.txid, key_op.vout)) catch |e| return refuse(.oracle_failed, @errorName(e));
-    const claim_script = try pool.claimScript(a, id, der, bsvz.crypto.hash.hash160(&p.pool.validator).bytes);
-    if (!pool.claimVerifies(pool.claimOf(claim_script, id) orelse return refuse(.oracle_failed, "the claim"), p.pool.validator, pool_script, key_op.txid, key_op.vout))
-        return refuse(.oracle_failed, "the claim's signature is not the pool's validator key's");
-    const outs = try a.alloc(bsvz.transaction.Output, tx.outputs.len + 1);
-    @memcpy(outs[0..tx.outputs.len], tx.outputs);
-    outs[tx.outputs.len] = .{ .satoshis = 1, .locking_script = bsvz.script.Script.init(claim_script) };
-    var claimed = tx;
-    claimed.outputs = outs;
-    const raw = try claimed.serialize(a);
-    const txid = beef.txidOf(raw);
-    return .{ .ok = .{ .tx = raw, .txid = txid, .submission = .{
-        .topic = topic,
-        .pool = .{ .txid = txid, .vout = 0 },
-        .ancestry = sub.ancestry,
-        .parents = parents,
-        .claim = .{ .vout = @intCast(tx.outputs.len), .key_id = key_id },
-    } } };
+    const der = oracle.sign(a, key_id, pool.affirmDigest(p, req.satoshis, pool.termsHash(t))) catch |e| return refuse(.oracle_failed, @errorName(e));
+    if (!pool.affirmationVerifies(p, req.satoshis, der)) return refuse(.oracle_failed, "the signature is not the pool's validator key's");
+    return .{ .ok = .{ .signature = der } };
 }

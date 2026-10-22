@@ -4,6 +4,64 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.11.0 (2026-10-22)
+
+Pool deploys move to the BRC-207 wallet module (David Case, 2026-10-21):
+the LP's wallet builds, signs and broadcasts the deploy as one action and
+the module submits it to the token topic, so the validator can no longer
+append its claim to a delivered deploy. The claim, as a token unit paid to
+the validator, is gone; the validator's consent is recorded at deploy in the
+pool output itself, and delisting is the contract's Close. A contract
+change: the Pool script, its artifact and every fixture are new.
+
+- **The contract** (`pool/Pool.runar.go`): `Close(sig, bsvFee)` takes the
+  LP key or the current validator key. The payout is always the LP's (the
+  pool's sats less bsvFee, then every token in one BRC-162 value output). On
+  the validator's path bsvFee must be 0: bsvFee > 0 checks `sig` against the
+  LP key alone; bsvFee 0 checks it as one of the two keys (a 1-of-2
+  `OP_CHECKMULTISIG`, so a validator's signature is never a failed
+  `OP_CHECKSIG`, which NULLFAIL forbids). Swap is unchanged.
+- **The affirmation** (docs/AMM.md "The deploy and the affirmation"):
+  `amm.pool.affirm {pool, satoshis, keyInput}` → `{signature}` (amm-p2p,
+  `writes: false`; it calls amm-validator's new fn `affirm` in-VM). The
+  validator checks the proposed pool against its terms and its key, and
+  signs, by the pool's validator key, sha256 of the 221-byte message
+  `"skein-amm affirm 1" ‖ AssetId ‖ the three fees ‖ TokenReserve ‖ the
+  pool's satoshis ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity ‖
+  termsHash`. The deploy's pool output carries the signature as its BRC-162
+  payload (`<push sig> OP_DROP` after the prefix; the contract never reads
+  it; continuations carry none). src/pool.zig `affirmMessage`, `affirmed`,
+  `withAffirmation`; web/ui `PoolTemplate.affirmationMessage`, `affirmed`,
+  `lockDeploy(args, state, affirmation)`.
+- **The listing** (`ls_amm`): a deploy's pool is listed only when its
+  affirmation verifies against its parameters and the ValidatorPubKey in its
+  state; a Swap's continuation of a listed pool is listed; a Close (the LP's
+  or the validator's) ends it. Only listed pools are indexed. The claim rule
+  (`claims`, `spentClaims`, `NotListed`) is gone.
+- **The validator's Close** replaces the rescind: root's `{fn: "close",
+  args: {pool: "<txid>.<vout>"}}` in the box `amm/validator` (roles: root's
+  `close`). amm-validator follows the pool to its newest output and has the
+  instance's wallet build the Close with the pool as a caller input
+  (createAction, then signAction with the Rúnar call: the pool's current
+  validator key's signature, bsvFee 0, the wallet's change as Rúnar's), the
+  wallet paying the fee; submits it to the token topic and answers root.
+- **Gone:** `amm.pool.submit` and `amm.pool.status` (the delivered deploy,
+  SIGHASH_SINGLE pairs, the unassigned unit), libp2p
+  `/amm-validator/1/deploy`, the claim's filing in the wallet (`amm-claims`),
+  root's `rescind`.
+- **Fixtures** (`go run ./gen/vectors`): `pool_deploy` is a plain wallet
+  deploy (token input and funding, ALL|FORKID) whose pool carries the
+  affirmation; `pool_deploy_unaffirmed` and `pool_deploy_forged` must not
+  list; `close_validator` (the validator's Close of pool 2, its own funding)
+  replaces `rescind`; `pool_deploy_delivered`, `pool_deploy_wrong_key` and
+  `claim_vout` are gone. Zig and the pages reproduce the affirmation and the
+  validator's Close byte for byte.
+
+**Not in this version:** the pages. The Liquidity page still builds 0.9.0's
+delivered deploy and calls `amm.pool.submit`, which no longer exists; its
+move to the wallet's BRC-207 module and `amm.pool.affirm` is the next build
+(docs/AMM.md "Not wired"). `www/` is rebuilt for the template only.
+
 ## 0.10.2 (2026-10-21)
 
 The Exchange's "Deploy a new token" link points at the app's own base

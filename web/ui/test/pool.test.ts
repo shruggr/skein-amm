@@ -92,9 +92,34 @@ describe("PoolTemplate.decode", () => {
 });
 
 describe("PoolTemplate.lockDeploy", () => {
-  it("rebuilds pool_deploy's pool output", () => {
+  it("rebuilds pool_deploy's pool output, the affirmation its payload (0.11.0); without it, the unaffirmed deploy's", () => {
     const pool = PoolTemplate.decode(poolDeploy.outputs[0]!.lockingScript)!;
-    expect(PoolTemplate.lockDeploy(pool.args, pool.state).toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
+    expect(pool.affirmation).toBe(v.affirmation);
+    expect(PoolTemplate.lockDeploy(pool.args, pool.state, v.affirmation).toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
+    const bare = Transaction.fromHex(v.pool_deploy_unaffirmed).outputs[0]!.lockingScript.toHex();
+    expect(PoolTemplate.lockDeploy(pool.args, pool.state).toHex()).toBe(bare);
+    expect(PoolTemplate.decode(bare)!.affirmation).toBeUndefined();
+    expect(() => PoolTemplate.lockDeploy(pool.args, pool.state, "zz")).toThrow(/affirmation/);
+  });
+});
+
+describe("the affirmation (0.11.0)", () => {
+  it("the message is src/pool.zig's and gen/vectors' (221 bytes); pool_deploy is affirmed, the unaffirmed and forged deploys and any other satoshis are not; a continuation carries none", () => {
+    const pool = PoolTemplate.decode(poolDeploy.outputs[0]!.lockingScript)!;
+    const m = PoolTemplate.affirmationMessage(pool, BigInt(v.pool0.bsv));
+    expect(m.length).toBe(221);
+    expect(Utils.toUTF8(m.slice(0, 18))).toBe("skein-amm affirm 1");
+    expect(Utils.toHex(m.slice(18, 50))).toBe(assetId);
+    expect(m.slice(-32)).toEqual(PoolTemplate.termsHash(pool.args));
+    expect(PoolTemplate.affirmed(poolDeploy.outputs[0]!.lockingScript, BigInt(v.pool0.bsv))).toBe(true);
+    expect(PoolTemplate.affirmed(poolDeploy.outputs[0]!.lockingScript, BigInt(v.pool0.bsv) + 1n)).toBe(false);
+    expect(PoolTemplate.affirmed(Transaction.fromHex(v.pool_deploy_unaffirmed).outputs[0]!.lockingScript, BigInt(v.pool0.bsv))).toBe(false);
+    expect(PoolTemplate.affirmed(Transaction.fromHex(v.pool_deploy_forged).outputs[0]!.lockingScript, BigInt(v.pool0.bsv))).toBe(false);
+    expect(PoolTemplate.decode(swap1.outputs[0]!.lockingScript)!.affirmation).toBeUndefined();
+    // The validator key that signs it: its child of the deploy's first token input.
+    const sig = validatorKey(tokenDeploy.id("hex"), 0).sign(m); // signs sha256(m), as the validator's signer does the digest
+    expect(validatorKey(tokenDeploy.id("hex"), 0).toPublicKey().verify(m, sig)).toBe(true);
+    expect(pub(validatorKey(tokenDeploy.id("hex"), 0))).toBe(pool.state.validatorPubKey);
   });
 });
 

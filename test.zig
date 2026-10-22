@@ -41,7 +41,7 @@ const Fixtures = struct {
         var f: Fixtures = .{ .txs = .init(a), .raws = .init(a), .id = undefined };
         inline for (.{
             "fund",         "token_deploy",       "pool_deploy",        "swap_bsv_in",     "swap_tokens_in",  "close",
-            "close_fee",    "rescind",            "pool_deploy_delivered", "pool_deploy_forged", "pool_deploy_wrong_key",
+            "close_fee",    "close_validator",    "pool_deploy_unaffirmed", "pool_deploy_forged",
             "legacy_fund",  "legacy_deploy0",     "legacy_deploy1",     "legacy_transfer", "legacy_migrate0", "legacy_migrate1",
             "legacy_mixed", "legacy_binary_json", "legacy_auth_deploy", "legacy_mint",     "legacy_unfunded",
         }) |name| {
@@ -126,51 +126,67 @@ test "pool: deploy admitted" {
 
     const v = try token.judge(a, .{ .txid = f.id }, tx, &.{0});
     try testing.expect(v.rejected == null);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4 }, v.outputs_to_admit); // pool, the taker's 50,000, the LP's change, the claim
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, v.outputs_to_admit); // pool (its payload the affirmation), the taker's 50,000, the LP's change
     try testing.expectEqualSlices(u32, &.{0}, v.coins_to_retain);
+    // The payload is the BRC-162 payload of a value output: the pool is admitted with it, and its
+    // lock (after the payload) is the Pool code.
+    const tok = brc162.decode(tx.outputs[0].script).?;
+    try testing.expectEqualSlices(u8, unhex(a, vec.affirmation), tok.payload.?);
+    try testing.expect((try pool.parse(tok.lock)) != null);
 
-    // As the LP delivers it (no claim): the unassigned unit is burned, the rest admitted.
-    const d = try token.judge(a, .{ .txid = f.id }, try f.tx(a, "pool_deploy_delivered"), &.{0});
-    try testing.expect(d.rejected == null);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, d.outputs_to_admit);
+    // The unaffirmed and the forged deploys: admitted the same (the topic knows no AMM).
+    for ([_][]const u8{ "pool_deploy_unaffirmed", "pool_deploy_forged" }) |nm| {
+        const d = try token.judge(a, .{ .txid = f.id }, try f.tx(a, nm), &.{0});
+        try testing.expect(d.rejected == null);
+        try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, d.outputs_to_admit);
+    }
 }
 
-test "pool: the claim (0.9.0): one unit, P2PKH to the pool's validator key, its payload that key's signature over the pool's script and the first token input; forged and wrong-key claims do not verify" {
+test "pool: the affirmation (0.11.0): the pool's ValidatorPubKey's signature over the affirmation message; unaffirmed and forged deploys do not verify" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const f = try Fixtures.init(a);
-    const raw = f.raws.get("pool_deploy").?;
-    const t = f.txs.get(w.beef.txidOf(raw)).?;
+    const t = f.txs.get(w.beef.txidOf(f.raws.get("pool_deploy").?)).?;
     const ps = t.outputs[0].locking_script.bytes;
-    const p = (try pool.parse(brc162.decode(ps).?.lock)).?;
-    const first = t.inputs[0].previous_outpoint;
-    try testing.expectEqualSlices(u8, &f.id, &first.txid.bytes); // the token deploy's output 0
-    try testing.expectEqual(@as(?u32, vec.claim_vout), try pool.verifiedClaim(a, t.outputs, p, ps, first.txid.bytes, first.index));
-    const cl = pool.claimOf(t.outputs[vec.claim_vout].locking_script.bytes, f.id).?;
-    try testing.expect(pool.claimVerifies(cl, key33(vec.pool0.validator), ps, f.id, 0));
-    // The same claim over another first input, or against another key, does not verify.
-    try testing.expect(!pool.claimVerifies(cl, key33(vec.pool0.validator), ps, f.id, 1));
-    try testing.expect(!pool.claimVerifies(cl, key33(vec.identity), ps, f.id, 0));
-    // claimScript writes what the validator appends, byte for byte.
-    try testing.expectEqualSlices(u8, t.outputs[vec.claim_vout].locking_script.bytes, try pool.claimScript(a, f.id, cl.sig, cl.pkh));
-    // Not claims: the pool, a token payout of more than one unit, the sats change.
-    try testing.expect(pool.claimOf(ps, f.id) == null);
-    try testing.expect(pool.claimOf(t.outputs[1].locking_script.bytes, f.id) == null);
-    try testing.expect(pool.claimOf(t.outputs[3].locking_script.bytes, f.id) == null);
+    const sats: u64 = @intCast(t.outputs[0].satoshis);
+    try testing.expect(pool.affirmed(ps, sats));
+    const af = pool.affirmationOf(ps).?;
+    try testing.expectEqualSlices(u8, unhex(a, vec.affirmation), af.sig);
+    try testing.expectEqualSlices(u8, &key33(vec.pool0.validator), &af.pool.validator);
 
-    // As delivered (no claim), forged (another key signed the payload), wrong key (the pool's
-    // ValidatorPubKey is not the derivation, though its claim verifies against it): nothing.
-    for ([_][]const u8{ "pool_deploy_delivered", "pool_deploy_forged", "pool_deploy_wrong_key" }) |nm| {
-        const x = f.txs.get(w.beef.txidOf(f.raws.get(nm).?)).?;
-        const xs = x.outputs[0].locking_script.bytes;
-        const xp = (try pool.parse(brc162.decode(xs).?.lock)).?;
-        try testing.expect((try pool.verifiedClaim(a, x.outputs, xp, xs, f.id, 0)) == null);
-    }
-    const wk = f.txs.get(w.beef.txidOf(f.raws.get("pool_deploy_wrong_key").?)).?;
-    const wks = wk.outputs[0].locking_script.bytes;
-    const wkp = (try pool.parse(brc162.decode(wks).?.lock)).?;
-    try testing.expect(pool.claimVerifies(pool.claimOf(wk.outputs[4].locking_script.bytes, f.id).?, wkp.validator, wks, f.id, 0));
+    // The message: 221 bytes, the tag first and the terms hash last.
+    const terms: pool.Terms = .{ .lp_fee_bps = vec.lp_fee_bps, .validator_fee_bps = vec.validator_fee_bps, .commission_bps = vec.commission_bps };
+    const m = pool.affirmMessage(af.pool, sats, pool.termsHash(terms));
+    try testing.expectEqual(@as(usize, 221), m.len);
+    try testing.expectEqualStrings(pool.affirm_tag, m[0..pool.affirm_tag.len]);
+    try testing.expectEqualSlices(u8, &pool.termsHash(terms), m[m.len - 32 ..]);
+    try testing.expectEqualSlices(u8, &f.id, m[pool.affirm_tag.len..][0..32]);
+
+    // Any other satoshis, terms or key: it does not verify.
+    try testing.expect(!pool.affirmed(ps, sats + 1));
+    try testing.expect(!pool.affirmationVerifies(af.pool, sats + 1, af.sig));
+    var other = af.pool;
+    other.commission_bps += 1;
+    try testing.expect(!pool.affirmationVerifies(other, sats, af.sig));
+    other = af.pool;
+    other.validator = key33(vec.pool1.validator);
+    try testing.expect(!pool.affirmationVerifies(other, sats, af.sig));
+
+    // withAffirmation writes the affirmed script from the bare one, byte for byte.
+    const bare = f.txs.get(w.beef.txidOf(f.raws.get("pool_deploy_unaffirmed").?)).?.outputs[0].locking_script.bytes;
+    try testing.expectEqualSlices(u8, ps, try pool.withAffirmation(a, bare, af.sig));
+    try testing.expectError(error.HasPayload, pool.withAffirmation(a, ps, af.sig));
+
+    // Unaffirmed (no payload) and forged (another key signed it): not affirmed. A continuation
+    // carries no payload: never affirmed by itself (amm-lookup lists it by the pool it spends).
+    try testing.expect(pool.affirmationOf(bare) == null);
+    try testing.expect(!pool.affirmed(bare, sats));
+    const fg = f.txs.get(w.beef.txidOf(f.raws.get("pool_deploy_forged").?)).?.outputs[0].locking_script.bytes;
+    try testing.expect(pool.affirmationOf(fg) != null);
+    try testing.expect(!pool.affirmed(fg, sats));
+    const cont = f.txs.get(w.beef.txidOf(f.raws.get("swap_bsv_in").?)).?.outputs[0].locking_script.bytes;
+    try testing.expect(pool.affirmationOf(cont) == null);
 }
 
 /// What the topic says about `tx` (it must admit it: no pool check runs in
@@ -198,7 +214,7 @@ test "pool: prefix disagreeing with state is admitted by the topic; pool.check f
     const low = cat(a, &.{ &.{0x20}, &f.id, brc162.pushAmount(&buf, vec.pool0.tokens - 1), &.{0x6d}, lock });
     const low_tx = try withOutput(a, tx, 0, low);
     try testing.expectEqual(pool.Violation.prefix_mismatch, try admittedButFlagged(a, f.id, low_tx, &.{0}));
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4 }, (try token.judge(a, .{ .txid = f.id }, low_tx, &.{0})).outputs_to_admit);
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, (try token.judge(a, .{ .txid = f.id }, low_tx, &.{0})).outputs_to_admit);
 
     // A pool whose code carries another asset id, under this token's prefix.
     const other = try a.dupe(u8, tx.outputs[0].script);
@@ -328,6 +344,7 @@ test "pool: methodOf reads Rúnar's method index (amm-validator's key convention
     try testing.expectEqual(pool.Method.swap, pool.methodOf((try f.tx(a, "swap_tokens_in")).inputs[0].unlocking_script).?);
     try testing.expectEqual(pool.Method.close, pool.methodOf((try f.tx(a, "close")).inputs[0].unlocking_script).?);
     try testing.expectEqual(pool.Method.close, pool.methodOf((try f.tx(a, "close_fee")).inputs[0].unlocking_script).?);
+    try testing.expectEqual(pool.Method.close, pool.methodOf((try f.tx(a, "close_validator")).inputs[0].unlocking_script).?);
     try testing.expect(pool.methodOf(&.{}) == null);
     try testing.expect(pool.methodOf(&.{0x52}) == null); // 2: AddLiquidity's index, gone
     try testing.expect(pool.methodOf(&.{0x53}) == null);
@@ -344,10 +361,10 @@ test "pool: a pool anywhere but output 0 is admitted by the topic; pool.check fl
     std.mem.swap(bsv21.Output, &outs[0], &outs[1]);
     t.outputs = outs;
     try testing.expectEqual(pool.Violation.not_at_output_0, try admittedButFlagged(a, f.id, t, &.{0}));
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4 }, (try token.judge(a, .{ .txid = f.id }, t, &.{0})).outputs_to_admit);
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, (try token.judge(a, .{ .txid = f.id }, t, &.{0})).outputs_to_admit);
 }
 
-test "pool: swaps, Closes and the rescind admitted; pool.check passes them" {
+test "pool: swaps and Closes (the LP's and the validator's) admitted; pool.check passes them" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -388,8 +405,9 @@ test "pool: swaps, Closes and the rescind admitted; pool.check passes them" {
     try testing.expect((try token.judge(a, .{ .txid = f.id }, s2, &.{0})).rejected != null);
 
     // Close: no continuation; the LP's tokens (1) admitted, the BSV payout (0) and the change
-    // (2) P2PKH. bsvFee 1,000: the same, no change.
-    for ([_][]const u8{ "close", "close_fee" }) |nm| {
+    // (2) P2PKH. bsvFee 1,000: the same, no change. The validator's Close (0.11.0): the same
+    // outputs to the LP, its own change after them.
+    for ([_][]const u8{ "close", "close_fee", "close_validator" }) |nm| {
         const v3 = try token.judge(a, .{ .txid = f.id }, try f.tx(a, nm), &.{0});
         try testing.expect(v3.rejected == null);
         try testing.expectEqualSlices(u32, &.{1}, v3.outputs_to_admit);
@@ -398,10 +416,14 @@ test "pool: swaps, Closes and the rescind admitted; pool.check passes them" {
     const cf = try f.tx(a, "close_fee");
     try testing.expectEqual(@as(u64, vec.pool2.bsv - vec.close_bsv_fee), cf.outputs[0].satoshis);
 
-    // The rescind spends the claim and burns its unit: nothing admitted, the claim a coin consumed.
-    const rs = try token.judge(a, .{ .txid = f.id }, try f.tx(a, "rescind"), &.{0});
-    try testing.expect(rs.rejected == null);
-    try testing.expectEqual(@as(usize, 0), rs.outputs_to_admit.len);
+    // The validator's Close pays the LP exactly as the LP's does (bsvFee 0): the pool's sats and
+    // every token to the LP key; the validator's change last.
+    const cv = try f.tx(a, "close_validator");
+    const cl = try f.tx(a, "close");
+    try testing.expectEqual(@as(u64, vec.pool2.bsv), cv.outputs[0].satoshis);
+    try testing.expectEqualSlices(u8, cl.outputs[0].script, cv.outputs[0].script);
+    try testing.expectEqualSlices(u8, cl.outputs[1].script, cv.outputs[1].script);
+    try testing.expect(!std.mem.eql(u8, cl.outputs[2].script, cv.outputs[2].script));
 
     // pool.check passes the deploy and the swaps: amm-lookup indexes them.
     for ([_][]const u8{ "pool_deploy", "swap_bsv_in", "close" }) |nm| {

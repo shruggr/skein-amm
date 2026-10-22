@@ -19,6 +19,10 @@ topic the overlay serves, declared or registered with the engine
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
 ```
 
+## 0.11.0: the affirmation is the listing (David Case, 2026-10-21)
+
+This supersedes 0.9.0's claim below. A deploy's pool is **listed** only when its pool output carries the validator's affirmation as its BRC-162 payload and it verifies (src/pool.zig `affirmed`: the ValidatorPubKey in the pool's state signed `affirmDigest` of the pool's parameters, its satoshis and the hash of the terms its fees are; docs/AMM.md "The deploy and the affirmation"). A transaction spending a listed pool (`pools`; `spent` runs after `admitted`) lists its continuation (a Swap's output 0, which carries no payload). Only listed pools are indexed: an unaffirmed deploy, a forged affirmation or a field changed since it was signed is not in `pools` at all, so `{tokenId, outpoint}` of it is `UnknownOutpoint` (0.9.0's `NotListed` is gone). A Close (the LP's or the validator's) spends the pool with no continuation: it leaves the listing. The maps `claims` and `spentClaims` and the record's `claim` are gone; `coinsRetained` is not read.
+
 ## 0.9.0: the claim and the listing; the beat (David Case, 2026-10-09)
 
 A pool is **listed** only while both its contract output and its claim output are unspent, and only if the claim verifies (src/pool.zig `verifiedClaim`: one unit of the token after output 0, its payload the pool's ValidatorPubKey's signature over the pool's script and the first token input — the topic's first retained coin, else input 0 — that key `validatorKey(ValidatorIdentity, first token input)`, the claim P2PKH to it). Two more maps: `claims` (`tp ‖ claim outpoint → null`, the live verified claims) and `spentClaims` (a claim a spend consumed, for `rejected`). A deploy's pool is indexed with its claim (`claimFor`); a continuation carries the claim of the pool it spends (in `pools` still: `spent` runs after `admitted`); a deploy with no verified claim is not indexed. `spent` of a claim (the validator's rescind) moves it to `spentClaims`: every pool of that deploy is unlisted; `rejected` gives it back. **Every query answers listed pools only** (`{tokenId}`, `{tokenId, validatorIdentityKey}`; `{tokenId, outpoint}` a pool not listed: `NotListed`).
@@ -70,7 +74,7 @@ order) ‖ vout, big-endian u32:
 
 | map | key → value | |
 |---|---|---|
-| `pools` | `tp ‖ outpoint → record` (a CID link) | an unspent pool output the topic admitted (0.9.0: with a verified claim; the record names it, `claim`) |
+| `pools` | `tp ‖ outpoint → record` (a CID link) | an unspent listed pool output the topic admitted (0.11.0: an affirmed deploy's, or a listed pool's continuation) |
 | `byValidator` | `validatorIdentityKey (33 bytes) ‖ tp ‖ outpoint → null` | a set index for the validator query |
 | `spentPools` | `tp ‖ outpoint → record` (a CID link) | a checked pool a spend consumed, kept for `rejected` to give back and for `{outpoint}` to follow |
 

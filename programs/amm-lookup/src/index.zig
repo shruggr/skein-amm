@@ -12,12 +12,14 @@
 //! query names its token (`tokenId`). See README.md for the map layout, the
 //! query shapes and the assumptions (the liveness join).
 //!
-//! The listing (skein-amm 0.9.0, David Case 2026-10-09): a pool is listed only while both its
-//! contract output and its claim output are unspent, and only if its deploy's claim verifies
-//! (pool.zig `verifiedClaim`: the payload is the pool's named validator key's signature over the
-//! pool output's script and the LP's first token input, that key is `validatorKey(validator
-//! identity, first token input)`, and the claim is locked to it). Every query answers listed
-//! pools only. The validator rescinds by spending the claim; the LP leaves by Close.
+//! The listing (skein-amm 0.11.0, David Case 2026-10-21): a deploy's pool is listed only when its
+//! pool output carries the validator's affirmation as its payload and the affirmation verifies
+//! (pool.zig `affirmed`: the ValidatorPubKey in the pool's state signed the pool's parameters and
+//! the hash of the terms it agreed to); a continuation is listed when the pool it spends was.
+//! Only listed pools are indexed, so every query answers listed pools only. A listed pool leaves
+//! the listing when its output is spent with no continuation: the contract's Close, the LP's or
+//! (0.11.0) the validator's. (0.9.0's claim, a second output the validator appended to a
+//! delivered deploy, is gone.)
 //!
 //! The beat (skein-overlay 0.12.0, David Case 2026-10-09: beats are libp2p service discovery):
 //! this service's beat body on `ls_amm-live` carries, per token, this skein's per-validator
@@ -43,13 +45,12 @@ const Chain = lookup.Chain;
 /// The service's name (`config.overlay.lookups`).
 pub const service_name = "ls_amm";
 
-/// `pools`: the live (unspent) checked pools whose deploy carried a verified claim, each record
-/// naming its claim. `spentPools`: the checked pools a spend consumed, kept so `rejected` can
-/// give back exactly what was indexed (and checked) before, without re-judging it. `claims`:
-/// the unspent verified claims (`tp ‖ claim outpoint → null`); a pool is listed while its claim
-/// is here. `spentClaims`: the claims a spend consumed (the validator's rescind), for `rejected`.
-/// `beat`: `body → <the last beat body's record>`, so a hook beats only when the body changes.
-pub const maps = [_][]const u8{ "pools", "byValidator", "spentPools", "claims", "spentClaims", "beat" };
+/// `pools`: the live (unspent) listed pools: checked, and an affirmed deploy's or the
+/// continuation of a listed pool. `spentPools`: the listed pools a spend consumed, kept so
+/// `rejected` can give back exactly what was indexed before, without re-judging it. `beat`:
+/// `body → <the last beat body's record>`, so a hook beats only when the body changes. (0.9.0's
+/// `claims` and `spentClaims` are gone with the claim, 0.11.0.)
+pub const maps = [_][]const u8{ "pools", "byValidator", "spentPools", "beat" };
 
 fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
     return std.mem.concat(a, u8, parts);
@@ -92,8 +93,6 @@ pub const PoolFields = struct {
     commission_bps: i64,
     lp: [33]u8,
     identity: [33]u8,
-    /// The deploy's claim (its outpoint): what keeps the pool listed (0.9.0).
-    claim: ?[36]u8 = null,
 };
 
 /// Whether output `vout`'s script is a pool: a BRC-162 value output whose
@@ -136,7 +135,6 @@ fn recordValue(a: Allocator, pf: PoolFields) !Value {
         .{ .key = "commissionBps", .value = intValue(pf.commission_bps) },
         .{ .key = "lpPubKey", .value = .{ .bytes = try a.dupe(u8, &pf.lp) } },
         .{ .key = "validatorIdentityKey", .value = .{ .bytes = try a.dupe(u8, &pf.identity) } },
-        .{ .key = "claim", .value = if (pf.claim) |c| .{ .bytes = try a.dupe(u8, &c) } else .null },
         .{ .key = "admittedAt", .value = .null },
     }) };
 }
@@ -196,54 +194,28 @@ fn removePool(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8, vout: u
     return cid;
 }
 
-// ---------------------------------------------------------------- the claim and the listing (0.9.0)
+// ---------------------------------------------------------------- the listing (0.11.0)
 
-fn claimKey(a: Allocator, tp: []const u8, claim: []const u8) ![]u8 {
-    return cat(a, &.{ tp, claim });
-}
-
-/// Whether a pool record is listed: its claim is a live verified claim of this topic.
-fn listed(a: Allocator, svc: *Service, tp: []const u8, rec: Value) !bool {
-    const claim = rec.getBytes("claim") orelse return false;
-    return svc.map("claims").has(try claimKey(a, tp, claim));
-}
-
-/// The claim a pool output at `vout` of `tx` carries forward: a continuation's is the pool it
-/// spends (an input indexed in `pools`: `spent` runs after `admitted`, so it is still there);
-/// a deploy's is its own verified claim (`pool.verifiedClaim`, the first token input the
-/// topic's first retained coin, else input 0), recorded in `claims`. Null: not listed, ever.
-fn claimFor(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, vout: u32, outputs_to_admit: []const u32, coins_retained: []const u32) !?[36]u8 {
+/// Whether the pool output at `vout` of `tx` is listed: a continuation of a listed pool (`tx`
+/// spends an output in `pools`: `spent` runs after `admitted`, so it is still there), or an
+/// affirmed deploy's (pool.zig `affirmed`: its payload is its ValidatorPubKey's signature of its
+/// affirmation). Anything else is never listed.
+fn listedAt(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, vout: u32) !bool {
     for (tx.tx.inputs) |in| {
-        const cid = (try svc.map("pools").link(try poolKey(a, tp, in.previous_outpoint.txid.bytes, in.previous_outpoint.index))) orelse continue;
-        const c = (try svc.store.getValue(a, cid)).getBytes("claim") orelse return null;
-        return if (c.len == 36) c[0..36].* else null;
+        if (try svc.map("pools").has(try poolKey(a, tp, in.previous_outpoint.txid.bytes, in.previous_outpoint.index))) return true;
     }
-    if (tx.tx.inputs.len == 0) return null;
-    var first: u32 = 0;
-    if (coins_retained.len > 0) {
-        first = coins_retained[0];
-        for (coins_retained) |i| first = @min(first, i);
-    }
-    if (first >= tx.tx.inputs.len) return null;
     const o = tx.tx.outputs[vout];
-    const tok = brc162.decode(o.locking_script.bytes) orelse return null;
-    const p = (pool.parse(tok.lock) catch return null) orelse return null;
-    const fi = tx.tx.inputs[first].previous_outpoint;
-    const cv = (try pool.verifiedClaim(a, tx.tx.outputs, p, o.locking_script.bytes, fi.txid.bytes, fi.index)) orelse return null;
-    if (std.mem.indexOfScalar(u32, outputs_to_admit, cv) == null) return null; // the topic did not admit it
-    const key = w.store.outpointKey(tx.txid, cv);
-    try svc.map("claims").add(try claimKey(a, tp, &key));
-    return key;
+    return pool.affirmed(o.locking_script.bytes, @intCast(o.satoshis));
 }
 
 // ---------------------------------------------------------------- hooks (#50)
 
 /// A topic admitted `tx`: when its pools pass the pool checks (`judge`),
-/// index every admitted output that is a pool and carries a claim (`claimFor`: a deploy's own,
-/// verified; a continuation's from the pool it spends). A pool that fails, or a deploy with no
-/// verified claim, is not indexed (and so not searchable); it stays a valid token output in the
+/// index every admitted output that is a listed pool (`listedAt`: an affirmed deploy's, or the
+/// continuation of a listed pool). A pool that fails, or a deploy without a verified
+/// affirmation, is not indexed (and so not searchable); it stays a valid token output in the
 /// topic. Then the beat, when the listed totals changed.
-pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, coins_retained: []const u32) anyerror!void {
+pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, _: []const u32) anyerror!void {
     const id = tokenIdOf(topic) orelse return; // not a token topic: nothing of ours
     if (outputs_to_admit.len == 0) return;
     if (try judge(a, id, tx, outputs_to_admit) != null) return;
@@ -251,8 +223,8 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
     for (outputs_to_admit) |vout| {
         if (vout >= tx.tx.outputs.len) continue;
         const o = tx.tx.outputs[vout];
-        var pf = poolAt(tx.txid, vout, o.locking_script.bytes, @intCast(o.satoshis)) orelse continue;
-        pf.claim = (try claimFor(a, svc, tp, tx, vout, outputs_to_admit, coins_retained)) orelse continue;
+        const pf = poolAt(tx.txid, vout, o.locking_script.bytes, @intCast(o.satoshis)) orelse continue;
+        if (!try listedAt(a, svc, tp, tx, vout)) continue;
         try putPool(a, svc, tp, pf);
     }
     try beatIfChanged(a, svc);
@@ -260,16 +232,13 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
 
 /// A previous coin was consumed: if it was a pool we indexed, it leaves
 /// `pools` for `spentPools` (where `rejected` finds it). Its continuation
-/// (if the spend admits one) arrives through its own `admitted` call —
-/// skein does not fold the two (docs/OVERLAY.md, "The lookup contract").
-/// If it was a claim (the validator's rescind), it leaves `claims` for `spentClaims`: every
-/// pool of that deploy is unlisted from then on.
+/// (if the spend admits one: a Swap) arrives through its own `admitted` call —
+/// skein does not fold the two (docs/OVERLAY.md, "The lookup contract"). A Close (the LP's or
+/// the validator's) admits none: the pool leaves the listing.
 pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, _: lookup.Tx) anyerror!void {
     const tp = try topicPrefix(a, topic);
     if (try removePool(a, svc, tp, outpoint.txid, outpoint.vout)) |cid|
         try svc.map("spentPools").putLink(try poolKey(a, tp, outpoint.txid, outpoint.vout), cid);
-    const ck = try poolKey(a, tp, outpoint.txid, outpoint.vout);
-    if (try svc.map("claims").remove(ck)) try svc.map("spentClaims").add(ck);
     try beatIfChanged(a, svc);
 }
 
@@ -278,22 +247,18 @@ pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Ou
 /// again. Skein calls only `rejected(topic, tx)` (docs/OVERLAY.md,
 /// "Settlement: `admits` propagates") — it does not re-call `admitted` for
 /// the coins a rejection gives back — so they come back from `spentPools`,
-/// as indexed (and checked) when first admitted. Likewise its own claims go, and the claims
-/// it had spent (a rejected rescind) are live again.
+/// as indexed (and checked) when first admitted.
 pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyerror!void {
     const tp = try topicPrefix(a, topic);
     for (0..tx.tx.outputs.len) |vout| {
         _ = try removePool(a, svc, tp, tx.txid, @intCast(vout));
         const key = try poolKey(a, tp, tx.txid, @intCast(vout));
         _ = try svc.map("spentPools").remove(key);
-        _ = try svc.map("claims").remove(key);
-        _ = try svc.map("spentClaims").remove(key);
     }
     for (tx.tx.inputs) |in| {
         const txid = in.previous_outpoint.txid.bytes;
         const vout = in.previous_outpoint.index;
         const key = try poolKey(a, tp, txid, vout);
-        if (try svc.map("spentClaims").remove(key)) try svc.map("claims").add(key);
         const cid = (try svc.map("spentPools").link(key)) orelse continue;
         _ = try svc.map("spentPools").remove(key);
         try linkPool(a, svc, tp, txid, vout, cid);
@@ -336,7 +301,6 @@ pub fn beatValue(a: Allocator, svc: *Service) !Value {
             cur_tp = tp;
         }
         const rec = try svc.store.getValue(a, kv.value.cid);
-        if (!try listed(a, svc, tp, rec)) continue;
         const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
         const gop = try vals.getOrPut(a, try hexOf(a, identity));
         if (!gop.found_existing) gop.value_ptr.* = .{};
@@ -439,7 +403,6 @@ fn poolsUnder(a: Allocator, svc: *Service, prefix: []const u8, key_off: usize) !
     for (try svc.map("pools").prefixed(prefix)) |kv| {
         if (kv.value != .cid) return error.BadIndex;
         const rec = try svc.store.getValue(a, kv.value.cid);
-        if (!try listed(a, svc, prefix, rec)) continue;
         const op = try w.store.outpointOf(kv.key[key_off..]);
         try out.append(a, try poolStateValue(a, rec, try outpointStr(a, op.txid, op.vout)));
     }
@@ -458,7 +421,6 @@ fn poolsForValidator(a: Allocator, svc: *Service, tp: []const u8, prefix: []cons
         const op = try w.store.outpointOf(kv.key[prefix.len..]);
         const cid = (try svc.map("pools").link(try poolKey(a, tp, op.txid, op.vout))) orelse continue;
         const rec = try svc.store.getValue(a, cid);
-        if (!try listed(a, svc, tp, rec)) continue;
         try out.append(a, try poolStateValue(a, rec, try outpointStr(a, op.txid, op.vout)));
     }
     return out.items;
@@ -499,8 +461,6 @@ fn answerOutpoint(a: Allocator, svc: *Service, ch: *Chain, tp: []const u8, start
         hops += 1;
         if (try svc.map("pools").link(try poolKey(a, tp, txid, vout))) |cid| rec = try svc.store.getValue(a, cid);
     }
-    // Listed only (0.9.0): a pool whose claim was spent (rescinded) or never verified is not answered.
-    if (!try listed(a, svc, tp, rec.?)) return error.NotListed;
     if (want_beef) return .{ .output_list = try a.dupe(lookup.Output, &.{.{ .txid = txid, .vout = vout }}) };
     const current = try poolStateValue(a, rec.?, try outpointStr(a, txid, vout));
     return .{ .freeform = .{ .map = try a.dupe(Entry, &.{

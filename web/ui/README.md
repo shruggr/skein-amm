@@ -1104,11 +1104,17 @@ tree-shakes it out.
 
 `PoolTemplate` (src/pool/template.ts), independent of React:
 
-- `decode(script)`: the 1Color value prefix (32-byte id, no payload), the
+- `decode(script)`: the 1Color value prefix (32-byte id; on a deploy, the
+  affirmation as its payload, 0.11.0: `affirmation`, hex), the
   artifact match with its constructor slots (runar-sdk `matchesArtifact`,
   `extractConstructorArgs`), the state (`extractStateFromScript`); requires
   prefix id == assetId and prefix amount == TokenReserve. Null otherwise.
-- `lockDeploy(args, state)`: the prefix plus runar-sdk's locking script.
+- `lockDeploy(args, state, affirmation?)`: the prefix (with the validator's
+  affirmation as its payload when given, 0.11.0) plus runar-sdk's locking script.
+- `affirmationMessage(pool, satoshis)`, `termsHash(args)`, `affirmed(script,
+  satoshis)` (0.11.0): the 221 bytes the validator's affirmation signs
+  (docs/AMM.md "The deploy and the affirmation"; src/pool.zig
+  `affirmMessage`), and whether a pool output carries a valid one.
 - `swap`, `addLiquidity`, `removeLiquidity`: the whole transaction the
   contract enforces (pool at output 0; payouts; LP / validator fees and the
   commission to `commissionPkh` on swap, each only when nonzero; change), the pool input's unlocking

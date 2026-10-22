@@ -242,16 +242,18 @@ describe("exchange.ts, wired", () => {
 
   it("myPositions: the wallet's pool rows read from the chain state — followed to the current output (its BEEF from ls_color), the claim spent = rescinded; closed ones left out", async () => {
     const pd = poolDeploy.id("hex");
+    // A 0.9.0 pool row's claim vout, as the page filed it (gen/vectors has no claim since 0.11.0).
+    const claimVout = 4;
     const row = {
       outpoint: `${pd}.0`,
       satoshis: v.pool0.bsv,
       lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(),
       tags: [`bsv21:${TOKEN}`, "amm-pool"],
-      customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "lp key", counterparty: "self", amm: { claimVout: v.claimVout } }),
+      customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "lp key", counterparty: "self", amm: { claimVout } }),
     };
     connect([row]);
     inst.spends[`${pd}.0`] = { outpoint: `${pd}.0`, spentBy: swap1.id("hex"), current: `${swap1.id("hex")}.0`, hops: 1, closed: false };
-    inst.spends[`${pd}.${v.claimVout}`] = { outpoint: `${pd}.${v.claimVout}`, spentBy: "ab".repeat(32), hops: 0, closed: false };
+    inst.spends[`${pd}.${claimVout}`] = { outpoint: `${pd}.${claimVout}`, spentBy: "ab".repeat(32), hops: 0, closed: false };
     inst.color[`${swap1.id("hex")}.0`] = { type: "output-list", outputs: [{ beef: atomic(swap1, [fund, tokenDeploy, poolDeploy]), outputIndex: 0 }] };
     const ps = await myPositions();
     expect(ps).toEqual([

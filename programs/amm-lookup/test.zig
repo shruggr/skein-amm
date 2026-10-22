@@ -61,7 +61,7 @@ const Fixtures = struct {
 
     fn init(a: Allocator) !Fixtures {
         var f: Fixtures = .{ .txs = .init(a), .raws = .init(a), .id = undefined };
-        inline for (.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close", "close_fee", "rescind", "pool_deploy_delivered", "pool_deploy_forged", "pool_deploy_wrong_key" }) |name| {
+        inline for (.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close", "close_fee", "close_validator", "pool_deploy_unaffirmed", "pool_deploy_forged" }) |name| {
             const bytes = unhex(a, @field(vec, name));
             try f.raws.put(name, bytes);
             try f.txs.put(w.beef.txidOf(bytes), try bsvz.transaction.Transaction.parse(a, bytes));
@@ -145,7 +145,7 @@ const Built = struct { raw: []const u8, txid: [32]u8, tx: bsvz.transaction.Trans
 
 /// A transaction spending `prev`'s output `prev_vout` with `unlocking` (a
 /// pool spend's method index is its last push: OP_0 Swap, OP_1 Close),
-/// with one output (`script`, `sats`), and a second (`second`, 1 sat: a claim) when given.
+/// with one output (`script`, `sats`), and a second (`second`, 1 sat) when given.
 /// Unsigned: nothing here runs the interpreter.
 fn buildSpend(a: Allocator, prev: bsvz.transaction.Transaction, prev_vout: u32, unlocking: []const u8, script: []const u8, sats: i64, second: ?[]const u8) !Built {
     var b = bsvz.transaction.Builder.init(a);
@@ -233,7 +233,7 @@ test "queries: one service over every token, each query naming its token; a quer
     defer e.deinit();
     var svc = try e.svc(a);
     var ch = try e.chain(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, .{ .map = &.{} }));
     // Another token: nothing of it is indexed.
     const other = try query(a, "0102030405060708091011121314151617181920212223242526272829303132_0", &.{});
@@ -251,8 +251,8 @@ test "admitted: a pool deploy that passes the checks is indexed once, and the an
     var ch = try e.chain(a);
 
     const pd_txid = e.f.txid("pool_deploy");
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0}); // a dupe hook call
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0}); // a dupe hook call
     try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
 
     // {} — every live pool, in the engine's PoolState shape plus `outpoint`.
@@ -306,14 +306,14 @@ test "admitted: pools the topic admitted but that fail the pool checks are not i
     // Prefix amount one lower than the state's TokenReserve.
     var buf: [10]u8 = undefined;
     const low = try cat(a, &.{ &.{0x20}, &f.id, pool.brc162.pushAmount(&buf, vec.pool0.tokens - 1), &.{0x6d}, pool.brc162.decode(pd_script).?.lock });
-    try S.expectNot(a, e, &svc, "pool_deploy", try withOutput(a, pd, 0, low), &.{ 0, 1, 2, 4 }, &.{0}, .prefix_mismatch);
+    try S.expectNot(a, e, &svc, "pool_deploy", try withOutput(a, pd, 0, low), &.{ 0, 1, 2 }, &.{0}, .prefix_mismatch);
 
     // A pool at output 1 (outputs 0 and 1 swapped).
     var swapped = pd;
     const outs = try a.dupe(bsvz.transaction.Output, pd.outputs);
     std.mem.swap(bsvz.transaction.Output, &outs[0], &outs[1]);
     swapped.outputs = outs;
-    try S.expectNot(a, e, &svc, "pool_deploy", swapped, &.{ 0, 1, 2, 4 }, &.{0}, .not_at_output_0);
+    try S.expectNot(a, e, &svc, "pool_deploy", swapped, &.{ 0, 1, 2 }, &.{0}, .not_at_output_0);
 
     // The real ones pass.
     try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")), &.{ 0, 2, 3, 4 }) == null);
@@ -337,15 +337,15 @@ test "admitted: a pool's CommissionBps is answered as commissionBps (0: a pool w
     const at = script.len - pool.brc162.decode(script).?.lock.len + 627;
     try testing.expectEqual(@as(u8, 0x5a), script[at]);
     script[at] = 0x00;
-    // The claim signs the pool's script, so a rewritten script is not claimed: the pool is
-    // indexed-and-unlisted. The record still reads the commission as 0.
-    try e.admit(a, &svc, "pool_deploy", try withOutput(a, pd, 0, script), &.{ 0, 1, 2, 4 }, &.{0});
+    // The affirmation signs the pool's fees, so a rewritten script is not affirmed: the pool is
+    // not listed (0.11.0: not indexed). The pool still reads the commission as 0.
+    try e.admit(a, &svc, "pool_deploy", try withOutput(a, pd, 0, script), &.{ 0, 1, 2 }, &.{0});
     try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
     const pf = idx.poolAt(e.f.txid("pool_deploy"), 0, script, vec.pool0.bsv).?;
     try testing.expectEqual(@as(i64, 0), pf.commission_bps);
 }
 
-test "admitted: a continuation with any validator key stays indexed and listed (the key is checked once, by the deploy's claim)" {
+test "admitted: a continuation with any validator key stays indexed and listed (the key is checked once, by the deploy's affirmation)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -356,25 +356,24 @@ test "admitted: a continuation with any validator key stays indexed and listed (
     const pd = f.tx("pool_deploy");
     const sw = f.tx("swap_bsv_in");
 
-    // No token input among the coins retained: the first input is the first token input.
+    // The coins retained do not matter: the affirmation is the pool output's own.
     {
         var sv = try e.svc(a);
-        try e.admit(a, &sv, "pool_deploy", pd, &.{ 0, 1, 2, 4 }, &.{});
+        try e.admit(a, &sv, "pool_deploy", pd, &.{ 0, 1, 2 }, &.{});
         try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &sv, &ch, try e.q(a, &.{}))).freeform.array.len);
         try idx.rejected(a, &sv, e.topic, try ltx(a, f.txid("pool_deploy"), pd));
         try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
-        try testing.expectEqual(@as(usize, 0), try sv.map("claims").count());
     }
 
-    // A swap keeping the pre-swap key, over the claimed deploy.
+    // A swap keeping the pre-swap key, over the affirmed deploy.
     var svc = try e.svc(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try e.admit(a, &svc, "swap_bsv_in", try withOutput(a, sw, 0, try withValidator(a, sw.outputs[0].locking_script.bytes, key33(vec.pool0.validator))), &.{ 0, 1 }, &.{0});
     try testing.expectEqual(@as(usize, 2), try svc.map("pools").count()); // the deploy's is spent below, by `spent`
     try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), sw));
     try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
 
-    // A pool spend whose unlocking script selects no method: the continuation carries the claim.
+    // A pool spend whose unlocking script selects no method: the continuation of a listed pool is listed.
     const hop = try buildSpend(a, sw, 0, &.{}, sw.outputs[0].locking_script.bytes, 900_000, null);
     _ = try e.ms.store().putBitcoin(a, .tx, hop.raw);
     try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, hop.txid, hop.tx), &.{0}) == null);
@@ -384,90 +383,88 @@ test "admitted: a continuation with any validator key stays indexed and listed (
     try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
     try testing.expectEqualStrings(try opStr(a, hop.txid, 0), all.freeform.array[0].getText("outpoint").?);
 
-    // The record does not carry the ValidatorPubKey; it names its deploy's claim.
+    // The record does not carry the ValidatorPubKey (0.11.0: nor a claim).
     const cid = (try svc.map("pools").prefixed(try w.store.nameKey(a, e.topic, &.{})))[0].value.cid;
     const rec = try svc.store.getValue(a, cid);
     try testing.expect(rec.get("validatorPubKey") == null);
     try testing.expectEqualSlices(u8, &key33(vec.identity), rec.getBytes("validatorIdentityKey").?);
-    try testing.expectEqualSlices(u8, &w.store.outpointKey(f.txid("pool_deploy"), vec.claim_vout), rec.getBytes("claim").?);
+    try testing.expect(rec.get("claim") == null);
 }
 
-test "listing (0.9.0): only a deploy whose claim verifies is listed — not the LP's deploy as delivered (no claim), a claim another key signed, a pool naming a key that is not the derivation, a claim the topic did not admit" {
+test "listing (0.11.0): only an affirmed deploy is listed — not one without the affirmation, one another key signed, one whose satoshis are not the ones affirmed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var ch = try e.chain(a);
-    for ([_]struct { name: []const u8, outs: []const u32 }{
-        .{ .name = "pool_deploy_delivered", .outs = &.{ 0, 1, 2 } },
-        .{ .name = "pool_deploy_forged", .outs = &.{ 0, 1, 2, 4 } },
-        .{ .name = "pool_deploy_wrong_key", .outs = &.{ 0, 1, 2, 4 } },
-        .{ .name = "pool_deploy", .outs = &.{ 0, 1, 2 } },
+    const pd = e.f.tx("pool_deploy");
+    const outs = try a.dupe(bsvz.transaction.Output, pd.outputs);
+    outs[0].satoshis += 1;
+    var more = pd;
+    more.outputs = outs;
+    for ([_]struct { name: []const u8, t: ?bsvz.transaction.Transaction }{
+        .{ .name = "pool_deploy_unaffirmed", .t = null },
+        .{ .name = "pool_deploy_forged", .t = null },
+        .{ .name = "pool_deploy", .t = more },
     }) |c| {
         var svc = try e.svc(a);
-        try e.admit(a, &svc, c.name, null, c.outs, &.{0});
+        try e.admit(a, &svc, c.name, c.t, &.{ 0, 1, 2 }, &.{0});
         try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-        try testing.expectEqual(@as(usize, 0), try svc.map("claims").count());
         try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
         const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, e.f.txid(c.name), 0) } }});
         try testing.expectError(error.UnknownOutpoint, idx.answer(a, &svc, &ch, q));
     }
     var svc = try e.svc(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
-    try testing.expectEqual(@as(usize, 1), try svc.map("claims").count());
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
+
+    // A swap of an unaffirmed pool: its continuation (no payload, spending nothing listed) is not listed.
+    var svc2 = try e.svc(a);
+    try e.admit(a, &svc2, "pool_deploy_unaffirmed", null, &.{ 0, 1, 2 }, &.{0});
+    const sw = e.f.tx("swap_bsv_in");
+    const ins = try a.dupe(bsvz.transaction.Input, sw.inputs);
+    ins[0].previous_outpoint.txid.bytes = e.f.txid("pool_deploy_unaffirmed");
+    var sw_u = sw;
+    sw_u.inputs = ins;
+    try idx.admitted(a, &svc2, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), sw_u), &.{ 0, 1 }, &.{0});
+    try testing.expectEqual(@as(usize, 0), try svc2.map("pools").count());
 }
 
-test "listing (0.9.0): the validator rescinds by spending the claim — the pool and every continuation are unlisted for every query; a rejected rescind lists it again; Close ends it" {
+test "listing (0.11.0): a Close ends it — the LP's or the validator's; a rejected Close lists the pool again" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
-    var svc = try e.svc(a);
     var ch = try e.chain(a);
     const pd_txid = e.f.txid("pool_deploy");
     const sw_txid = e.f.txid("swap_bsv_in");
-    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
-    _ = try ch.putTx(pd_txid, e.f.raw("pool_deploy"));
-    const by_validator = try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }});
-    const at_deploy = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }});
-    try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
-
-    // The rescind: the claim spent (nothing admitted: the unit is burned).
-    try idx.admitted(a, &svc, e.topic, rs, &.{}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = vec.claim_vout }, rs);
-    try testing.expectEqual(@as(usize, 0), try svc.map("claims").count());
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count()); // indexed, not listed
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
-    try testing.expectError(error.NotListed, idx.answer(a, &svc, &ch, at_deploy));
-    // A swap after the rescind (signed before it, say): its continuation is unlisted too.
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, try ltx(a, sw_txid, e.f.tx("swap_bsv_in")));
-    _ = try ch.putTx(sw_txid, e.f.raw("swap_bsv_in"));
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-    try testing.expectError(error.NotListed, idx.answer(a, &svc, &ch, at_deploy));
-
-    // The rescind rejected: listed again, the continuation with it.
-    try idx.rejected(a, &svc, e.topic, rs);
-    try testing.expectEqual(@as(usize, 1), try svc.map("claims").count());
-    const back = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-    try testing.expectEqual(@as(usize, 1), back.freeform.array.len);
-    try testing.expectEqualStrings(try opStr(a, sw_txid, 0), back.freeform.array[0].getText("outpoint").?);
-    try testing.expectEqual(@as(u64, 1), (try idx.answer(a, &svc, &ch, at_deploy)).freeform.get("hops").?.uint);
-
-    // Close: the pool spent, no continuation (the LP's tokens are not a pool).
-    const cl = try ltx(a, e.f.txid("close_fee"), e.f.tx("close_fee"));
     const sw2_txid = e.f.txid("swap_tokens_in");
-    try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, &svc, e.topic, .{ .txid = sw_txid, .vout = 0 }, try ltx(a, sw2_txid, e.f.tx("swap_tokens_in")));
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = sw2_txid, .vout = 0 }, cl);
-    try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
+    for ([_][]const u8{ "close", "close_validator" }) |nm| {
+        var svc = try e.svc(a);
+        try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
+        try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
+        try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, try ltx(a, sw_txid, e.f.tx("swap_bsv_in")));
+        try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
+        try idx.spent(a, &svc, e.topic, .{ .txid = sw_txid, .vout = 0 }, try ltx(a, sw2_txid, e.f.tx("swap_tokens_in")));
+        const by_validator = try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }});
+        try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
+
+        // The Close: the pool spent, no continuation (the LP's tokens are not a pool).
+        const cl = try ltx(a, e.f.txid(nm), e.f.tx(nm));
+        try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
+        try idx.spent(a, &svc, e.topic, .{ .txid = sw2_txid, .vout = 0 }, cl);
+        try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
+        try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
+        try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
+
+        // Rejected: the pool it spent is listed again.
+        try idx.rejected(a, &svc, e.topic, cl);
+        const back = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
+        try testing.expectEqual(@as(usize, 1), back.freeform.array.len);
+        try testing.expectEqualStrings(try opStr(a, sw2_txid, 0), back.freeform.array[0].getText("outpoint").?);
+    }
 }
 
 test "beat (0.12.0): the body is this skein's per-token, per-validator totals of its listed pools, kept and handed on only when it changes" {
@@ -481,7 +478,7 @@ test "beat (0.12.0): the body is this skein's per-token, per-validator totals of
 
     // Nothing listed: no tokens.
     try testing.expectEqual(@as(usize, 0), (try idx.beatValue(a, &svc)).get("tokens").?.map.len);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     const v1 = try idx.beatValue(a, &svc);
     const t1 = v1.get("tokens").?.get(token).?.get(vec.identity).?;
     try testing.expectEqual(@as(u64, vec.pool0.bsv), t1.getUint("sats").?);
@@ -494,7 +491,7 @@ test "beat (0.12.0): the body is this skein's per-token, per-validator totals of
     if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 1), svc.beats.items.len);
 
     // A dupe admission changes nothing: no new beat.
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try testing.expectEqualSlices(u8, kept1, (try svc.map("beat").link("body")).?);
     if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 1), svc.beats.items.len);
 
@@ -506,9 +503,9 @@ test "beat (0.12.0): the body is this skein's per-token, per-validator totals of
     try testing.expectEqual(@as(u64, vec.pool1.tokens), t2.getUint("tokens").?);
     try testing.expect(!std.mem.eql(u8, kept1, (try svc.map("beat").link("body")).?));
 
-    // The rescind: the token leaves the body.
-    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("pool_deploy"), .vout = vec.claim_vout }, rs);
+    // A Close of it (the validator's, say): the token leaves the body.
+    const cl = try ltx(a, e.f.txid("close_validator"), e.f.tx("close_validator"));
+    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_bsv_in"), .vout = 0 }, cl);
     try testing.expectEqual(@as(usize, 0), (try idx.beatValue(a, &svc)).get("tokens").?.map.len);
 }
 
@@ -538,7 +535,7 @@ test "spent + admitted: a swap's continuation replaces the pool it spent" {
 
     const pd_txid = e.f.txid("pool_deploy");
     const sw_txid = e.f.txid("swap_bsv_in");
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
     try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, try ltx(a, sw_txid, e.f.tx("swap_bsv_in")));
 
@@ -571,7 +568,7 @@ test "rejected: drops the rejected transaction's pool and restores the checked o
 
     const pd_txid = e.f.txid("pool_deploy");
     const sw = try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in"));
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
     try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, sw);
 
@@ -609,7 +606,7 @@ test "answer: {outpoint} follows the spends (the chain state's) to the newest co
     const pd_tx = e.f.tx("pool_deploy");
     const pd_txid = e.f.txid("pool_deploy");
     const pd_script = pd_tx.outputs[0].locking_script.bytes;
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
     _ = try ch.putTx(pd_txid, e.f.raw("pool_deploy"));
 
     var prev_tx = pd_tx;
@@ -652,20 +649,22 @@ test "answer: {validatorIdentityKey} returns only that validator's pools" {
 
     const pd_tx = e.f.tx("pool_deploy");
     const pd_txid = e.f.txid("pool_deploy");
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
 
     // A second pool under another validator, a deploy from pool_deploy's token output 1: its
-    // key is that validator's child of the deposit's outpoint, and its claim is signed by it.
+    // key is that validator's child of the deposit's outpoint, and its affirmation is signed by it.
     const kd = bsvz.primitives.key_deriver.KeyDeriver.init(try bsvz.primitives.ec.PrivateKey.fromBytes(.{0x42} ** 32));
     const other_identity = (try kd.identityKey()).toCompressedSec1();
     const validator_b = try pool.validatorKey(a, other_identity, pd_txid, 1);
-    const script_b = try withState(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity);
+    const bare_b = try withState(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity);
     var kbuf: [64 + 1 + 10]u8 = undefined;
     const child = try kd.derivePrivateKey(a, pool.validator_protocol, pool.keyId(&kbuf, pd_txid, 1), .{ .type_ = .anyone });
-    const sig_b = try child.signDigest(pool.claimDigest(script_b, pd_txid, 1));
-    const claim_b = try pool.claimScript(a, e.f.id, sig_b.asSlice(), bsvz.crypto.hash.hash160(&validator_b).bytes);
-    const pool_b = try buildSpend(a, pd_tx, 1, &.{}, script_b, 50_000, claim_b);
-    try idx.admitted(a, &svc, e.topic, try ltx(a, pool_b.txid, pool_b.tx), &.{ 0, 1 }, &.{0});
+    const p_b = (try pool.parse(pool.brc162.decode(bare_b).?.lock)).?;
+    const sig_b = try child.signDigest(pool.affirmDigest(p_b, 50_000, pool.termsHash(pool.termsOf(p_b))));
+    const script_b = try pool.withAffirmation(a, bare_b, sig_b.asSlice());
+    try testing.expect(pool.affirmed(script_b, 50_000));
+    const pool_b = try buildSpend(a, pd_tx, 1, &.{}, script_b, 50_000, null);
+    try idx.admitted(a, &svc, e.topic, try ltx(a, pool_b.txid, pool_b.tx), &.{0}, &.{0});
 
     try testing.expectEqual(@as(usize, 2), try svc.map("pools").count());
 
@@ -688,7 +687,7 @@ test "liveness join: setLiveJoin merges lastSeen when a live map is wired, and l
     var svc = try e.svc(a);
     var ch = try e.chain(a);
 
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 4 }, &.{0});
+    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
 
     // No liveness program wired: lastSeen stays null.
     const before = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
