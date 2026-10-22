@@ -62,14 +62,13 @@ pub fn parseSpend(v: Value) ?validator.SpendRequest {
     };
 }
 
-/// An affirm request body (0.11.0): `{pool: <the pool output's locking script, no payload>,
-/// satoshis, keyInput: "<txid>_<vout>"}`.
+/// An affirm request body (0.13.0): `{pool: <the pool output's locking script, its
+/// ValidatorPubKey, Nonce and Affirmation still to come>, satoshis}`.
 pub fn parseAffirm(v: Value) ?validator.AffirmRequest {
     if (v != .map) return null;
     return .{
         .pool = v.getBytes("pool") orelse return null,
         .satoshis = v.getUint("satoshis") orelse return null,
-        .key_input = Outpoint.parse(v.getText("keyInput") orelse return null) orelse return null,
     };
 }
 
@@ -110,8 +109,8 @@ pub fn poolValue(a: std.mem.Allocator, n: validator.Newest) !Value {
     }
 }
 
-/// A reply body: `{ok: true, tx, txid}` (a spend), `{ok: true, signature}` (an affirmation,
-/// 0.11.0), or `{ok: false, reason, detail?, txid?, pool?}`.
+/// A reply body: `{ok: true, tx, txid}` (a spend), `{ok: true, validatorPubKey, nonce,
+/// signature}` (an affirmation, 0.13.0), or `{ok: false, reason, detail?, txid?, pool?}`.
 pub fn replyValue(a: std.mem.Allocator, r: Reply) !Value {
     var es: std.ArrayList(cbor.Entry) = .empty;
     switch (r) {
@@ -119,6 +118,8 @@ pub fn replyValue(a: std.mem.Allocator, r: Reply) !Value {
             try es.append(a, .{ .key = "ok", .value = .{ .boolean = true } });
             if (ok.tx) |t| try es.append(a, .{ .key = "tx", .value = .{ .bytes = t } });
             if (ok.txid) |t| try es.append(a, .{ .key = "txid", .value = try text(a, &w.header.toHex(t)) });
+            if (ok.validator_pub_key) |k| try es.append(a, .{ .key = "validatorPubKey", .value = .{ .bytes = try a.dupe(u8, &k) } });
+            if (ok.nonce) |n| try es.append(a, .{ .key = "nonce", .value = .{ .bytes = try a.dupe(u8, &n) } });
             if (ok.signature) |s| try es.append(a, .{ .key = "signature", .value = .{ .bytes = s } });
         },
         .refused => |f| {
@@ -194,7 +195,7 @@ pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Se
         },
         .affirm => {
             // Answered now: nothing is signed into a transaction, nothing submitted.
-            const req = parseAffirm(body) orelse return .{ .reply = refuse(.bad_request, "want {pool: bytes, satoshis: uint, keyInput: \"<txid>_<vout>\"}") };
+            const req = parseAffirm(body) orelse return .{ .reply = refuse(.bad_request, "want {pool: bytes, satoshis: uint}") };
             return .{ .reply = try validator.affirm(a, req, d.config, d.oracle) };
         },
     }

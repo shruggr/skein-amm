@@ -22,18 +22,21 @@
 // in the input asset): LpFeeBps to the LP, ValidatorFeeBps to the validator,
 // and CommissionBps to whoever relays the swap (a market, or the user's own
 // overlay), at the address it names per call. The contract builds every
-// output itself; a swap carries no arbitrary outputs.
+// output of a Swap itself; a swap carries no arbitrary outputs.
 // The script cannot see token inputs, so every method that brings tokens in
 // requires the validator's signature: the validator's role is to confirm the
-// token inputs are valid and cover the token outputs. Two methods (skein-amm
-// 0.9.0, David Case 2026-10-09): Swap, the validator's; Close, the LP's or
-// (0.11.0) the validator's, always paying the LP.
+// token inputs are valid and cover the token outputs. Three methods
+// (skein-amm 0.13.0, David Case 2026-10-22, docs/AMM.md "The pool rule"):
+// Swap, the validator's; Close, the LP's alone, its outputs free (the LP
+// spends the LP's own funds); Rescind, the validator's, writing the pool back
+// with its ValidatorPubKey cleared (33 zero bytes), which ends its swaps.
 //
-// The deploy's pool output carries the validator's affirmation as its BRC-162
-// payload (skein-amm 0.11.0, docs/AMM.md "The affirmation"): the prefix is
-// `0x20 <assetId:32> <push tokenReserve> OP_2DROP <push affirmation> OP_DROP`,
-// before the code, so the contract never sees it and every continuation it
-// writes has no payload.
+// The validator's affirmation lives in state (0.13.0): Nonce and Affirmation,
+// never assigned, so every continuation carries them. Every pool output is
+// self-attesting: ValidatorPubKey is the BRC-42 child of ValidatorIdentity
+// keyed by Nonce (first key), and Affirmation is that key's DER signature over
+// sha256 of the message (docs/AMM.md "The deploy and the affirmation"). The
+// contract never checks either; the lookup does.
 package pool
 
 import runar "github.com/icellan/runar/packages/runar-go"
@@ -56,11 +59,22 @@ type Pool struct {
 	// It is the validator's stable identity key: who a taker
 	// contacts to execute a swap (BRC-103 auth; resolving it to an address is
 	// deferred), and the BRC-42 root of the rotating ValidatorPubKey, derived
-	// with the `anyone` counterparty keyed by the outpoint of input 0 of the
-	// transaction creating the pool output. The contract never checks the
-	// derivation: the validator won't sign a spend that breaks it, and the
-	// overlay rejects violations.
+	// with the `anyone` counterparty: keyed by Nonce for the deploy's key, by
+	// the spent pool outpoint for each Swap's next key. The contract never
+	// checks the derivation: the validator won't sign a spend that breaks it,
+	// and the lookup lists no pool that breaks it.
 	ValidatorIdentity runar.PubKey
+
+	// Nonce (32 bytes, the validator's choice at affirm) keys the pool's first
+	// validator key; Affirmation is the validator's DER signature of the pool
+	// (0.13.0, docs/AMM.md "The deploy and the affirmation"). State only so the
+	// compiler keeps them (as ValidatorIdentity); never assigned, so every
+	// continuation carries them unchanged. Nonce is Rúnar's fixed 32-byte type
+	// (raw in the state, no framing: a variable-length field costs every
+	// method a parser, 174 bytes here); Affirmation is a ByteString (DER varies
+	// in length), framed in the state by its one-byte push length.
+	Nonce       runar.Sha256Digest
+	Affirmation runar.ByteString
 
 	// AssetId is the token's canonical 32-byte BRC-162 id (the deploy txid;
 	// binary deploys are at output 0). 36-byte legacy ids are not supported.
@@ -124,41 +138,31 @@ func (c *Pool) Swap(validatorSig runar.Sig, nextValidatorPubKey runar.PubKey, am
 	}
 }
 
-// Close pays the whole pool out to the LP and ends it (David Case, 2026-10-09:
-// a position is deployed or closed, never resized in place; resizing is a
-// Close and a new deploy). Either party may close it (skein-amm 0.11.0, David
-// Case 2026-10-21: delisting is the contract's Close): the LP, with any bsvFee
-// (0 <= bsvFee <= the pool's sats, left for the miner), or the current
-// validator, with bsvFee = 0 only: the validator pays the miner fee from an
-// input of its own, so it cannot spend the pool's sats as fee. The payout is
-// the same either way, always to the LP key: the pool's sats less bsvFee to
-// P2PKH of the LP key (an output only when nonzero), then every token to the
-// same key in one BRC-162 value output. No continuation. bsvFee = 0 pays
-// everything out: the closer funds the miner fee (and the token output's sat)
-// from another input, with Rúnar's change output after the contract's.
-//
-// The signature is checked against the LP key alone when bsvFee > 0, and as
-// one of the two keys (LP, then validator) when bsvFee = 0: a 1-of-2
-// OP_CHECKMULTISIG, so a validator's signature is never a failed OP_CHECKSIG
-// against the LP key (NULLFAIL).
-//
-// Outputs: 0 the BSV payout (when nonzero), then the tokens.
-func (c *Pool) Close(sig runar.Sig, bsvFee runar.Bigint) {
-	if bsvFee > 0 {
-		runar.Assert(runar.CheckSig(sig, c.LpPubKey))
-	} else {
-		runar.Assert(runar.CheckMultiSig([1]runar.Sig{sig}, [2]runar.PubKey{c.LpPubKey, c.ValidatorPubKey}))
-	}
+// Close ends the pool, the LP's alone (skein-amm 0.13.0, David Case
+// 2026-10-22): a plain signature by the LP key, and the outputs are free. The
+// LP spends the LP's own funds: the LP's wallet decides where the sats and the
+// tokens go (a covenant would protect no one). A position is deployed or
+// closed, never resized in place (2026-10-09). No state is written and no
+// output is added, so the compiler commits to no output (no hashOutputs check,
+// no change parameters).
+func (c *Pool) Close(lpSig runar.Sig) {
+	runar.Assert(runar.CheckSig(lpSig, c.LpPubKey))
+}
+
+// Rescind is the validator's withdrawal of its attestation (0.13.0, David
+// Case 2026-10-22; it replaces 0.11.0's validator Close): signed by the current
+// ValidatorPubKey, it writes the pool back at output 0 unchanged (the same
+// sats, TokenReserve, LpPubKey, ValidatorIdentity, Nonce and Affirmation) with
+// ValidatorPubKey cleared to 33 zero bytes. No Swap is possible after it (no
+// key can sign against the zero key, nor can a second Rescind), and the lookup
+// delists the pool on seeing it; the LP closes it as any pool. The validator
+// pays the miner from an input of its own, its change Rúnar's change output:
+// nothing is taken from the pool.
+func (c *Pool) Rescind(validatorSig runar.Sig) {
+	runar.Assert(runar.CheckSig(validatorSig, c.ValidatorPubKey))
 	sats := runar.ExtractAmount(c.TxPreimage)
-	runar.Assert(bsvFee >= 0)
-	runar.Assert(bsvFee <= sats)
-	lpPkh := runar.Hash160(c.LpPubKey)
-	payout := sats - bsvFee
-	tokens := c.tokenP2pkh(c.TokenReserve, lpPkh)
-	if payout > 0 {
-		c.AddRawOutput(payout, p2pkh(lpPkh))
-	}
-	c.AddRawOutput(1, tokens)
+	c.ValidatorPubKey = runar.Num2Bin(0, 33)
+	c.writePool(sats)
 }
 
 // writePool emits the pool continuation holding bsvReserve.
@@ -174,19 +178,28 @@ func (c *Pool) writePool(bsvReserve runar.Bigint) {
 func (c *Pool) poolScript() runar.ByteString {
 	// scriptCode = varint || code[2:] || OP_RETURN || state, where state is
 	// TokenReserve (8) + LpPubKey, ValidatorPubKey, ValidatorIdentity (33
-	// each) = 107 bytes.
+	// each) + Nonce (32) + Affirmation (its length byte + the DER
+	// signature). Every field but TokenReserve and ValidatorPubKey is carried
+	// unchanged and those two are fixed-width, so the new state is exactly as
+	// long as the spent one.
+	//
+	// The prefix is built before GetStateScript: Rúnar's codegen treats
+	// GetStateScript as the state properties' last use, and a property read
+	// after it compiles to the constructor's value (a slot), not the state's.
+	prefix := c.tokenPrefix(c.TokenReserve)
+	state := c.GetStateScript()
 	sc := runar.ExtractScriptCode(c.TxPreimage)
 	first := runar.Bin2Num(runar.Cat(runar.Substr(sc, 0, 1), runar.Num2Bin(0, 1)))
 	varintLen := runar.Bigint(1)
 	if first == 253 {
 		varintLen = 3
 	}
-	body := runar.Substr(sc, varintLen, runar.Len(sc)-varintLen-107)
+	body := runar.Substr(sc, varintLen, runar.Len(sc)-varintLen-runar.Len(state))
 
 	// Re-add the two prologue bytes (OP_NOP OP_CODESEPARATOR) that sit
 	// before the separator and are therefore not in scriptCode.
-	script := runar.Cat(c.tokenPrefix(c.TokenReserve), runar.Cat(runar.ByteString("\x61\xab"), body))
-	return runar.Cat(script, c.GetStateScript())
+	script := runar.Cat(prefix, runar.Cat(runar.ByteString("\x61\xab"), body))
+	return runar.Cat(script, state)
 }
 
 // payoutSats is the output value for paying amount of BSV (isBsv) or tokens.

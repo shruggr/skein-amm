@@ -61,7 +61,7 @@ const Fixtures = struct {
 
     fn init(a: Allocator) !Fixtures {
         var f: Fixtures = .{ .txs = .init(a), .raws = .init(a), .id = undefined };
-        inline for (.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close", "close_fee", "close_validator", "pool_deploy_unaffirmed", "pool_deploy_forged" }) |name| {
+        inline for (.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close", "rescind", "close_rescinded", "pool_deploy_unaffirmed", "pool_deploy_forged", "pool_deploy_own_key", "swap_bad_next" }) |name| {
             const bytes = unhex(a, @field(vec, name));
             try f.raws.put(name, bytes);
             try f.txs.put(w.beef.txidOf(bytes), try bsvz.transaction.Transaction.parse(a, bytes));
@@ -113,22 +113,34 @@ fn opStr(a: Allocator, txid: [32]u8, vout: u32) ![]const u8 {
 /// `pool_deploy`'s output-0 script, with the state's TokenReserve and keys
 /// overwritten and the prefix amount set to the new reserve: a spend's
 /// continuation (or an unrelated pool), sharing the real,
-/// gen/main.go-compiled Pool template so `pool.parse` still succeeds.
+/// gen/main.go-compiled Pool template so `pool.parse` still succeeds. The
+/// Nonce and Affirmation are kept, unless `attest` names others (0.13.0).
 fn withState(a: Allocator, id: [32]u8, script: []const u8, token_reserve: u64, lp: [33]u8, validator: [33]u8, identity: [33]u8) ![]u8 {
-    const st = try a.dupe(u8, pool.brc162.decode(script).?.lock);
-    const off = st.len - pool.state_len;
-    std.mem.writeInt(u64, st[off..][0..8], token_reserve, .little);
-    @memcpy(st[off + 8 ..][0..33], &lp);
-    @memcpy(st[off + 8 + 33 ..][0..33], &validator);
-    @memcpy(st[off + 8 + 66 ..][0..33], &identity);
+    return withStateAttested(a, id, script, token_reserve, lp, validator, identity, null);
+}
+
+const Attest = struct { nonce: [32]u8, affirmation: []const u8 };
+
+fn withStateAttested(a: Allocator, id: [32]u8, script: []const u8, token_reserve: u64, lp: [33]u8, validator: [33]u8, identity: [33]u8, attest: ?Attest) ![]u8 {
+    const lock = pool.brc162.decode(script).?.lock;
+    const p = (try pool.parse(lock)).?;
+    var st: [8 + 99 + 32]u8 = undefined;
+    std.mem.writeInt(u64, st[0..8], token_reserve, .little);
+    @memcpy(st[8..][0..33], &lp);
+    @memcpy(st[8 + 33 ..][0..33], &validator);
+    @memcpy(st[8 + 66 ..][0..33], &identity);
+    @memcpy(st[8 + 99 ..][0..32], if (attest) |t| &t.nonce else &p.nonce);
+    const af = if (attest) |t| t.affirmation else p.affirmation;
     var buf: [10]u8 = undefined;
-    return cat(a, &.{ &.{0x20}, &id, pool.brc162.pushAmount(&buf, token_reserve), &.{0x6d}, st });
+    return cat(a, &.{ &.{0x20}, &id, pool.brc162.pushAmount(&buf, token_reserve), &.{0x6d}, lock[0 .. p.code_len + 1], &st, &.{@intCast(af.len)}, af });
 }
 
 /// `script` with the state's ValidatorPubKey replaced.
 fn withValidator(a: Allocator, script: []const u8, validator: [33]u8) ![]u8 {
     const c = try a.dupe(u8, script);
-    @memcpy(c[c.len - pool.state_len + 8 + 33 ..][0..33], &validator);
+    const lock = pool.brc162.decode(script).?.lock;
+    const p = (try pool.parse(lock)).?;
+    @memcpy(c[script.len - lock.len + p.code_len + 1 + 8 + 33 ..][0..33], &validator);
     return c;
 }
 
@@ -144,7 +156,7 @@ fn withOutput(a: Allocator, t: bsvz.transaction.Transaction, i: usize, script: [
 const Built = struct { raw: []const u8, txid: [32]u8, tx: bsvz.transaction.Transaction };
 
 /// A transaction spending `prev`'s output `prev_vout` with `unlocking` (a
-/// pool spend's method index is its last push: OP_0 Swap, OP_1 Close),
+/// pool spend's method index is its last push: OP_0 Swap, OP_1 Close, OP_2 Rescind),
 /// with one output (`script`, `sats`), and a second (`second`, 1 sat) when given.
 /// Unsigned: nothing here runs the interpreter.
 fn buildSpend(a: Allocator, prev: bsvz.transaction.Transaction, prev_vout: u32, unlocking: []const u8, script: []const u8, sats: i64, second: ?[]const u8) !Built {
@@ -318,6 +330,7 @@ test "admitted: pools the topic admitted but that fail the pool checks are not i
     // The real ones pass.
     try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")), &.{ 0, 2, 3, 4 }) == null);
     try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("close"), f.tx("close")), &.{1}) == null);
+    try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("rescind"), f.tx("rescind")), &.{0}) == null);
 }
 
 test "admitted: a pool's CommissionBps is answered as commissionBps (0: a pool with no commission)" {
@@ -330,22 +343,22 @@ test "admitted: a pool's CommissionBps is answered as commissionBps (0: a pool w
     var ch = try e.chain(a);
 
     // The deploy with CommissionBps OP_10 rewritten to OP_0. The lock's
-    // commission slot (template offset 626) sits one byte later, after
+    // commission slot (template offset 716) sits one byte later, after
     // lpFeeBps' two-byte push (the pool test of the slot, test.zig).
     const pd = e.f.tx("pool_deploy");
     const script = try a.dupe(u8, pd.outputs[0].locking_script.bytes);
-    const at = script.len - pool.brc162.decode(script).?.lock.len + 627;
+    const at = script.len - pool.brc162.decode(script).?.lock.len + 717;
     try testing.expectEqual(@as(u8, 0x5a), script[at]);
     script[at] = 0x00;
     // The affirmation signs the pool's fees, so a rewritten script is not affirmed: the pool is
-    // not listed (0.11.0: not indexed). The pool still reads the commission as 0.
+    // not listed (not indexed). The pool still reads the commission as 0.
     try e.admit(a, &svc, "pool_deploy", try withOutput(a, pd, 0, script), &.{ 0, 1, 2 }, &.{0});
     try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
     const pf = idx.poolAt(e.f.txid("pool_deploy"), 0, script, vec.pool0.bsv).?;
     try testing.expectEqual(@as(i64, 0), pf.commission_bps);
 }
 
-test "admitted: a continuation with any validator key stays indexed and listed (the key is checked once, by the deploy's affirmation)" {
+test "listing (0.13.0): a continuation is listed only when it is a Swap of a listed pool naming the next key (the spent outpoint's child)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -365,16 +378,35 @@ test "admitted: a continuation with any validator key stays indexed and listed (
         try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
     }
 
-    // A swap keeping the pre-swap key, over the affirmed deploy.
+    // Not listed: a swap keeping the pre-swap key; the fixture swap naming another next key
+    // (the contract took it: the validator signed); a pool-shaped output 0 of a Close (its
+    // outputs are free), carrying the next key.
+    const next_key = try pool.validatorKey(a, key33(vec.identity), f.txid("pool_deploy"), 0);
+    const close_like = try buildSpend(a, pd, 0, &.{0x51}, sw.outputs[0].locking_script.bytes, 900_000, null);
+    for ([_]struct { txid: [32]u8, t: bsvz.transaction.Transaction }{
+        .{ .txid = f.txid("swap_bsv_in"), .t = try withOutput(a, sw, 0, try withValidator(a, sw.outputs[0].locking_script.bytes, key33(vec.pool0.validator))) },
+        .{ .txid = f.txid("swap_bad_next"), .t = f.tx("swap_bad_next") },
+        .{ .txid = close_like.txid, .t = close_like.tx },
+    }) |c| {
+        var sv = try e.svc(a);
+        try e.admit(a, &sv, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
+        try idx.admitted(a, &sv, e.topic, try ltx(a, c.txid, c.t), &.{0}, &.{0});
+        try idx.spent(a, &sv, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, c.txid, c.t));
+        try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
+    }
+    try testing.expectEqualSlices(u8, &next_key, &pool.poolOfScript(sw.outputs[0].locking_script.bytes).?.validator);
+
+    // Listed: the fixture swap (Swap, the next key); and a pool spend whose unlocking script is
+    // a Swap call (its last push OP_0) naming the next key.
     var svc = try e.svc(a);
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", try withOutput(a, sw, 0, try withValidator(a, sw.outputs[0].locking_script.bytes, key33(vec.pool0.validator))), &.{ 0, 1 }, &.{0});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
     try testing.expectEqual(@as(usize, 2), try svc.map("pools").count()); // the deploy's is spent below, by `spent`
     try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), sw));
     try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
 
-    // A pool spend whose unlocking script selects no method: the continuation of a listed pool is listed.
-    const hop = try buildSpend(a, sw, 0, &.{}, sw.outputs[0].locking_script.bytes, 900_000, null);
+    const hop_script = try withValidator(a, sw.outputs[0].locking_script.bytes, try pool.validatorKey(a, key33(vec.identity), f.txid("swap_bsv_in"), 0));
+    const hop = try buildSpend(a, sw, 0, &.{0x00}, hop_script, 900_000, null);
     _ = try e.ms.store().putBitcoin(a, .tx, hop.raw);
     try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, hop.txid, hop.tx), &.{0}) == null);
     try idx.admitted(a, &svc, e.topic, try ltx(a, hop.txid, hop.tx), &.{0}, &.{0});
@@ -383,7 +415,7 @@ test "admitted: a continuation with any validator key stays indexed and listed (
     try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
     try testing.expectEqualStrings(try opStr(a, hop.txid, 0), all.freeform.array[0].getText("outpoint").?);
 
-    // The record does not carry the ValidatorPubKey (0.11.0: nor a claim).
+    // The record does not carry the ValidatorPubKey.
     const cid = (try svc.map("pools").prefixed(try w.store.nameKey(a, e.topic, &.{})))[0].value.cid;
     const rec = try svc.store.getValue(a, cid);
     try testing.expect(rec.get("validatorPubKey") == null);
@@ -391,7 +423,7 @@ test "admitted: a continuation with any validator key stays indexed and listed (
     try testing.expect(rec.get("claim") == null);
 }
 
-test "listing (0.11.0): only an affirmed deploy is listed — not one without the affirmation, one another key signed, one whose satoshis are not the ones affirmed" {
+test "listing (0.13.0): only a self-attesting pool is listed — not one without the affirmation, one another key signed, one under a key of the LP's own, one whose satoshis are not the ones affirmed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -406,6 +438,7 @@ test "listing (0.11.0): only an affirmed deploy is listed — not one without th
     for ([_]struct { name: []const u8, t: ?bsvz.transaction.Transaction }{
         .{ .name = "pool_deploy_unaffirmed", .t = null },
         .{ .name = "pool_deploy_forged", .t = null },
+        .{ .name = "pool_deploy_own_key", .t = null },
         .{ .name = "pool_deploy", .t = more },
     }) |c| {
         var svc = try e.svc(a);
@@ -419,7 +452,7 @@ test "listing (0.11.0): only an affirmed deploy is listed — not one without th
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
 
-    // A swap of an unaffirmed pool: its continuation (no payload, spending nothing listed) is not listed.
+    // A swap of an unaffirmed pool: its continuation (spending nothing listed) is not listed.
     var svc2 = try e.svc(a);
     try e.admit(a, &svc2, "pool_deploy_unaffirmed", null, &.{ 0, 1, 2 }, &.{0});
     const sw = e.f.tx("swap_bsv_in");
@@ -431,7 +464,7 @@ test "listing (0.11.0): only an affirmed deploy is listed — not one without th
     try testing.expectEqual(@as(usize, 0), try svc2.map("pools").count());
 }
 
-test "listing (0.11.0): a Close ends it — the LP's or the validator's; a rejected Close lists the pool again" {
+test "listing (0.13.0): the LP's Close and the validator's Rescind end it; a rejected one lists the pool again" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -441,7 +474,8 @@ test "listing (0.11.0): a Close ends it — the LP's or the validator's; a rejec
     const pd_txid = e.f.txid("pool_deploy");
     const sw_txid = e.f.txid("swap_bsv_in");
     const sw2_txid = e.f.txid("swap_tokens_in");
-    for ([_][]const u8{ "close", "close_validator" }) |nm| {
+    for ([_]struct { name: []const u8, outs: []const u32 }{ .{ .name = "close", .outs = &.{1} }, .{ .name = "rescind", .outs = &.{0} } }) |c| {
+        const nm = c.name;
         var svc = try e.svc(a);
         try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
         try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
@@ -451,9 +485,10 @@ test "listing (0.11.0): a Close ends it — the LP's or the validator's; a rejec
         const by_validator = try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }});
         try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
 
-        // The Close: the pool spent, no continuation (the LP's tokens are not a pool).
+        // The Close: the pool spent, no continuation (the LP's tokens are not a pool). The
+        // Rescind: the pool written back, its key cleared: not listed.
         const cl = try ltx(a, e.f.txid(nm), e.f.tx(nm));
-        try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
+        try idx.admitted(a, &svc, e.topic, cl, c.outs, &.{0});
         try idx.spent(a, &svc, e.topic, .{ .txid = sw2_txid, .vout = 0 }, cl);
         try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
         try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
@@ -503,8 +538,8 @@ test "beat (0.12.0): the body is this skein's per-token, per-validator totals of
     try testing.expectEqual(@as(u64, vec.pool1.tokens), t2.getUint("tokens").?);
     try testing.expect(!std.mem.eql(u8, kept1, (try svc.map("beat").link("body")).?));
 
-    // A Close of it (the validator's, say): the token leaves the body.
-    const cl = try ltx(a, e.f.txid("close_validator"), e.f.tx("close_validator"));
+    // A Rescind of it (the validator's, say): the token leaves the body.
+    const cl = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
     try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_bsv_in"), .vout = 0 }, cl);
     try testing.expectEqual(@as(usize, 0), (try idx.beatValue(a, &svc)).get("tokens").?.map.len);
 }
@@ -652,17 +687,18 @@ test "answer: {validatorIdentityKey} returns only that validator's pools" {
     try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
 
     // A second pool under another validator, a deploy from pool_deploy's token output 1: its
-    // key is that validator's child of the deposit's outpoint, and its affirmation is signed by it.
+    // key is that validator's child of its nonce, and its affirmation is signed by it (0.13.0).
     const kd = bsvz.primitives.key_deriver.KeyDeriver.init(try bsvz.primitives.ec.PrivateKey.fromBytes(.{0x42} ** 32));
     const other_identity = (try kd.identityKey()).toCompressedSec1();
-    const validator_b = try pool.validatorKey(a, other_identity, pd_txid, 1);
-    const bare_b = try withState(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity);
-    var kbuf: [64 + 1 + 10]u8 = undefined;
-    const child = try kd.derivePrivateKey(a, pool.validator_protocol, pool.keyId(&kbuf, pd_txid, 1), .{ .type_ = .anyone });
+    const nonce_b: [32]u8 = .{0x6b} ** 32;
+    const validator_b = try pool.firstValidatorKey(a, other_identity, nonce_b);
+    const bare_b = try withStateAttested(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity, .{ .nonce = nonce_b, .affirmation = &.{} });
+    var kbuf: [64]u8 = undefined;
+    const child = try kd.derivePrivateKey(a, pool.validator_protocol, pool.nonceKeyId(&kbuf, nonce_b), .{ .type_ = .anyone });
     const p_b = (try pool.parse(pool.brc162.decode(bare_b).?.lock)).?;
-    const sig_b = try child.signDigest(pool.affirmDigest(p_b, 50_000, pool.termsHash(pool.termsOf(p_b))));
-    const script_b = try pool.withAffirmation(a, bare_b, sig_b.asSlice());
-    try testing.expect(pool.affirmed(script_b, 50_000));
+    const sig_b = try child.signDigest(pool.affirmDigest(p_b, 50_000));
+    const script_b = try withStateAttested(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity, .{ .nonce = nonce_b, .affirmation = sig_b.asSlice() });
+    try testing.expect(pool.affirmed(a, script_b, 50_000));
     const pool_b = try buildSpend(a, pd_tx, 1, &.{}, script_b, 50_000, null);
     try idx.admitted(a, &svc, e.topic, try ltx(a, pool_b.txid, pool_b.tx), &.{0}, &.{0});
 

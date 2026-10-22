@@ -497,8 +497,8 @@ test "relay: a pair from the fixtures (the funding transaction pays the swap's i
     {
         var s = try Transaction.parse(a, other.swap);
         const lock = color.brc162.decode(s.outputs[0].locking_script.bytes).?.lock;
-        // CommissionBps (template offset 626) sits at 627 in the lock (the pool test of the slot, test.zig), as OP_10.
-        const at = s.outputs[0].locking_script.bytes.len - lock.len + 627;
+        // CommissionBps (template offset 716) sits at 717 in the lock (the pool test of the slot, test.zig), as OP_10.
+        const at = s.outputs[0].locking_script.bytes.len - lock.len + 717;
         try testing.expectEqual(@as(u8, 0x5a), s.outputs[0].locking_script.bytes[at]);
         const outs = try a.dupe(bsvz.transaction.Output, s.outputs[0..4]);
         const zero = try a.dupe(u8, s.outputs[0].locking_script.bytes);
@@ -553,8 +553,8 @@ test "relay: a pair from the fixtures (the funding transaction pays the swap's i
         s.outputs = elsewhere;
         try expectRefusal(try relay.checkPair(a, p.funding, try s.serialize(a), p.pool, &p.validator, t_expires, t_now, ours), "bad_outputs");
     }
-    // Not a swap: the Close fixture's pool input (0.9.0: the LP's alone).
-    try expectRefusal(try relay.checkPair(a, unhex(a, vec.fund), unhex(a, vec.close), try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(w.beef.txidOf(unhex(a, vec.swap_tokens_in)))}), &p.validator, t_expires, t_now, .{}), "not_a_swap");
+    // Not a swap: the Rescind fixture's pool input (0.13.0: the validator's, funded by fund:6).
+    try expectRefusal(try relay.checkPair(a, unhex(a, vec.fund), unhex(a, vec.rescind), try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(w.beef.txidOf(unhex(a, vec.swap_tokens_in)))}), &p.validator, t_expires, t_now, .{}), "not_a_swap");
 }
 
 fn keySigner(a: Allocator, priv: [32]u8) !relay.Signer {
@@ -1037,39 +1037,47 @@ test "this program's state head is under the app's name, amm/p2p (#77: an app ad
 
 // ================================================================ the affirmation (amm.pool/1, 0.11.0)
 
-test "affirm (0.11.0): the args become the validator's body (keyInput in either outpoint form); its answer becomes {signature}, or the refusal; the manifest declares amm.pool.affirm (no writes) and no amm.pool.submit or status" {
+test "affirm (0.13.0): the args {pool, satoshis} become the validator's body; its answer becomes {validatorPubKey, nonce, signature}, or the refusal; the manifest declares amm.pool.affirm (no writes) and no amm.pool.submit or status" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const pd = try Transaction.parse(a, unhex(a, vec.pool_deploy_unaffirmed));
     const script = pd.outputs[0].locking_script.bytes;
-    const id = w.beef.txidOf(unhex(a, vec.token_deploy));
-    const dotted = try std.fmt.allocPrint(a, "{s}.0", .{&w.header.toHex(id)});
     const args: Value = .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "pool", .value = .{ .bytes = script } },
         .{ .key = "satoshis", .value = .{ .uint = vec.pool0.bsv } },
-        .{ .key = "keyInput", .value = .{ .text = dotted } },
     }) };
     const body = (try relay.affirmBody(a, args)).?;
     try testing.expectEqualSlices(u8, script, body.getBytes("pool").?);
     try testing.expectEqual(@as(u64, vec.pool0.bsv), body.getUint("satoshis").?);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(id)}), body.getText("keyInput").?);
-    // Missing args, or a keyInput that is no outpoint: nothing to ask.
-    try testing.expect((try relay.affirmBody(a, .{ .map = args.map[0..2] })) == null);
-    const bad: Value = .{ .map = try a.dupe(cbor.Entry, &.{ args.map[0], args.map[1], .{ .key = "keyInput", .value = .{ .text = "abc" } } }) };
-    try testing.expect((try relay.affirmBody(a, bad)) == null);
+    try testing.expect(body.get("keyInput") == null);
+    // Missing args: nothing to ask.
+    try testing.expect((try relay.affirmBody(a, .{ .map = args.map[0..1] })) == null);
     // The package's nonce is the body's.
     try testing.expectEqualSlices(u8, &try relay.affirmNonce(a, body), &try relay.affirmNonce(a, body));
-    const other = (try relay.affirmBody(a, .{ .map = try a.dupe(cbor.Entry, &.{ args.map[0], .{ .key = "satoshis", .value = .{ .uint = 1 } }, args.map[2] }) })).?;
+    const other = (try relay.affirmBody(a, .{ .map = try a.dupe(cbor.Entry, &.{ args.map[0], .{ .key = "satoshis", .value = .{ .uint = 1 } } }) })).?;
     try testing.expect(!std.mem.eql(u8, &try relay.affirmNonce(a, body), &try relay.affirmNonce(a, other)));
 
-    // The validator's answer: {verdict, body: {ok: true, signature}} → {signature}.
+    // The validator's answer: {verdict, body: {ok: true, validatorPubKey, nonce, signature}} →
+    // {validatorPubKey, nonce, signature}.
     const sig = unhex(a, vec.affirmation);
-    const frame = try cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{ .{ .key = "ok", .value = .{ .boolean = true } }, .{ .key = "signature", .value = .{ .bytes = sig } } }) });
+    const key = unhex(a, vec.pool0.validator);
+    const nonce = unhex(a, vec.nonce);
+    const frame = try cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "ok", .value = .{ .boolean = true } },
+        .{ .key = "validatorPubKey", .value = .{ .bytes = key } },
+        .{ .key = "nonce", .value = .{ .bytes = nonce } },
+        .{ .key = "signature", .value = .{ .bytes = sig } },
+    }) });
     const ans: Value = .{ .map = try a.dupe(cbor.Entry, &.{ .{ .key = "verdict", .value = .{ .text = "accept" } }, .{ .key = "body", .value = .{ .bytes = frame } } }) };
     const got = relay.affirmAnswer(a, ans);
     try testing.expectEqualSlices(u8, sig, got.ok.getBytes("signature").?);
-    try testing.expectEqual(@as(usize, 1), got.ok.map.len);
+    try testing.expectEqualSlices(u8, key, got.ok.getBytes("validatorPubKey").?);
+    try testing.expectEqualSlices(u8, nonce, got.ok.getBytes("nonce").?);
+    try testing.expectEqual(@as(usize, 3), got.ok.map.len);
+    // Affirmed without the key or the nonce: a bad reply.
+    const short = try cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{ .{ .key = "ok", .value = .{ .boolean = true } }, .{ .key = "signature", .value = .{ .bytes = sig } } }) });
+    try testing.expectEqualStrings("bad_reply", relay.affirmAnswer(a, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "body", .value = .{ .bytes = short } }}) }).refused.reason);
     // A refusal: its reason and detail, as the function's error text.
     const nframe = try cbor.encode(a, .{ .map = try a.dupe(cbor.Entry, &.{ .{ .key = "ok", .value = .{ .boolean = false } }, .{ .key = "reason", .value = .{ .text = "fees_unacceptable" } }, .{ .key = "detail", .value = .{ .text = "lpFeeBps: the terms are 30" } } }) });
     const no = relay.affirmAnswer(a, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "body", .value = .{ .bytes = nframe } }}) });
@@ -1081,8 +1089,9 @@ test "affirm (0.11.0): the args become the validator's body (keyInput in either 
     const decl = (try app.declOf(a, m, relay.fn_pool_affirm)).?;
     try testing.expect(!decl.get("writes").?.bool);
     const dargs = decl.get("args").?;
-    for ([_][]const u8{ "pool", "satoshis", "keyInput" }) |k| try testing.expect(dargs.get(k) != null);
-    try testing.expect(decl.get("answer").?.get("signature") != null);
+    for ([_][]const u8{ "pool", "satoshis" }) |k| try testing.expect(dargs.get(k) != null);
+    try testing.expect(dargs.get("keyInput") == null);
+    for ([_][]const u8{ "validatorPubKey", "nonce", "signature" }) |k| try testing.expect(decl.get("answer").?.get(k) != null);
     try testing.expect((try app.declOf(a, m, "amm.pool.submit")) == null);
     try testing.expect((try app.declOf(a, m, "amm.pool.status")) == null);
     try testing.expect((try app.declOf(a, m, relay.fn_pool_terms)) != null);
@@ -1115,9 +1124,9 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
     try testing.expect(m.get("dispatch") == null and m.get("reads") == null);
     const gated = m.get("roles").?.get("root").?.array;
     // register, registerLookup, deregisterLookup (skein-overlay 0.11.0); no market / validator
-    // (0.8.1, skein-overlay 0.12.0: always both, no switch); close, the validator's (0.11.0; 0.9.0's rescind).
+    // (0.8.1, skein-overlay 0.12.0: always both, no switch); rescind, the validator's (0.13.0; 0.11.0's close).
     try testing.expectEqual(@as(usize, 4), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "close" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
     try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
@@ -1150,7 +1159,7 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
             try testing.expectEqualStrings("page", scbor.Value.str(r.get("filters").?.array[0]).?);
             seen |= 8;
         }
-        // 0.9.0: the validator's box (root's close, 0.11.0), the holders' requests, and two reads.
+        // 0.9.0: the validator's box (root's rescind, 0.13.0), the holders' requests, and two reads.
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "validator")) {
             try testing.expectEqualStrings("amm-validator", h.?);
             seen |= 16;

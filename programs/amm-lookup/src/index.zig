@@ -12,14 +12,19 @@
 //! query names its token (`tokenId`). See README.md for the map layout, the
 //! query shapes and the assumptions (the liveness join).
 //!
-//! The listing (skein-amm 0.11.0, David Case 2026-10-21): a deploy's pool is listed only when its
-//! pool output carries the validator's affirmation as its payload and the affirmation verifies
-//! (pool.zig `affirmed`: the ValidatorPubKey in the pool's state signed the pool's parameters and
-//! the hash of the terms it agreed to); a continuation is listed when the pool it spends was.
-//! Only listed pools are indexed, so every query answers listed pools only. A listed pool leaves
-//! the listing when its output is spent with no continuation: the contract's Close, the LP's or
-//! (0.11.0) the validator's. (0.9.0's claim, a second output the validator appended to a
-//! delivered deploy, is gone.)
+//! The listing (skein-amm 0.13.0, David Case 2026-10-22; docs/AMM.md "The listing"): a pool
+//! output is listed when
+//!   (a) it attests itself (pool.zig `affirmed`): not rescinded, its ValidatorPubKey the
+//!       ValidatorIdentity's child keyed by its Nonce (derived here, not trusted), and its
+//!       Affirmation that key's signature of the pool's parameters (message v2) — a deploy; or
+//!   (b) its transaction calls Swap on a listed pool of this token (the pool input's method, the
+//!       unlocking script's last push) and its ValidatorPubKey is the identity's child keyed by
+//!       that spent outpoint (pool.zig `nextKeyOf`) — a Swap's continuation.
+//! Anything else is never listed: a rescinded pool (ValidatorPubKey 33 zero bytes; Rescind's
+//! continuation), an output a Close wrote (Close's outputs are free), a continuation naming
+//! another next key. Only listed pools are indexed, so every query answers listed pools only. A
+//! listed pool leaves the listing when its output is spent with no listed continuation: the LP's
+//! Close, or the validator's Rescind.
 //!
 //! The beat (skein-overlay 0.12.0, David Case 2026-10-09: beats are libp2p service discovery):
 //! this service's beat body on `ls_amm-live` carries, per token, this skein's per-validator
@@ -196,16 +201,22 @@ fn removePool(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8, vout: u
 
 // ---------------------------------------------------------------- the listing (0.11.0)
 
-/// Whether the pool output at `vout` of `tx` is listed: a continuation of a listed pool (`tx`
-/// spends an output in `pools`: `spent` runs after `admitted`, so it is still there), or an
-/// affirmed deploy's (pool.zig `affirmed`: its payload is its ValidatorPubKey's signature of its
-/// affirmation). Anything else is never listed.
+/// Whether the pool output at `vout` of `tx` is listed (the module's doc, rules (a) and (b)):
+/// a Swap's continuation of a listed pool (`tx` calls Swap on an output in `pools` — `spent` runs
+/// after `admitted`, so it is still there — and names its next key), or a pool that attests
+/// itself (pool.zig `affirmed`). Anything else is never listed.
 fn listedAt(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, vout: u32) !bool {
-    for (tx.tx.inputs) |in| {
-        if (try svc.map("pools").has(try poolKey(a, tp, in.previous_outpoint.txid.bytes, in.previous_outpoint.index))) return true;
-    }
     const o = tx.tx.outputs[vout];
-    return pool.affirmed(o.locking_script.bytes, @intCast(o.satoshis));
+    const p = pool.poolOfScript(o.locking_script.bytes) orelse return false;
+    if (p.rescinded()) return false;
+    for (tx.tx.inputs) |in| {
+        const op = in.previous_outpoint;
+        const cid = (try svc.map("pools").link(try poolKey(a, tp, op.txid.bytes, op.index))) orelse continue;
+        if (pool.methodOf(in.unlocking_script.bytes) != .swap) continue;
+        const identity = try identityOf(a, svc, cid);
+        if (vout == 0 and pool.nextKeyOf(a, p, identity[0..33].*, op.txid.bytes, op.index)) return true;
+    }
+    return pool.affirmed(a, o.locking_script.bytes, @intCast(o.satoshis));
 }
 
 // ---------------------------------------------------------------- hooks (#50)
@@ -233,8 +244,8 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
 /// A previous coin was consumed: if it was a pool we indexed, it leaves
 /// `pools` for `spentPools` (where `rejected` finds it). Its continuation
 /// (if the spend admits one: a Swap) arrives through its own `admitted` call —
-/// skein does not fold the two (docs/OVERLAY.md, "The lookup contract"). A Close (the LP's or
-/// the validator's) admits none: the pool leaves the listing.
+/// skein does not fold the two (docs/OVERLAY.md, "The lookup contract"). A Close (the LP's) or a
+/// Rescind (the validator's, 0.13.0) lists none: the pool leaves the listing.
 pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, _: lookup.Tx) anyerror!void {
     const tp = try topicPrefix(a, topic);
     if (try removePool(a, svc, tp, outpoint.txid, outpoint.vout)) |cid|

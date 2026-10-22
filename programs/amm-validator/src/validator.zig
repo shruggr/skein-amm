@@ -46,10 +46,10 @@
 //!      carries that we do not hold (the taker's nosend funding
 //!      transaction, docs/notes.md 2026-10-02 "Swap funding and signing")
 //!      is complete: each of its inputs signed, verified likewise;
-//!  10. we can name our current key: the key ID is the outpoint of the last
-//!      input we signed (the first token input of the transaction that
-//!      created the pool, walked back through LP-only RemoveLiquidity spends,
-//!      which carry the key over), checked against the pool's ValidatorPubKey.
+//!  10. we can name our current key (`currentKeyId`, 0.13.0): a Swap's
+//!      continuation's key is keyed by the pool outpoint that Swap spent; a
+//!      deploy's, an affirmed pool's (`pool.affirmedPool`), by its Nonce;
+//!      checked against the pool's ValidatorPubKey. A rescinded pool has none.
 //! Then the oracle signs the digest, the signature goes into its slot, and
 //! the signed transaction is returned with what its submission needs
 //! (`Submission`: the topic, the request's ancestry) — not submitted here:
@@ -171,6 +171,8 @@ pub const Reason = enum {
     bad_outputs,
     /// The pool's token topic is not one this instance validates (`Config.validated`; 0.6.0: registered, with `config.overlay.validator` set): detail the topic.
     not_validating,
+    /// The pool was rescinded (0.13.0): its ValidatorPubKey is cleared; nothing signs for it.
+    rescinded,
 };
 
 /// A pool's state, as the rejection of a stale request carries it.
@@ -216,9 +218,10 @@ pub const Reply = union(enum) {
     /// needs. From `spend`, `tx`/`txid` mean "signed"; the direct
     /// call's answer (messages.zig `answerFromState`) is read after the
     /// submission's thread came to rest, and there `ok` means admitted.
-    /// An affirmation (0.11.0): `signature` alone, the DER signature the deploy's pool output
-    /// carries as its payload; nothing is submitted.
-    ok: struct { tx: ?[]const u8 = null, txid: ?[32]u8 = null, submission: ?Submission = null, signature: ?[]const u8 = null },
+    /// An affirmation (0.13.0): `signature` (DER), the `validator_pub_key` it is by and the
+    /// `nonce` that key is keyed by; the deploy's pool state carries all three. Nothing is
+    /// submitted.
+    ok: struct { tx: ?[]const u8 = null, txid: ?[32]u8 = null, submission: ?Submission = null, signature: ?[]const u8 = null, validator_pub_key: ?[33]u8 = null, nonce: ?[32]u8 = null },
     /// `txid`: the signed transaction's, when the refusal is about it (after signing).
     refused: struct { reason: Reason, detail: ?[]const u8 = null, newest: ?Newest = null, txid: ?[32]u8 = null },
 };
@@ -349,7 +352,7 @@ fn judge(a: std.mem.Allocator, id: [32]u8, rtx: bsv21.Tx, previous: []const u32)
     return .{ .ok = .{ .verdict = verdict, .j = j } };
 }
 
-/// A pool at an output script: the token and the pool, or null.
+/// A pool at an output script: the token and the pool (a rescinded one among them), or null.
 fn poolAt(script: []const u8) ?struct { token: brc162.Token, pool: pool.Pool } {
     const tok = brc162.decode(script) orelse return null;
     if (tok.role != .value) return null;
@@ -379,19 +382,30 @@ pub fn newest(a: std.mem.Allocator, v: View, topic: []const u8, from: Outpoint) 
     return .{ .live = .{ .outpoint = cur, .satoshis = o.satoshis, .pool = p.pool } };
 }
 
-/// The key ID of the pool's current validator key: the outpoint of the last input the validator
-/// signed, the first token input of the transaction that created the pool (a deploy's, or the
-/// pool input of the swap that continued it). Checked against `want` (public BRC-42 derivation
-/// from the identity), so a wrong walk signs nothing. (Before 0.9.0 the walk skipped LP-only
-/// RemoveLiquidity spends, which carried the key over; Close ends a pool.)
-pub fn currentKeyId(a: std.mem.Allocator, v: View, id: [32]u8, identity: [33]u8, pool_op: Outpoint, want: [33]u8) !?Outpoint {
-    const t = (try v.tx(a, pool_op.txid)) orelse return null;
-    for (t.inputs) |in| {
+/// The key ID of the pool's current validator key (0.13.0), checked against its ValidatorPubKey
+/// (public BRC-42 derivation from the identity), so a wrong walk signs nothing; null when it is
+/// not ours to name (a rescinded pool among them). A Swap's continuation's key is keyed by the
+/// pool outpoint the Swap spent: the transaction creating `pool_op`, its first token input a pool
+/// it calls Swap on (`pool.keyId`). Otherwise the pool must attest itself (`pool.affirmedPool`:
+/// a deploy, its key the identity's child keyed by its Nonce, its Affirmation verifying), and the
+/// key ID is the Nonce (`pool.nonceKeyId`). An output a Close wrote in the shape of a pool
+/// (Close's outputs are free) is neither, unless it is an affirmed pool byte for byte.
+pub fn currentKeyId(a: std.mem.Allocator, v: View, p: pool.Pool, satoshis: u64, pool_op: Outpoint) !?[]const u8 {
+    if (p.rescinded()) return null;
+    if (try v.tx(a, pool_op.txid)) |t| for (t.inputs) |in| {
         const src: Outpoint = .{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index };
         const o = (try v.output(a, src)) orelse continue;
-        if ((try bsv21.tokenOf(a, tokenId(id), src.txid, src.vout, o.script)) == null) continue;
-        const k = try pool.validatorKey(a, identity, src.txid, src.vout);
-        return if (std.mem.eql(u8, &k, &want)) src else null;
+        if ((try bsv21.tokenOf(a, tokenId(p.asset_id), src.txid, src.vout, o.script)) == null) continue;
+        // The first token input: a Swap of a pool names this pool's key.
+        if (poolAt(o.script) != null and pool.methodOf(in.unlocking_script.bytes) == .swap) {
+            const k = try pool.validatorKey(a, p.identity, src.txid, src.vout);
+            if (std.mem.eql(u8, &k, &p.validator)) return try keyIdOf(a, src);
+        }
+        break;
+    };
+    if (pool.affirmedPool(a, p, satoshis)) {
+        const buf = try a.create([64]u8);
+        return pool.nonceKeyId(buf, p.nonce);
     }
     return null;
 }
@@ -425,6 +439,7 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     const id = cur.pool.asset_id;
     const topic = try topicOf(a, id);
     if (!validating(cfg, topic)) return notValidating(a, topic);
+    if (cur.pool.rescinded()) return refuse(.rescinded, null);
 
     // 3. Still live in the topic.
     const previous = try v.previousCoins(a, topic, tx);
@@ -456,7 +471,7 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     // 5. The next validator key: the child of the spent pool outpoint, in
     // the call and in the continuation.
     const next_key = try pool.validatorKey(a, cfg.identity, req.pool.txid, req.pool.vout);
-    if (!std.mem.eql(u8, call.arg(call.layout.next_validator).data, &next_key)) return refuse(.wrong_next_key, "the call's nextValidatorPubKey");
+    if (!std.mem.eql(u8, call.arg(call.layout.next_validator.?).data, &next_key)) return refuse(.wrong_next_key, "the call's nextValidatorPubKey");
     const cont = if (tx.outputs.len > 0) poolAt(tx.outputs[0].locking_script.bytes) else null;
     const next = cont orelse return refuse(.wrong_next_key, "no pool continuation at output 0");
     if (!std.mem.eql(u8, &next.pool.validator, &next_key)) return refuse(.wrong_next_key, "the continuation's ValidatorPubKey");
@@ -487,8 +502,7 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     };
 
     // 10. Our current key, then the signature.
-    const key_op = (try currentKeyId(a, v, id, cfg.identity, req.pool, cur.pool.validator)) orelse return refuse(.current_key_unknown, null);
-    const key_id = try keyIdOf(a, key_op);
+    const key_id = (try currentKeyId(a, v, cur.pool, src.satoshis, req.pool)) orelse return refuse(.current_key_unknown, null);
     const der = oracle.sign(a, key_id, digest) catch |e| return refuse(.oracle_failed, @errorName(e));
     const checksig = try std.mem.concat(a, u8, &.{ der, &.{@as(u8, unlock.sighash_all_forkid)} });
     if (!unlock.verify(checksig, &cur.pool.validator, digest, unlock.sighash_all_forkid)) return refuse(.oracle_failed, "the signature is not the pool's validator key's");
@@ -630,31 +644,32 @@ pub fn signedSpend(a: std.mem.Allocator, v: View, sp: [32]u8, sub: Subject, pi: 
     return if (std.mem.eql(u8, try bare.serialize(a), sub.raw)) raw else null;
 }
 
-/// A proposed pool, as the LP's page asks it affirmed (0.11.0): the pool output's locking script
-/// as the deploy will carry it but without the payload, its satoshis, and the deploy's first
-/// token input (the outpoint keying the pool's first validator key).
+/// A proposed pool, as the LP's page asks it affirmed (0.13.0): the pool output's locking script
+/// as the deploy will carry it, its ValidatorPubKey, Nonce and Affirmation not yet known (their
+/// values are ignored: the page sends 33 zero bytes, 32 zero bytes and an empty Affirmation), and
+/// its satoshis. `nonce` is for tests (a fixed nonce); a request never carries one.
 pub const AffirmRequest = struct {
     pool: []const u8,
     satoshis: u64,
-    key_input: Outpoint,
+    nonce: ?[32]u8 = null,
 };
 
-/// The affirmation (skein-amm 0.11.0, David Case 2026-10-21; docs/AMM.md "The affirmation").
-/// Before the LP's wallet builds the deploy, the validator checks the proposed pool and answers
-/// its signature, by the pool's validator key, of the pool's parameters and the hash of the terms
-/// it agreed to (pool.zig `affirmMessage`); the deploy's pool output carries it as its payload,
-/// and amm-lookup lists the pool only when it verifies. Checked, in order: the script is a pool
-/// (the Pool code, a 32-byte id at output 0's form, its prefix agreeing with the state) with no
-/// payload; its ValidatorIdentity is ours; its token's topic is one this instance validates; its
-/// fees are our terms, exactly; its reserves are positive; its ValidatorPubKey is our child of
-/// `key_input` (the key this validator signs the pool's first swap with) and the signer agrees.
-/// Then the signer signs the affirmation digest. Nothing is submitted or recorded: the deploy is
-/// the LP's wallet's, submitted to the token topic like any token transaction.
+/// The affirmation (skein-amm 0.11.0; 0.13.0, David Case 2026-10-22: the validator's nonce;
+/// docs/AMM.md "The deploy and the affirmation"). Before the LP's wallet builds the deploy, the
+/// validator checks the proposed pool, picks a random 32-byte nonce, derives its key from it
+/// (`pool.firstValidatorKey`, the key this validator signs the pool's first swap with) and signs
+/// the pool's parameters as they will be (`pool.affirmMessage`, message v2, the key and the nonce
+/// in it). Checked, in order: the script is a pool (the Pool code, a 32-byte id at output 0's
+/// form, its prefix agreeing with the state) with no payload; its ValidatorIdentity is ours; its
+/// token's topic is one this instance validates; its fees are our terms, exactly; its reserves are
+/// positive; the signer's key for the nonce is the derived one. Answers `{validatorPubKey, nonce,
+/// signature}`; the page finalizes the pool's state with them. Nothing is submitted or recorded:
+/// the deploy is the LP's wallet's, submitted to the token topic like any token transaction.
 pub fn affirm(a: std.mem.Allocator, req: AffirmRequest, cfg: Config, oracle: Oracle) !Reply {
     const tok = brc162.decode(req.pool) orelse return refuse(.not_a_pool, null);
     if (tok.role != .value) return refuse(.not_a_pool, null);
-    if (tok.payload != null) return refuse(.bad_request, "the pool script carries a payload: want it as the deploy will carry it, without the affirmation");
-    const p = (pool.parse(tok.lock) catch return refuse(.bad_pool, "malformed")) orelse return refuse(.not_a_pool, null);
+    if (tok.payload != null) return refuse(.bad_request, "the pool script carries a payload");
+    var p = (pool.parse(tok.lock) catch return refuse(.bad_pool, "malformed")) orelse return refuse(.not_a_pool, null);
     const id = tok.id orelse return refuse(.bad_pool, "no token id");
     if (id.vout != 0 or !std.mem.eql(u8, &id.txid, &p.asset_id) or tok.amount != p.token_reserve) return refuse(.bad_pool, "prefix_mismatch");
     if (!std.mem.eql(u8, &p.identity, &cfg.identity)) return refuse(.not_our_pool, null);
@@ -668,14 +683,18 @@ pub fn affirm(a: std.mem.Allocator, req: AffirmRequest, cfg: Config, oracle: Ora
     if (p.commission_bps != t.commission_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "commissionBps: the terms are {d}", .{t.commission_bps}));
     if (req.satoshis == 0 or p.token_reserve == 0) return refuse(.bad_request, "the pool's reserves must be positive");
 
-    // The pool's key: our child of the deploy's first token input, and the signer agrees.
-    if (!std.mem.eql(u8, &try pool.validatorKey(a, cfg.identity, req.key_input.txid, req.key_input.vout), &p.validator))
-        return refuse(.wrong_validator_key, "the ValidatorPubKey is not our child of keyInput");
-    const key_id = try keyIdOf(a, req.key_input);
+    // The nonce (random: in a step, the entry-derived stream; in a call, real entropy), our key
+    // keyed by it, and the signer agreeing.
+    var nonce: [32]u8 = undefined;
+    if (req.nonce) |n| nonce = n else std.Io.Threaded.global_single_threaded.io().randomSecure(&nonce) catch |e| return refuse(.oracle_failed, @errorName(e));
+    p.nonce = nonce;
+    p.validator = try pool.firstValidatorKey(a, cfg.identity, nonce);
+    var kbuf: [64]u8 = undefined;
+    const key_id = pool.nonceKeyId(&kbuf, nonce);
     const ours = oracle.publicKey(a, key_id) catch |e| return refuse(.oracle_failed, @errorName(e));
     if (!std.mem.eql(u8, &ours, &p.validator)) return refuse(.wrong_validator_key, "the signer's key differs");
 
-    const der = oracle.sign(a, key_id, pool.affirmDigest(p, req.satoshis, pool.termsHash(t))) catch |e| return refuse(.oracle_failed, @errorName(e));
+    const der = oracle.sign(a, key_id, pool.affirmDigest(p, req.satoshis)) catch |e| return refuse(.oracle_failed, @errorName(e));
     if (!pool.affirmationVerifies(p, req.satoshis, der)) return refuse(.oracle_failed, "the signature is not the pool's validator key's");
-    return .{ .ok = .{ .signature = der } };
+    return .{ .ok = .{ .signature = der, .validator_pub_key = p.validator, .nonce = nonce } };
 }

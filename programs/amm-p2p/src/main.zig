@@ -814,7 +814,8 @@ fn poolAffirmFn(c: *app.Call) anyerror!scbor.Value {
     return poolAffirm(c) catch |e| failure(c.a, e);
 }
 
-/// amm.pool.affirm {pool, satoshis, keyInput} → {signature} (0.11.0, David Case 2026-10-21): the
+/// amm.pool.affirm {pool, satoshis} → {validatorPubKey, nonce, signature} (0.11.0, David Case
+/// 2026-10-21; 0.13.0, 2026-10-22: the validator's nonce, no keyInput): the
 /// proposed pool to this instance's own validator — the package (box `affirm`, from this
 /// instance to itself) handed to amm-validator's fn `affirm` in-VM, as the local relay hands a
 /// swap — which checks it against the terms and answers its signature at once, or the refusal
@@ -822,7 +823,7 @@ fn poolAffirmFn(c: *app.Call) anyerror!scbor.Value {
 fn poolAffirm(c: *app.Call) !scbor.Value {
     const a = c.a;
     const args = try fromSdk(a, c.args);
-    const body = (try relay.affirmBody(a, args)) orelse return sk.report("bad_request: want {pool: bytes, satoshis: int, keyInput: \"<txid>_<vout>\"}");
+    const body = (try relay.affirmBody(a, args)) orelse return sk.report("bad_request: want {pool: bytes, satoshis: int}");
     const me = try signerIdentity(&signer_dummy, a);
     const pkg = try relay.package(a, signer(), &me, relay.affirm_box, body, try relay.affirmNonce(a, body));
     const ans = try callValidator(a, ctx.in, relay.affirm_protocol, relay.affirm_box, pkg, null, null);

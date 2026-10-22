@@ -24,11 +24,20 @@ import (
 // don't understand a locking-script prefix yet, so they are bypassed.
 
 // The contract's public methods in declaration order (its ABI's method
-// index): Swap and Close (skein-amm 0.9.0: AddLiquidity and RemoveLiquidity
-// are gone).
+// index): Swap, Close and Rescind (skein-amm 0.13.0; 0.9.0: AddLiquidity and
+// RemoveLiquidity are gone).
 const (
 	methodSwap = iota
 	methodClose
+	methodRescind
+)
+
+// The attestation every pool output carries in state (0.13.0): the nonce and a
+// stand-in DER signature (the contract never checks either; gen/vectors signs a
+// real one).
+var (
+	nonce       = bytes.Repeat([]byte{0x4e}, 32)
+	affirmation = append([]byte{0x30, 0x44}, bytes.Repeat([]byte{0x02}, 0x44)...)
 )
 
 // assetID is a canonical BRC-162 token id: the 32-byte deploy txid.
@@ -74,6 +83,8 @@ func newFixture(t *testing.T, lpFeeBps, validatorBps, commissionBps int64) *fixt
 		hex.EncodeToString(p.lp.PubKey().Compressed()),
 		hex.EncodeToString(p.validator.PubKey().Compressed()),
 		hex.EncodeToString(validatorIdentity.PubKey().Compressed()),
+		hex.EncodeToString(nonce),
+		hex.EncodeToString(affirmation),
 		hex.EncodeToString(assetID),
 		lpFeeBps,
 		validatorBps,
@@ -85,6 +96,7 @@ func newFixture(t *testing.T, lpFeeBps, validatorBps, commissionBps int64) *fixt
 		t.Fatalf("SDK state layout differs from pool.state(): %x", full[len(full)-len(tail):])
 	}
 	f.code = full[:len(full)-len(tail)]
+	t.Logf("pool code with its args: %d bytes; a pool output's script: %d bytes", len(f.code), len(f.poolScript(pool{tokens: 5_000_000, lp: key(t, 1), validator: key(t, 2)})))
 	return f
 }
 
@@ -157,13 +169,22 @@ func tokenPrefix(amount int64) []byte {
 }
 
 // state is TokenReserve (8, LE) || LpPubKey || ValidatorPubKey ||
-// ValidatorIdentity (33 each). newFixture checks this against the SDK.
+// ValidatorIdentity (33 each) || Nonce (32) || Affirmation (its length, then
+// the DER). newFixture checks this against the SDK. A rescinded pool's
+// ValidatorPubKey is 33 zero bytes (`rescinded`).
 func (p pool) state() []byte {
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, uint64(p.tokens))
 	b = append(b, p.lp.PubKey().Compressed()...)
-	b = append(b, p.validator.PubKey().Compressed()...)
-	return append(b, validatorIdentity.PubKey().Compressed()...)
+	if p.rescinded {
+		b = append(b, make([]byte, 33)...)
+	} else {
+		b = append(b, p.validator.PubKey().Compressed()...)
+	}
+	b = append(b, validatorIdentity.PubKey().Compressed()...)
+	b = append(b, nonce...)
+	b = append(b, byte(len(affirmation)))
+	return append(b, affirmation...)
 }
 
 func p2pkh(pkh []byte) []byte {
@@ -185,6 +206,7 @@ func tokenP2pkh(amount int64, pkh []byte) []byte {
 type pool struct {
 	bsv, tokens   int64
 	lp, validator *ec.PrivateKey // current keys
+	rescinded     bool           // ValidatorPubKey cleared (Rescind)
 	lock          []byte         // defaults to poolScript(pool)
 }
 
@@ -202,15 +224,12 @@ type call struct {
 	sigSlots []int
 	// poolIndex is the pool's input index (0 by convention; not enforced).
 	poolIndex int
-}
-
-// affirmedScript is the pool's deploy script with a payload (the affirmation,
-// 0.11.0): `<push payload> OP_DROP` after the prefix's OP_2DROP.
-func (f *fixture) affirmedScript(p pool, payload []byte) []byte {
-	s := append(append(tokenPrefix(p.tokens), pushData(payload)...), 0x75)
-	s = append(s, f.code...)
-	s = append(s, 0x6a)
-	return append(s, p.state()...)
+	// change is Rúnar's change output (_changePKH, _changeAmount), the last
+	// output, when the call names one.
+	change *struct {
+		pkh  []byte
+		sats int64
+	}
 }
 
 // separatorScriptCode is the locking script after the pool's OP_CODESEPARATOR.
@@ -223,9 +242,6 @@ func separatorScriptCode(lock []byte) []byte {
 		off += 1 + int(op)
 	}
 	off++ // OP_2DROP
-	if lock[off] != 0x61 { // a payload: one push, then OP_DROP
-		off += 1 + int(lock[off]) + 1
-	}
 	if lock[off] != 0x61 || lock[off+1] != 0xab {
 		panic("separator not where expected")
 	}
@@ -282,9 +298,15 @@ func (f *fixture) run(t *testing.T, p pool, c call) error {
 	for _, a := range args {
 		u = append(u, a...)
 	}
-	u = append(u, pushData(make([]byte, 20))...) // _changePKH
-	u = append(u, 0x00)                          // _changeAmount = 0: no change output
-	u = append(u, pushData(pre)...)              // txPreimage
+	if c.method != methodClose { // Close adds no output: no change parameters (0.13.0)
+		changePkh, change := make([]byte, 20), int64(0) // _changeAmount 0: no change output
+		if c.change != nil {
+			changePkh, change = c.change.pkh, c.change.sats
+		}
+		u = append(u, pushData(changePkh)...)
+		u = append(u, pushNum(change)...)
+	}
+	u = append(u, pushData(pre)...) // txPreimage
 	u = append(u, pushNum(int64(c.method))...)
 	tx.Inputs[pi].UnlockingScript = script.NewFromBytes(u)
 
@@ -531,18 +553,17 @@ func TestSwapZeroFeeRates(t *testing.T) {
 	}
 }
 
-// closeCall is a Close (the LP's; set signers[0] for the validator's) leaving bsvFee for the miner: the BSV payout
-// (pool sats - bsvFee, when nonzero) to the LP's key, then every token to it.
-func (f *fixture) closeCall(p pool, bsvFee int64) call {
-	var outs []out
-	if p.bsv-bsvFee > 0 {
-		outs = append(outs, out{p.bsv - bsvFee, p2pkh(pkh(p.lp))})
-	}
-	outs = append(outs, out{1, tokenP2pkh(p.tokens, pkh(p.lp))})
+// closeCall is the LP's Close (0.13.0): the LP key's signature, the outputs
+// whatever the LP's wallet chose (here the sats to one key, the tokens to
+// another, as the pages do: a BRC-29 key and a module receiving key).
+func (f *fixture) closeCall(p pool) call {
 	return call{
-		method:   methodClose,
-		args:     [][]byte{nil, pushNum(bsvFee)},
-		outs:     outs,
+		method: methodClose,
+		args:   [][]byte{nil},
+		outs: []out{
+			{p.bsv - 500, p2pkh(pkh(key(nil, 60)))},
+			{1, tokenP2pkh(p.tokens, pkh(key(nil, 61)))},
+		},
 		signers:  []*ec.PrivateKey{p.lp},
 		sigSlots: []int{0},
 	}
@@ -552,92 +573,139 @@ func TestClose(t *testing.T) {
 	f := newFixture(t, 30, 5, 0)
 	p := pool{bsv: 1_000_000, tokens: 5_000_000, lp: key(t, 10), validator: key(t, 20)}
 
-	t.Run("bsvFee 0: everything out, the fee from another input", func(t *testing.T) {
-		c := f.closeCall(p, 0)
-		if len(c.outs) != 2 || c.outs[0].sats != p.bsv {
-			t.Fatalf("expected the whole BSV reserve and the tokens: %+v", c.outs)
-		}
+	t.Run("the LP: outputs of the LP's choosing", func(t *testing.T) {
+		mustPass(t, f.run(t, p, f.closeCall(p)))
+	})
+	t.Run("the LP: everything to one key, a fee from the pool's sats", func(t *testing.T) {
+		c := f.closeCall(p)
+		c.outs = []out{{p.bsv - 300, p2pkh(pkh(p.lp))}, {1, tokenP2pkh(p.tokens, pkh(p.lp))}}
 		mustPass(t, f.run(t, p, c))
 	})
-	t.Run("bsvFee > 0: the fee left from the pool's sats", func(t *testing.T) {
-		mustPass(t, f.run(t, p, f.closeCall(p, 500)))
-	})
-	t.Run("bsvFee = the pool's sats: no BSV output, the tokens only", func(t *testing.T) {
-		c := f.closeCall(p, p.bsv)
-		if len(c.outs) != 1 {
-			t.Fatalf("expected the token output alone: %+v", c.outs)
-		}
+	t.Run("the LP: a single unrelated output (the contract does not look)", func(t *testing.T) {
+		c := f.closeCall(p)
+		c.outs = []out{{1, p2pkh(pkh(key(t, 62)))}}
 		mustPass(t, f.run(t, p, c))
 	})
-	t.Run("bsvFee over the pool's sats", func(t *testing.T) {
-		c := f.closeCall(p, p.bsv)
-		c.args[1] = pushNum(p.bsv + 1)
-		mustFail(t, f.run(t, p, c))
-	})
-	t.Run("a negative bsvFee", func(t *testing.T) {
-		c := f.closeCall(p, 0)
-		c.args[1] = pushNum(-1)
-		c.outs[0].sats = p.bsv + 1
-		mustFail(t, f.run(t, p, c))
-	})
-	t.Run("not the LP, bsvFee > 0: the validator's signature is refused", func(t *testing.T) {
-		c := f.closeCall(p, 500)
-		c.signers[0] = p.validator
-		mustFail(t, f.run(t, p, c))
-	})
-	t.Run("the validator, bsvFee 0: everything out to the LP (0.11.0)", func(t *testing.T) {
-		c := f.closeCall(p, 0)
-		c.signers[0] = p.validator
+	t.Run("the LP: a continuation kept is just an output (the lookup never lists it)", func(t *testing.T) {
+		c := f.closeCall(p)
+		c.outs = append([]out{{p.bsv - 500, f.poolScript(p)}}, c.outs[1:]...)
 		mustPass(t, f.run(t, p, c))
 	})
-	t.Run("the validator, bsvFee 1: refused", func(t *testing.T) {
-		c := f.closeCall(p, 1)
+	t.Run("the validator's signature: refused (0.13.0: it rescinds instead)", func(t *testing.T) {
+		c := f.closeCall(p)
 		c.signers[0] = p.validator
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("the validator, bsvFee 0, the BSV to the validator: refused", func(t *testing.T) {
-		c := f.closeCall(p, 0)
-		c.signers[0] = p.validator
-		c.outs[0].script = p2pkh(pkh(p.validator))
-		mustFail(t, f.run(t, p, c))
-	})
-	t.Run("neither key, bsvFee 0: refused", func(t *testing.T) {
-		c := f.closeCall(p, 0)
+	t.Run("another key: refused", func(t *testing.T) {
+		c := f.closeCall(p)
 		c.signers[0] = key(t, 50)
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("a deploy's output with the affirmation payload closes the same (the payload sits before the separator)", func(t *testing.T) {
-		pp := p
-		pp.lock = f.affirmedScript(p, bytes.Repeat([]byte{0x30}, 71))
-		mustPass(t, f.run(t, pp, f.closeCall(pp, 500)))
-		c := f.closeCall(pp, 0)
-		c.signers[0] = p.validator
-		mustPass(t, f.run(t, pp, c))
+	t.Run("a rescinded pool closes the same", func(t *testing.T) {
+		r := p
+		r.rescinded = true
+		mustPass(t, f.run(t, r, f.closeCall(r)))
 	})
-	t.Run("the payout understates bsvFee's remainder", func(t *testing.T) {
-		c := f.closeCall(p, 500)
+}
+
+// rescindCall is the validator's Rescind (0.13.0): output 0 the pool written
+// back with ValidatorPubKey cleared, then Rúnar's change from the validator's
+// own funding input (`run` adds that input; its value is not checked here).
+func (f *fixture) rescindCall(p pool) call {
+	r := p
+	r.rescinded = true
+	ch := &struct {
+		pkh  []byte
+		sats int64
+	}{pkh(key(nil, 0x77)), 49_000}
+	return call{
+		method:   methodRescind,
+		args:     [][]byte{nil},
+		outs:     []out{{p.bsv, f.poolScript(r)}, {ch.sats, p2pkh(ch.pkh)}},
+		signers:  []*ec.PrivateKey{p.validator},
+		sigSlots: []int{0},
+		change:   ch,
+	}
+}
+
+func TestRescind(t *testing.T) {
+	f := newFixture(t, 30, 5, 0)
+	p := pool{bsv: 1_000_000, tokens: 5_000_000, lp: key(t, 10), validator: key(t, 20)}
+	r := p
+	r.rescinded = true
+
+	t.Run("the validator: the pool written back, its key cleared", func(t *testing.T) {
+		mustPass(t, f.run(t, p, f.rescindCall(p)))
+	})
+	t.Run("no change output", func(t *testing.T) {
+		c := f.rescindCall(p)
+		c.outs, c.change = c.outs[:1], nil
+		mustPass(t, f.run(t, p, c))
+	})
+	t.Run("the LP's signature: refused", func(t *testing.T) {
+		c := f.rescindCall(p)
+		c.signers[0] = p.lp
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("the key kept, not cleared", func(t *testing.T) {
+		c := f.rescindCall(p)
+		c.outs[0].script = f.poolScript(p)
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("the key moved to another, not cleared", func(t *testing.T) {
+		c := f.rescindCall(p)
+		moved := p
+		moved.validator = next(p.validator)
+		c.outs[0].script = f.poolScript(moved)
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("sats taken from the pool", func(t *testing.T) {
+		c := f.rescindCall(p)
 		c.outs[0].sats--
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("the BSV to another key", func(t *testing.T) {
-		c := f.closeCall(p, 500)
-		c.outs[0].script = p2pkh(pkh(key(t, 50)))
+	t.Run("tokens changed", func(t *testing.T) {
+		c := f.rescindCall(p)
+		less := r
+		less.tokens--
+		c.outs[0].script = f.poolScript(less)
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("not every token", func(t *testing.T) {
-		c := f.closeCall(p, 500)
-		c.outs[1].script = tokenP2pkh(p.tokens-1, pkh(p.lp))
+	t.Run("the LP key changed", func(t *testing.T) {
+		c := f.rescindCall(p)
+		other := r
+		other.lp = key(t, 50)
+		c.outs[0].script = f.poolScript(other)
 		mustFail(t, f.run(t, p, c))
 	})
-	t.Run("a continuation kept", func(t *testing.T) {
-		c := f.closeCall(p, 500)
-		c.outs = append([]out{{1, f.poolScript(pool{tokens: 1, lp: p.lp, validator: p.validator})}}, c.outs...)
+	t.Run("no continuation", func(t *testing.T) {
+		c := f.rescindCall(p)
+		c.outs = c.outs[1:]
 		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("an extra output past the change", func(t *testing.T) {
+		c := f.rescindCall(p)
+		c.outs = append(c.outs, out{1, p2pkh(pkh(key(t, 50)))})
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("a rescinded pool: no Swap can be signed", func(t *testing.T) {
+		res := f.expectSwap(p, 20_000, true)
+		c := f.swapCall(p, 20_000, true, res)
+		// The continuation as Swap would write it from the rescinded pool.
+		for _, signer := range []*ec.PrivateKey{p.validator, p.lp, key(t, 50)} {
+			c.signers = []*ec.PrivateKey{signer}
+			mustFail(t, f.run(t, r, c))
+		}
+	})
+	t.Run("a rescinded pool: no second Rescind", func(t *testing.T) {
+		c := f.rescindCall(r)
+		mustFail(t, f.run(t, r, c))
 	})
 }
 
 // AddLiquidity and RemoveLiquidity are gone (David Case, 2026-10-09): the
-// ABI has Swap and Close only, and a call of method index 2 is refused.
+// ABI has Swap, Close and Rescind (0.13.0), and a call of method index 3 is
+// refused.
 func TestNoLiquidityMethods(t *testing.T) {
 	art, err := compiler.CompileFromSource("Pool.runar.go")
 	if err != nil {
@@ -649,14 +717,14 @@ func TestNoLiquidityMethods(t *testing.T) {
 			names = append(names, m.Name)
 		}
 	}
-	if strings.Join(names, ",") != "swap,close" {
+	if strings.Join(names, ",") != "swap,close,rescind" {
 		t.Fatalf("public methods: %v", names)
 	}
 	f := newFixture(t, 30, 5, 0)
 	p := pool{bsv: 1_000_000, tokens: 5_000_000, lp: key(t, 10), validator: key(t, 20)}
 	after := pool{bsv: p.bsv + 10_000, tokens: p.tokens + 50_000, lp: next(p.lp), validator: next(p.validator)}
 	mustFail(t, f.run(t, p, call{
-		method: 2,
+		method: 3,
 		args: [][]byte{nil, nil, pushData(after.lp.PubKey().Compressed()), pushData(after.validator.PubKey().Compressed()),
 			pushNum(10_000), pushNum(50_000)},
 		outs:     []out{{after.bsv, f.poolScript(after)}},
@@ -775,19 +843,4 @@ func TestSwapZeroCommission(t *testing.T) {
 			mustFail(t, f.run(t, p, c))
 		})
 	}
-}
-
-// A Swap of a deploy's pool output, whose prefix carries the affirmation as its payload
-// (0.11.0): the contract never reads the prefix, so it swaps as any pool, and the
-// continuation it writes carries no payload.
-func TestSwapAffirmedDeploy(t *testing.T) {
-	f := newFixture(t, 30, 5, 0)
-	p := pool{bsv: 1_000_000, tokens: 5_000_000, lp: key(t, 10), validator: key(t, 20)}
-	p.lock = f.affirmedScript(p, bytes.Repeat([]byte{0x30}, 71))
-	r := f.expectSwap(p, 20_000, true)
-	c := f.swapCall(p, 20_000, true, r)
-	if bytes.Contains(c.outs[0].script, bytes.Repeat([]byte{0x30}, 71)) {
-		t.Fatal("the continuation carries the payload")
-	}
-	mustPass(t, f.run(t, p, c))
 }

@@ -7,13 +7,15 @@
 //!
 //!   _codePart  arg0 .. argN-1  _changePKH  _changeAmount  txPreimage  methodIndex
 //!
+//! (Close, 0.13.0, adds no output and so takes no `_changePKH` / `_changeAmount`.)
+//!
 //! `_codePart` is the pool's code (the lock after the BRC-162 prefix, up to
 //! the `OP_RETURN` before the state). The preimage is BIP-143 with
 //! ALL|FORKID over the pool input, whose scriptCode is the lock after
 //! Rúnar's leading `OP_NOP OP_CODESEPARATOR` (so neither the token prefix
 //! nor those two bytes). The signatures a pool method checks (the
-//! validator's for Swap, the LP's for Close) are over sha256d of that
-//! preimage.
+//! validator's for Swap and Rescind, the LP's for Close) are over sha256d of
+//! that preimage.
 const std = @import("std");
 const w = @import("chain");
 const color = @import("1color");
@@ -31,14 +33,17 @@ pub const sighash_all_forkid: u32 = 0x41;
 pub const Layout = struct {
     args: usize,
     validator_sig: usize,
-    next_validator: usize,
+    /// Swap's nextValidatorPubKey; Rescind names none.
+    next_validator: ?usize,
 };
 
 /// Swap(validatorSig, nextValidatorPubKey, amountIn, bsvIn, userPkh,
-/// commissionPkh). Close is the LP's alone: no layout (0.9.0).
+/// commissionPkh); Rescind(validatorSig) (0.13.0). Close is the LP's alone: no
+/// layout (0.9.0).
 pub fn layoutOf(m: pool.Method) ?Layout {
     return switch (m) {
         .swap => .{ .args = 6, .validator_sig = 0, .next_validator = 1 },
+        .rescind => .{ .args = 1, .validator_sig = 0, .next_validator = null },
         .close => null,
     };
 }
@@ -126,8 +131,7 @@ pub fn poolScriptCode(lock: []const u8) ?[]const u8 {
 
 /// The pool's code, as `_codePart` pushes it: the lock without `OP_RETURN` and the state.
 pub fn poolCode(lock: []const u8) ?[]const u8 {
-    if (lock.len < 1 + pool.state_len) return null;
-    return lock[0 .. lock.len - 1 - pool.state_len];
+    return pool.codeOf(lock);
 }
 
 /// The BIP-143 preimage of input `index` under `scope` (bsvz).

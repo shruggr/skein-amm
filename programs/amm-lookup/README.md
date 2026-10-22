@@ -19,6 +19,10 @@ topic the overlay serves, declared or registered with the engine
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
 ```
 
+## 0.13.0: the pool attests itself; the next key; Rescind (David Case, 2026-10-22)
+
+This supersedes 0.11.0 below (docs/AMM.md "The listing"). The validator's nonce and affirmation are in every pool's state (no payload). A pool output is **listed** when (a) it attests itself (src/pool.zig `affirmed`: not rescinded; its ValidatorPubKey is the ValidatorIdentity's child keyed by its Nonce, derived here with bsvz, not trusted; its Affirmation is that key's signature of message v2), or (b) its transaction calls Swap (the pool input's last push, `methodOf`) on a listed pool of the token and its ValidatorPubKey is the identity's child keyed by that spent outpoint (`nextKeyOf`). Never listed: a rescinded pool (ValidatorPubKey 33 zero bytes, the validator's Rescind), a pool-shaped output of a Close (whose outputs are free), a continuation naming another key, a deploy under a key of the LP's own (v0.11.0's defect: its signature verified, its key was not derived). A listed pool leaves the listing on the LP's Close or the validator's Rescind.
+
 ## 0.11.0: the affirmation is the listing (David Case, 2026-10-21)
 
 This supersedes 0.9.0's claim below. A deploy's pool is **listed** only when its pool output carries the validator's affirmation as its BRC-162 payload and it verifies (src/pool.zig `affirmed`: the ValidatorPubKey in the pool's state signed `affirmDigest` of the pool's parameters, its satoshis and the hash of the terms its fees are; docs/AMM.md "The deploy and the affirmation"). A transaction spending a listed pool (`pools`; `spent` runs after `admitted`) lists its continuation (a Swap's output 0, which carries no payload). Only listed pools are indexed: an unaffirmed deploy, a forged affirmation or a field changed since it was signed is not in `pools` at all, so `{tokenId, outpoint}` of it is `UnknownOutpoint` (0.9.0's `NotListed` is gone). A Close (the LP's or the validator's) spends the pool with no continuation: it leaves the listing. The maps `claims` and `spentClaims` and the record's `claim` are gone; `coinsRetained` is not read.
@@ -74,7 +78,7 @@ order) ‖ vout, big-endian u32:
 
 | map | key → value | |
 |---|---|---|
-| `pools` | `tp ‖ outpoint → record` (a CID link) | an unspent listed pool output the topic admitted (0.11.0: an affirmed deploy's, or a listed pool's continuation) |
+| `pools` | `tp ‖ outpoint → record` (a CID link) | an unspent listed pool output the topic admitted (0.13.0: a self-attesting pool, or a Swap's continuation of a listed pool naming the next key) |
 | `byValidator` | `validatorIdentityKey (33 bytes) ‖ tp ‖ outpoint → null` | a set index for the validator query |
 | `spentPools` | `tp ‖ outpoint → record` (a CID link) | a checked pool a spend consumed, kept for `rejected` to give back and for `{outpoint}` to follow |
 

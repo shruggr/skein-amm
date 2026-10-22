@@ -1,6 +1,6 @@
 //! Launching the instance's genesis wallet program (skein docs/WALLET.md "The program"): a thread
 //! of its own on `{body: <the request>}`, the args a message to the wallet's box carries. The
-//! validator's Close (0.11.0, close.zig) is two such threads: `createAction` with the pool as a
+//! validator's Rescind (0.13.0, rescind.zig) is two such threads: `createAction` with the pool as a
 //! caller input, then `signAction` with its unlock (shruggr/skein#93). (0.9.0's claim filing,
 //! an `internalize` into the basket `amm-claims`, is gone with the claim.)
 const std = @import("std");

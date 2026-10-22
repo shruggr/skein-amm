@@ -10,7 +10,7 @@ pub const version = "0.1.0";
 
 pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
     return .{
-        .short_description = "AMM pools (the Pool contract over 1Color tokens): the listed pools of a token (an affirmed deploy's pool and its continuations, unspent), one pool or its newest continuation, a validator's pools; its beat, the prices.",
+        .short_description = "AMM pools (the Pool contract over 1Color tokens): the listed pools of a token (a self-attesting pool and its Swap continuations, unspent), one pool or its newest continuation, a validator's pools; its beat, the prices.",
         .version = version,
         .information_url = "https://github.com/shruggr/skein-amm",
     };
@@ -23,10 +23,12 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     \\The listed pools of the AMM's Pool contract, over every 1Color token topic this
     \\overlay serves (`tm_color_<txid>_<vout>`). A pool is a BRC-162 value output at output 0 whose
     \\lock is the compiled Pool code followed by its state, its prefix agreeing with the asset id and
-    \\the TokenReserve its code and state carry. A deploy's pool is listed when its output carries
-    \\the validator's affirmation as its BRC-162 payload and it verifies: the ValidatorPubKey in the
-    \\pool's state signed the pool's parameters and the hash of the terms it agreed to. A swap's
-    \\continuation of a listed pool is listed; a Close (the LP's or the validator's) ends it.
+    \\the TokenReserve its code and state carry. A pool is listed when it attests itself: its
+    \\ValidatorPubKey is the ValidatorIdentity's child keyed by the Nonce in its state (derived by
+    \\this lookup), and the Affirmation in its state is that key's signature of the pool's
+    \\parameters. A Swap's continuation of a listed pool is listed when its ValidatorPubKey is the
+    \\identity's child keyed by the spent pool outpoint. The LP's Close and the validator's Rescind
+    \\(which clears the ValidatorPubKey) end the listing.
     \\
     \\Every query names its token, `tokenId` (`<txid>`, `<txid>_<vout>` or `<txid>.<vout>`,
     \\the deploy outpoint):

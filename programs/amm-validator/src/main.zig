@@ -68,7 +68,7 @@ const messages = @import("messages.zig");
 const submit = @import("submit.zig");
 const view_mod = @import("view.zig");
 const launch = @import("launch.zig");
-const close = @import("close.zig");
+const rescind = @import("rescind.zig");
 const Oracle = @import("oracle.zig").Oracle;
 
 const cbor = w.cbor;
@@ -142,9 +142,9 @@ fn identityOf(a: std.mem.Allocator, in: Value, oracle: Oracle) ![33]u8 {
 
 fn run(a: std.mem.Allocator) anyerror!void {
     const raw_in = try vm.input(a);
-    // A step: root's message in the box `<app>/validator` (the Close, 0.11.0), and its thread's
+    // A step: root's message in the box `<app>/validator` (the Rescind, 0.13.0), and its thread's
     // later steps (the wallet threads it launched at rest, the engine's answer).
-    if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) return closeStep(a, raw_in);
+    if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) return rescindStep(a, raw_in);
     const op = validator.Op.parse(raw_in.getText("fn") orelse "") orelse return error.UnknownFunction;
     const arg = try vm.callArg(a, raw_in);
     // The configuration as the engine reads it: the app this program was installed in (the
@@ -228,45 +228,45 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
     }
 }
 
-// ---------------------------------------------------------------- the Close (0.11.0)
+// ---------------------------------------------------------------- the Rescind (0.13.0)
 
 fn resultRecord(a: std.mem.Allocator, stage: []const u8, fields: []const cbor.Entry) !Value {
     var es: std.ArrayList(cbor.Entry) = .empty;
     try es.appendSlice(a, &.{
-        .{ .key = "kind", .value = .{ .text = "amm-close" } },
+        .{ .key = "kind", .value = .{ .text = "amm-rescind" } },
         .{ .key = "stage", .value = .{ .text = stage } },
     });
     try es.appendSlice(a, fields);
     return .{ .map = es.items };
 }
 
-/// Answer root's message: `{fn: "close", request: <the message>, result | error}` to its sender,
+/// Answer root's message: `{fn: "rescind", request: <the message>, result | error}` to its sender,
 /// in the box it wrote to; then the thread ends.
-fn closeAnswer(a: std.mem.Allocator, args: Value, field: []const u8, v: Value) !void {
+fn rescindAnswer(a: std.mem.Allocator, args: Value, field: []const u8, v: Value) !void {
     const answer: Value = .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "fn", .value = .{ .text = "close" } },
+        .{ .key = "fn", .value = .{ .text = "rescind" } },
         .{ .key = "request", .value = if (args.getCid("message")) |m| .{ .cid = m } else .null },
         .{ .key = field, .value = v },
     }) };
     if (args.getBytes("sender")) |sender| if (args.getText("box")) |box| {
-        _ = vm.send(a, sender, box, answer) catch |e| std.log.err("close: the answer is not sent: {s}", .{@errorName(e)});
+        _ = vm.send(a, sender, box, answer) catch |e| std.log.err("rescind: the answer is not sent: {s}", .{@errorName(e)});
     };
     _ = try vm.finish(a, vm.store(), try resultRecord(a, "answered", &.{.{ .key = "answer", .value = answer }}));
 }
 
-fn closeError(a: std.mem.Allocator, args: Value, why: []const u8) !void {
-    return closeAnswer(a, args, "error", .{ .map = try a.dupe(cbor.Entry, &.{
+fn rescindError(a: std.mem.Allocator, args: Value, why: []const u8) !void {
+    return rescindAnswer(a, args, "error", .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "code", .value = .{ .text = "refused" } },
         .{ .key = "message", .value = .{ .text = why } },
     }) });
 }
 
-/// One step of a Close's thread (close.zig): root's message `{fn: "close", args: {pool:
+/// One step of a Rescind's thread (rescind.zig): root's message `{fn: "rescind", args: {pool:
 /// "<txid>.<vout>"}}` launches the wallet's createAction (the pool a caller input, the contract's
-/// two outputs); its draft at rest, the pool input's call is written over it and signed by the
-/// pool's validator key, and the wallet's signAction launched; signed, the Close is submitted to
+/// one output); its draft at rest, the pool input's call is written over it and signed by the
+/// pool's validator key, and the wallet's signAction launched; signed, the Rescind is submitted to
 /// this overlay by message; the engine's answer is root's answer.
-fn closeStep(a: std.mem.Allocator, raw_in: Value) !void {
+fn rescindStep(a: std.mem.Allocator, raw_in: Value) !void {
     const args = raw_in.get("args") orelse return error.BadInput;
     const in = try ov.engine_vm.configured(a, raw_in, null);
     const oracle: Oracle = .{ .ptr = &oracle_dummy, .callFn = oracleCall };
@@ -276,32 +276,32 @@ fn closeStep(a: std.mem.Allocator, raw_in: Value) !void {
     // The engine's answer to the submission: root's answer.
     if (raw_in.get("reply")) |r| if (r == .map) {
         const ans = try s.getValue(a, r.getCid("body") orelse return error.BadInput);
-        if (ans.get("error")) |e| return closeError(a, args, e.getText("message") orelse "the overlay refused the Close");
-        return closeAnswer(a, args, "result", ans.get("result") orelse .null);
+        if (ans.get("error")) |e| return rescindError(a, args, e.getText("message") orelse "the overlay refused the Rescind");
+        return rescindAnswer(a, args, "result", ans.get("result") orelse .null);
     };
-    // A wallet thread at rest: the draft, or the signed Close.
+    // A wallet thread at rest: the draft, or the signed Rescind.
     if (raw_in.get("resolved")) |rs| {
         const items = if (rs == .array) rs.array else return error.BadInput;
         if (items.len == 0) return error.BadInput;
         const res = items[items.len - 1];
-        if (!std.mem.eql(u8, res.getText("state") orelse "", "finished")) return closeError(a, args, "the wallet errored");
-        const rc = (try close.resultCid(a, res.get("result") orelse .null)) orelse return closeError(a, args, "the wallet answered nothing");
-        switch (close.stageOf(try s.getValue(a, rc))) {
-            .failed => |why| return closeError(a, args, why),
+        if (!std.mem.eql(u8, res.getText("state") orelse "", "finished")) return rescindError(a, args, "the wallet errored");
+        const rc = (try rescind.resultCid(a, res.get("result") orelse .null)) orelse return rescindError(a, args, "the wallet answered nothing");
+        switch (rescind.stageOf(try s.getValue(a, rc))) {
+            .failed => |why| return rescindError(a, args, why),
             .draft => |d| {
-                const l = (try close.locate(a, identity, d.tx)) orelse return closeError(a, args, "the draft spends no pool of ours");
+                const l = (try rescind.locate(a, identity, d.tx)) orelse return rescindError(a, args, "the draft spends no pool of ours");
                 const st = try overlayState(a, in);
                 const ovv = try a.create(view_mod.OverlayView);
                 ovv.* = .{ .st = st };
-                const key_id = (try close.keyIdOf(a, ovv.view(), identity, l)) orelse return closeError(a, args, "the pool's current validator key is not ours to name");
-                const u = close.unlockClose(a, l, key_id, oracle) catch |e| return closeError(a, args, @errorName(e));
-                try launchWallet(a, raw_in, try close.signBody(a, d.reference, l.index, u));
+                const key_id = (try rescind.keyIdOf(a, ovv.view(), l)) orelse return rescindError(a, args, "the pool's current validator key is not ours to name");
+                const u = rescind.unlockRescind(a, l, key_id, oracle) catch |e| return rescindError(a, args, @errorName(e));
+                try launchWallet(a, raw_in, try rescind.signBody(a, d.reference, l.index, u));
                 _ = try vm.finish(a, s, try resultRecord(a, "signing", &.{}));
                 return;
             },
             .signed => |tx| {
-                const l = (try close.locate(a, identity, tx)) orelse return closeError(a, args, "the Close spends no pool of ours");
-                const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, tx, try close.topicOf(a, l.pool)));
+                const l = (try rescind.locate(a, identity, tx)) orelse return rescindError(a, args, "the Rescind spends no pool of ours");
+                const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, tx, try rescind.topicOf(a, l.pool)));
                 try vm.awaitRecord(m);
                 _ = try vm.finish(a, s, try resultRecord(a, "submitted", &.{}));
                 return;
@@ -311,20 +311,20 @@ fn closeStep(a: std.mem.Allocator, raw_in: Value) !void {
     // Root's message.
     const bc = args.getCid("body") orelse return error.BadInput;
     const body = try s.getValue(a, bc);
-    if (!std.mem.eql(u8, body.getText("fn") orelse "", "close")) return closeError(a, args, "want {fn: \"close\", args: {pool: \"<txid>.<vout>\"}}");
-    const text = (body.get("args") orelse return closeError(a, args, "want args {pool}")).getText("pool") orelse return closeError(a, args, "want args {pool}");
+    if (!std.mem.eql(u8, body.getText("fn") orelse "", "rescind")) return rescindError(a, args, "want {fn: \"rescind\", args: {pool: \"<txid>.<vout>\"}}");
+    const text = (body.get("args") orelse return rescindError(a, args, "want args {pool}")).getText("pool") orelse return rescindError(a, args, "want args {pool}");
     const norm = try a.dupe(u8, text);
     if (std.mem.indexOfScalar(u8, norm, '.')) |i| norm[i] = '_';
-    const op = view_mod.Outpoint.parse(norm) orelse return closeError(a, args, "pool: <txid>.<vout>");
+    const op = view_mod.Outpoint.parse(norm) orelse return rescindError(a, args, "pool: <txid>.<vout>");
     const st = try overlayState(a, in);
     const ovv = try a.create(view_mod.OverlayView);
     ovv.* = .{ .st = st };
-    const t = switch (try close.targetOf(a, ovv.view(), identity, op)) {
-        .refused => |why| return closeError(a, args, why),
+    const t = switch (try rescind.targetOf(a, ovv.view(), identity, op)) {
+        .refused => |why| return rescindError(a, args, why),
         .ok => |t| t,
     };
-    const input_beef = (try st.ch.beefOf(t.op.txid)) orelse return closeError(a, args, "the chain state has no BEEF of the pool's transaction");
-    try launchWallet(a, raw_in, try close.createBody(a, t, input_beef));
+    const input_beef = (try st.ch.beefOf(t.op.txid)) orelse return rescindError(a, args, "the chain state has no BEEF of the pool's transaction");
+    try launchWallet(a, raw_in, try rescind.createBody(a, t, input_beef));
     _ = try vm.finish(a, s, try resultRecord(a, "drafting", &.{}));
 }
 

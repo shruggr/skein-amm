@@ -10,15 +10,17 @@
 //! checks a pair with it. The parser and the rules (`brc162`, `bsv21`) are
 //! skein-1color's `1color` module, re-exported below.
 //!
-//! A pool is a BRC-162 value output whose lock (the script after the prefix, and after the
-//! payload when a deploy carries its affirmation, 0.11.0)
-//! is the compiled Pool code followed by `OP_RETURN` and the state:
+//! A pool is a BRC-162 value output whose lock (the script after the prefix)
+//! is the compiled Pool code followed by `OP_RETURN` and the state (0.13.0):
 //!
 //!   code (fixtures/pool_artifact.zig, readonly args spliced in at the slots:
 //!         assetId as `0x20 <32 bytes>`, lpFeeBps, validatorFeeBps and
 //!         commissionBps as script numbers) || OP_RETURN ||
 //!   TokenReserve (8 bytes, LE sign-magnitude) || LpPubKey || ValidatorPubKey
-//!   || ValidatorIdentity (33 bytes each)
+//!   || ValidatorIdentity (33 bytes each) || Nonce (32 bytes) || Affirmation
+//!   (one length byte, then the validator's DER signature; `OP_0` when empty)
+//!
+//! A rescinded pool's ValidatorPubKey is 33 zero bytes (`Pool.rescinded`).
 //!
 //! Checks (a transaction failing one has no pool indexed):
 //! - a pool is at output 0, so there is at most one per transaction;
@@ -28,14 +30,13 @@
 //!   for a token whose binary id is 32 bytes: native, or legacy deployed
 //!   at output 0); JSON outputs are never pools.
 //!
-//! Not checked (decided 2026-10-01): the ValidatorPubKey in state. A pool
-//! with any validator key is a pool to the overlay. A wrong key only means
-//! the named validator cannot sign for that pool (amm-validator refuses);
-//! it proves nothing about consent or token validity. How
-//! a validator derives its signing key is its own convention: amm-validator
-//! derives and checks it itself with `validatorKey`, `keyId`,
-//! `validator_protocol` and `methodOf`, which stay here as library
-//! functions.
+//! Not checked here (decided 2026-10-01): the ValidatorPubKey in state. A
+//! pool with any validator key is a pool to `check`. Whether a pool is
+//! listed is `affirmed` (a deploy: the key derived from ValidatorIdentity and
+//! Nonce, the Affirmation verifying) and `nextKeyOf` (a Swap's continuation,
+//! 0.13.0), run by amm-lookup; amm-validator derives and checks its own key
+//! with `validatorKey`, `firstValidatorKey`, `keyId`, `nonceKeyId`,
+//! `validator_protocol` and `methodOf`.
 const std = @import("std");
 const c = @import("chain");
 const color = @import("1color");
@@ -47,14 +48,18 @@ pub const bsv21 = color.bsv21;
 
 const bsvz = c.bsvz;
 
-/// Decided 2026-09-29, amm-validator's convention (not an overlay rule):
-/// the BRC-43 protocol of the validator's rotating signing key, and its key ID, the outpoint as
-/// `<txid, 64 hex, display order>_<vout, decimal>` (BRC-162's id string
-/// form). The invoice number is therefore
-/// `1-amm pool-<txid>_<vout>`. gen/main.go must match.
+/// Decided 2026-09-29, the validator's convention: the BRC-43 protocol of the validator's
+/// rotating signing key, counterparty anyone. Two key IDs (0.13.0, David Case 2026-10-22):
+/// a pool's first key (its deploy's) is keyed by the Nonce in its state, 64 lowercase hex
+/// digits (`nonceKeyId`, invoice `1-amm pool-<nonce hex>`); each Swap's next key by the pool
+/// outpoint the Swap spends, `<txid, 64 hex, display order>_<vout, decimal>` (`keyId`, invoice
+/// `1-amm pool-<txid>_<vout>`). gen/vectors must match.
 pub const validator_protocol = bsvz.primitives.key_deriver.Protocol{ .security_level = 1, .name = "amm pool" };
 
-pub const state_len = 8 + 33 * 3;
+/// The state's fixed part: TokenReserve, three keys, the Nonce. The Affirmation follows, one
+/// length byte then the DER (`state_len_max` with a 72-byte DER, the longest a low-S DER is).
+pub const state_fixed_len = 8 + 33 * 3 + 32;
+pub const state_len_max = state_fixed_len + 1 + 72;
 const OP_RETURN = 0x6a;
 
 pub const Pool = struct {
@@ -66,8 +71,22 @@ pub const Pool = struct {
     commission_bps: i64,
     token_reserve: u64,
     lp: [33]u8,
+    /// 33 zero bytes once rescinded (`rescinded`).
     validator: [33]u8,
     identity: [33]u8,
+    /// The validator's nonce (0.13.0): keys the pool's first validator key.
+    nonce: [32]u8,
+    /// The validator's affirmation (0.13.0): its DER signature over `affirmMessage`; empty when
+    /// the pool carries none. A slice of the parsed lock.
+    affirmation: []const u8,
+    /// The code's length (the lock before `OP_RETURN` and the state): what a call pushes as
+    /// `_codePart`.
+    code_len: usize,
+
+    /// Whether the validator rescinded the pool (0.13.0): its ValidatorPubKey is 33 zero bytes.
+    pub fn rescinded(self: Pool) bool {
+        return std.mem.allEqual(u8, &self.validator, 0);
+    }
 };
 
 const template: [artifact.script_hex.len / 2]u8 = blk: {
@@ -101,17 +120,18 @@ pub fn canonicalNum(p: brc162.Push) ?i64 {
 }
 
 /// pool/Pool.runar.go's methods, in declaration order (its ABI's method
-/// index): Swap = 0 (validator-signed), Close = 1 (the LP's alone; skein-amm
-/// 0.9.0, David Case 2026-10-09: AddLiquidity and RemoveLiquidity are gone).
-pub const Method = enum(u1) { swap = 0, close = 1 };
+/// index): Swap = 0 (validator-signed), Close = 1 (the LP's alone, outputs
+/// free, 0.13.0), Rescind = 2 (the validator's, 0.13.0; skein-amm 0.9.0,
+/// David Case 2026-10-09: AddLiquidity and RemoveLiquidity are gone).
+pub const Method = enum(u2) { swap = 0, close = 1, rescind = 2 };
 
 /// The method a pool input's unlocking script selects. gen/main.go's
 /// `unlockPool` (mirroring how the Rúnar SDK builds a call) writes the
 /// unlocking script as a sequence of pushes only — the method's args, then
 /// Rúnar's change output and preimage — and pushes the method index last, so
-/// it is the script's final push, minimally encoded (OP_0/OP_1 here).
+/// it is the script's final push, minimally encoded (OP_0, OP_1, OP_2 here).
 /// Null when the script cannot be walked as all pushes, is empty, or its
-/// last push is not 0 or 1.
+/// last push is not 0, 1 or 2.
 pub fn methodOf(script: []const u8) ?Method {
     var pos: usize = 0;
     var last: ?brc162.Push = null;
@@ -124,6 +144,7 @@ pub fn methodOf(script: []const u8) ?Method {
     return switch (v) {
         0 => .swap,
         1 => .close,
+        2 => .rescind,
         else => null,
     };
 }
@@ -241,7 +262,8 @@ pub fn parse(lock: []const u8) ParseError!?Pool {
     const tail = template[tpos..];
     if (lock.len - pos < tail.len or !std.mem.eql(u8, lock[pos .. pos + tail.len], tail)) return null;
     pos += tail.len;
-    if (lock.len - pos != 1 + state_len or lock[pos] != OP_RETURN) return error.BadPool;
+    const code_len = pos;
+    if (lock.len - pos < 1 + state_fixed_len + 1 or lock[pos] != OP_RETURN) return error.BadPool;
     const st = lock[pos + 1 ..];
 
     if (st[7] & 0x80 != 0) return error.BadPool; // negative reserve
@@ -249,8 +271,13 @@ pub fn parse(lock: []const u8) ParseError!?Pool {
     var keys: [3][33]u8 = undefined;
     for (&keys, 0..) |*k, i| {
         k.* = st[8 + 33 * i ..][0..33].*;
-        if (k[0] != 0x02 and k[0] != 0x03) return error.BadPool;
+        // The ValidatorPubKey (i = 1) is 33 zero bytes once rescinded (0.13.0).
+        if (k[0] != 0x02 and k[0] != 0x03 and !(i == 1 and std.mem.allEqual(u8, k, 0))) return error.BadPool;
     }
+    // The Affirmation: Rúnar's state framing, one length byte (0..75) or `OP_0`, then exactly
+    // the rest of the script.
+    const af_len = st[state_fixed_len];
+    if (af_len > 0x4b or st.len != state_fixed_len + 1 + @as(usize, af_len)) return error.BadPool;
     return .{
         .asset_id = asset_id orelse return error.BadPool,
         .lp_fee_bps = fees[0] orelse return error.BadPool,
@@ -260,7 +287,17 @@ pub fn parse(lock: []const u8) ParseError!?Pool {
         .lp = keys[0],
         .validator = keys[1],
         .identity = keys[2],
+        .nonce = st[8 + 99 ..][0..32].*,
+        .affirmation = st[state_fixed_len + 1 ..],
+        .code_len = code_len,
     };
+}
+
+/// The pool's code as a call pushes it (`_codePart`): its lock up to the `OP_RETURN` before the
+/// state. Null when the lock is not a pool.
+pub fn codeOf(lock: []const u8) ?[]const u8 {
+    const p = (parse(lock) catch return null) orelse return null;
+    return lock[0..p.code_len];
 }
 
 /// The key ID for an outpoint: `<txid display hex>_<vout>`.
@@ -268,29 +305,45 @@ pub fn keyId(buf: *[64 + 1 + 10]u8, txid: [32]u8, vout: u32) []const u8 {
     return std.fmt.bufPrint(buf, "{s}_{d}", .{ &c.header.toHex(txid), vout }) catch unreachable;
 }
 
-/// The validator signing key for a pool whose key ID is the outpoint
-/// txid:vout: BRC-42, the identity key as the (public) parent and the anyone
-/// key (private key 1) as the counterparty, which anyone can compute.
-pub fn validatorKey(a: std.mem.Allocator, identity: [33]u8, txid: [32]u8, vout: u32) ![33]u8 {
+/// The key ID for a nonce (a pool's first key, 0.13.0): 64 lowercase hex digits.
+pub fn nonceKeyId(buf: *[64]u8, nonce: [32]u8) []const u8 {
+    buf.* = std.fmt.bytesToHex(nonce, .lower);
+    return buf;
+}
+
+/// The validator's public child key under `key_id`: BRC-42, the identity key as the (public)
+/// parent and the anyone key (private key 1) as the counterparty, which anyone can compute.
+pub fn childKey(a: std.mem.Allocator, identity: [33]u8, key_id: []const u8) ![33]u8 {
     const kd = bsvz.primitives.key_deriver.KeyDeriver.init(null); // the anyone key
-    var buf: [64 + 1 + 10]u8 = undefined;
-    const child = try kd.derivePublicKey(a, validator_protocol, keyId(&buf, txid, vout), .{
+    const child = try kd.derivePublicKey(a, validator_protocol, key_id, .{
         .type_ = .other,
         .public_key = try bsvz.primitives.ec.PublicKey.fromSec1(&identity),
     }, false);
     return child.toCompressedSec1();
 }
 
-// ---------------------------------------------------------------- the affirmation (0.11.0)
+/// The validator signing key a Swap of the pool output txid:vout names next (`keyId`).
+pub fn validatorKey(a: std.mem.Allocator, identity: [33]u8, txid: [32]u8, vout: u32) ![33]u8 {
+    var buf: [64 + 1 + 10]u8 = undefined;
+    return childKey(a, identity, keyId(&buf, txid, vout));
+}
 
-/// The affirmation (skein-amm 0.11.0, David Case 2026-10-21; docs/AMM.md "The affirmation").
-/// Before the LP's wallet builds a deploy, the validator checks the proposed pool against its
-/// terms and signs, with the pool's validator key (the ValidatorPubKey in state), the pool's
-/// canonical parameters and a hash of the terms it agreed to. The deploy's pool output carries
-/// that DER signature as its BRC-162 payload (`0x20 <assetId> <amount> OP_2DROP <push sig>
-/// OP_DROP` then the Pool code and state); the contract never reads the prefix, and every
-/// continuation it writes has no payload. amm-lookup lists a deploy's pool only when the
-/// payload verifies (`affirmed`); a continuation is listed when the pool it spends was.
+/// A pool's first validator key (0.13.0): keyed by its Nonce (`nonceKeyId`).
+pub fn firstValidatorKey(a: std.mem.Allocator, identity: [33]u8, nonce: [32]u8) ![33]u8 {
+    var buf: [64]u8 = undefined;
+    return childKey(a, identity, nonceKeyId(&buf, nonce));
+}
+
+// ---------------------------------------------------------------- the affirmation (0.13.0)
+
+/// The affirmation (skein-amm 0.11.0; 0.13.0, David Case 2026-10-22: the validator's nonce, the
+/// attestation in state; docs/AMM.md "The deploy and the affirmation"). Before the LP's wallet
+/// builds a deploy, the validator checks the proposed pool against its terms, picks a 32-byte
+/// nonce, derives its key from it (`firstValidatorKey`) and signs, with that key, the pool's
+/// canonical parameters (`affirmMessage`). The pool's state carries the key, the nonce and the
+/// DER signature; every continuation carries the nonce and the signature unchanged. amm-lookup
+/// lists a deploy's pool only when it is `affirmed`; a Swap's continuation when the pool it
+/// spends was listed and its key is `nextKeyOf` it.
 ///
 /// The terms, as the validator holds them (`config.amm.ammValidator`) and a pool carries them.
 pub const Terms = struct {
@@ -300,44 +353,28 @@ pub const Terms = struct {
 };
 
 /// The affirmation message's tag (its first bytes): a domain separator and the layout's version.
-pub const affirm_tag = "skein-amm affirm 1";
+pub const affirm_tag = "skein-amm affirm 2";
 
 /// The affirmation message's length: the tag, the asset id, three fees, two reserves, three keys
-/// and the terms hash.
+/// and the nonce (221 bytes).
 pub const affirm_len = affirm_tag.len + 32 + 8 * 3 + 8 * 2 + 33 * 3 + 32;
 
 fn le64(out: []u8, v: u64) void {
     std.mem.writeInt(u64, out[0..8], v, .little);
 }
 
-/// sha256 of the terms' canonical bytes: lpFeeBps ‖ validatorFeeBps ‖ commissionBps, each a
-/// two's-complement int64, little-endian (24 bytes).
-pub fn termsHash(t: Terms) [32]u8 {
-    var b: [24]u8 = undefined;
-    le64(b[0..8], @bitCast(t.lp_fee_bps));
-    le64(b[8..16], @bitCast(t.validator_fee_bps));
-    le64(b[16..24], @bitCast(t.commission_bps));
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(&b, &out, .{});
-    return out;
-}
-
-/// The terms a pool carries (its readonly fees).
-pub fn termsOf(p: Pool) Terms {
-    return .{ .lp_fee_bps = p.lp_fee_bps, .validator_fee_bps = p.validator_fee_bps, .commission_bps = p.commission_bps };
-}
-
-/// The bytes the affirmation signs (docs/AMM.md "The affirmation"):
+/// The bytes the affirmation signs (docs/AMM.md "The deploy and the affirmation"), message v2:
 ///
-///   "skein-amm affirm 1" (18 bytes, ASCII)
+///   "skein-amm affirm 2" (18 bytes, ASCII)
 ///   ‖ AssetId (32: the bytes the pool script pushes, the token's deploy txid in internal order)
 ///   ‖ LpFeeBps ‖ ValidatorFeeBps ‖ CommissionBps (int64 LE each)
 ///   ‖ TokenReserve ‖ the pool output's satoshis (uint64 LE each)
 ///   ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity (33 each, compressed)
-///   ‖ termsHash (32: `termsHash` of the terms agreed to)
+///   ‖ Nonce (32)
 ///
-/// 221 bytes; the signature is ECDSA (DER) by the ValidatorPubKey over sha256 of them.
-pub fn affirmMessage(p: Pool, satoshis: u64, terms_hash: [32]u8) [affirm_len]u8 {
+/// 221 bytes; the signature is ECDSA (DER) by the ValidatorPubKey over sha256 of them. No
+/// termsHash (v1's): the three fees are the terms.
+pub fn affirmMessage(p: Pool, satoshis: u64) [affirm_len]u8 {
     var m: [affirm_len]u8 = undefined;
     var at: usize = 0;
     const put = struct {
@@ -360,53 +397,57 @@ pub fn affirmMessage(p: Pool, satoshis: u64, terms_hash: [32]u8) [affirm_len]u8 
     put(&m, &at, &p.lp);
     put(&m, &at, &p.validator);
     put(&m, &at, &p.identity);
-    put(&m, &at, &terms_hash);
+    put(&m, &at, &p.nonce);
     std.debug.assert(at == affirm_len);
     return m;
 }
 
 /// sha256 of `affirmMessage`: what the validator's key signs (the signer signs it as is).
-pub fn affirmDigest(p: Pool, satoshis: u64, terms_hash: [32]u8) [32]u8 {
+pub fn affirmDigest(p: Pool, satoshis: u64) [32]u8 {
     var out: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(&affirmMessage(p, satoshis, terms_hash), &out, .{});
+    std.crypto.hash.sha2.Sha256.hash(&affirmMessage(p, satoshis), &out, .{});
     return out;
 }
 
-/// Whether `sig` (DER) is the pool's ValidatorPubKey's signature of its affirmation at the
-/// terms the pool carries.
+/// Whether `sig` (DER) is the pool's ValidatorPubKey's signature of its affirmation.
 pub fn affirmationVerifies(p: Pool, satoshis: u64, sig: []const u8) bool {
     const der = bsvz.crypto.DerSignature.fromDer(sig) catch return false;
     const pk = bsvz.primitives.ec.PublicKey.fromSec1(&p.validator) catch return false;
-    return pk.verifyDigest(affirmDigest(p, satoshis, termsHash(termsOf(p))), der) catch false;
+    return pk.verifyDigest(affirmDigest(p, satoshis), der) catch false;
 }
 
-/// An affirmed deploy's pool output: its pool and the affirmation (the payload). Null when the
-/// script is not a pool, or carries no payload.
-pub const Affirmed = struct { pool: Pool, sig: []const u8 };
-
-pub fn affirmationOf(script: []const u8) ?Affirmed {
+/// The pool at an output script (a BRC-162 value output whose lock is a pool), or null.
+pub fn poolOfScript(script: []const u8) ?Pool {
     const tok = brc162.decode(script) orelse return null;
     if (tok.role != .value) return null;
-    const sig = tok.payload orelse return null;
-    const p = (parse(tok.lock) catch return null) orelse return null;
-    return .{ .pool = p, .sig = sig };
+    return (parse(tok.lock) catch return null) orelse null;
 }
 
-/// Whether the pool output (`script`, holding `satoshis`) is an affirmed deploy's: a pool whose
-/// payload is its ValidatorPubKey's signature of its affirmation.
-pub fn affirmed(script: []const u8, satoshis: u64) bool {
-    const af = affirmationOf(script) orelse return false;
-    return affirmationVerifies(af.pool, satoshis, af.sig);
+/// Whether the pool `p` (an output holding `satoshis`) attests itself (0.13.0, the lookup's
+/// deploy rule): not rescinded; its ValidatorPubKey is the ValidatorIdentity's child keyed by its
+/// Nonce (`firstValidatorKey`, the derivation done here, not trusted); and its Affirmation is
+/// that key's signature of `affirmMessage`. A pool with a key of the LP's own (v0.11.0's defect)
+/// or any field changed since it was signed is not.
+pub fn affirmedPool(a: std.mem.Allocator, p: Pool, satoshis: u64) bool {
+    if (p.rescinded()) return false;
+    const want = firstValidatorKey(a, p.identity, p.nonce) catch return false;
+    if (!std.mem.eql(u8, &want, &p.validator)) return false;
+    return affirmationVerifies(p, satoshis, p.affirmation);
 }
 
-/// The deploy's pool script with the affirmation in: the prefix of `bare` (a pool script with no
-/// payload), `<push sig> OP_DROP`, then the rest of `bare`.
-pub fn withAffirmation(a: std.mem.Allocator, bare: []const u8, sig: []const u8) ![]u8 {
-    const tok = brc162.decode(bare) orelse return error.NotAPool;
-    if (tok.payload != null) return error.HasPayload;
-    if (sig.len == 0 or sig.len > 0x4b) return error.BadSignature;
-    const cut = bare.len - tok.lock.len;
-    return std.mem.concat(a, u8, &.{ bare[0..cut], &.{@intCast(sig.len)}, sig, &.{0x75}, tok.lock });
+/// `affirmedPool` of the pool at an output script.
+pub fn affirmed(a: std.mem.Allocator, script: []const u8, satoshis: u64) bool {
+    const p = poolOfScript(script) orelse return false;
+    return affirmedPool(a, p, satoshis);
+}
+
+/// Whether `next` is the continuation a Swap of the pool output `spent` (txid:vout) names
+/// (0.13.0, David Case 2026-10-22: the lookup checks the next key): not rescinded, the same
+/// ValidatorIdentity, and its ValidatorPubKey the identity's child keyed by `spent` (`keyId`).
+pub fn nextKeyOf(a: std.mem.Allocator, next: Pool, identity: [33]u8, spent_txid: [32]u8, spent_vout: u32) bool {
+    if (next.rescinded() or !std.mem.eql(u8, &next.identity, &identity)) return false;
+    const want = validatorKey(a, identity, spent_txid, spent_vout) catch return false;
+    return std.mem.eql(u8, &want, &next.validator);
 }
 
 pub const Violation = enum {

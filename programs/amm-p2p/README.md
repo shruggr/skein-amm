@@ -10,6 +10,11 @@ zig build test-amm-p2p   # from the repo root: the direct call's request and rep
                          # the affirmation's body and answer (0.11.0); the manifest's role settings, natively
 ```
 
+## 0.13.0 (the validator's nonce, David Case 2026-10-22)
+
+- **`amm.pool.affirm`**: `{pool: bytes, satoshis: int}` → `{validatorPubKey: bytes, nonce: bytes, signature: bytes}`. No `keyInput` (the validator picks a nonce and derives its key from it); `relay.affirmAnswer` refuses an affirmation without a 33-byte key and a 32-byte nonce (`bad_reply`).
+- Root's `close` in `amm/validator` is `rescind` (amm-validator README, 0.13.0).
+
 ## 0.11.0 (the affirmation, David Case 2026-10-21)
 
 This section supersedes "The pool deploy through the relay" below. Pool deploys move to the BRC-207 wallet module: the deploy is the LP's wallet's, so nothing carries it to a validator.

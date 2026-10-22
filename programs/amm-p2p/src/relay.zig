@@ -72,7 +72,8 @@
 //! LP's page asks this skein's validator to affirm a proposed pool before its wallet builds the
 //! deploy. Nothing is recorded or relayed over libp2p: `affirmBody` checks the args, main.zig
 //! packages them (box `affirm`, from this instance to itself) and calls amm-validator's fn
-//! `affirm` in-VM, which answers at once (`affirmAnswer`): `{signature}`, or the refusal. The
+//! `affirm` in-VM, which answers at once (`affirmAnswer`): `{validatorPubKey, nonce, signature}`
+//! (0.13.0: the validator picks the nonce and its key), or the refusal. The
 //! deploy itself is the LP's wallet's (BRC-207), submitted to the token topic like any token
 //! transaction. (0.9.0's delivered deploy — `amm.pool.submit` / `amm.pool.status`, a record of
 //! kind `amm-pool`, relayed on `/amm-validator/1/deploy` and accepted with the validator's claim
@@ -496,23 +497,18 @@ pub fn packageFor(a: Allocator, signer: Signer, rec: Record) ![]u8 {
     return package(a, signer, &rec.validator, rec.kind.box(), body, nonceFor(rec.kind, rec.id));
 }
 
-// ---------------------------------------------------------------- the affirmation (amm.pool/1, 0.11.0)
+// ---------------------------------------------------------------- the affirmation (amm.pool/1, 0.13.0)
 
-/// The validator's affirm request body from `amm.pool.affirm`'s args `{pool, satoshis,
-/// keyInput}`: `{pool: <the pool output's locking script, no payload>, satoshis, keyInput:
-/// "<txid>_<vout>"}` (amm-validator README, "Protocol"), or null when an arg is missing or
-/// malformed (the validator checks the pool itself).
+/// The validator's affirm request body from `amm.pool.affirm`'s args `{pool, satoshis}`: `{pool:
+/// <the pool output's locking script, its ValidatorPubKey, Nonce and Affirmation to come>,
+/// satoshis}` (amm-validator README, "Protocol"), or null when an arg is missing or malformed
+/// (the validator checks the pool itself). 0.13.0: no `keyInput` (the validator picks a nonce).
 pub fn affirmBody(a: Allocator, args: Value) !?Value {
     const script = args.getBytes("pool") orelse return null;
     const sats = args.getUint("satoshis") orelse return null;
-    const key_text = args.getText("keyInput") orelse return null;
-    const norm = try a.dupe(u8, key_text);
-    if (std.mem.indexOfScalar(u8, norm, '.')) |i| norm[i] = '_';
-    _ = Outpoint.parse(norm) orelse return null;
     return .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "pool", .value = .{ .bytes = script } },
         .{ .key = "satoshis", .value = .{ .uint = sats } },
-        .{ .key = "keyInput", .value = .{ .text = norm } },
     }) };
 }
 
@@ -529,15 +525,22 @@ pub fn affirmNonce(a: Allocator, body: Value) ![16]u8 {
 pub const Affirmed = union(enum) { ok: Value, refused: Refusal };
 
 /// The validator handler's answer to the in-VM affirm call (`{verdict, body}`, `body` the reply
-/// frame: `{ok: true, signature}` or `{ok: false, reason, detail?}`) → `{signature}`, or the
-/// refusal.
+/// frame: `{ok: true, validatorPubKey, nonce, signature}` or `{ok: false, reason, detail?}`) →
+/// `{validatorPubKey, nonce, signature}`, or the refusal.
 pub fn affirmAnswer(a: Allocator, ans: Value) Affirmed {
     const frame = ans.getBytes("body") orelse return .{ .refused = .{ .reason = "bad_reply", .detail = "the validator answered no body" } };
     const v = cbor.decode(a, frame) catch return .{ .refused = .{ .reason = "bad_reply", .detail = "the validator's answer is not dag-cbor" } };
     const ok = v.getBool("ok") orelse return .{ .refused = .{ .reason = "bad_reply", .detail = "the validator's answer has no ok" } };
     if (!ok) return .{ .refused = .{ .reason = v.getText("reason") orelse "refused", .detail = v.getText("detail") } };
     const sig = v.getBytes("signature") orelse return .{ .refused = .{ .reason = "bad_reply", .detail = "affirmed without a signature" } };
-    const out = a.dupe(cbor.Entry, &.{.{ .key = "signature", .value = .{ .bytes = sig } }}) catch return .{ .refused = .{ .reason = "bad_reply", .detail = "out of memory" } };
+    const key = v.getBytes("validatorPubKey") orelse return .{ .refused = .{ .reason = "bad_reply", .detail = "affirmed without a validatorPubKey" } };
+    const nonce = v.getBytes("nonce") orelse return .{ .refused = .{ .reason = "bad_reply", .detail = "affirmed without a nonce" } };
+    if (key.len != 33 or nonce.len != 32) return .{ .refused = .{ .reason = "bad_reply", .detail = "a validatorPubKey of 33 bytes and a nonce of 32 expected" } };
+    const out = a.dupe(cbor.Entry, &.{
+        .{ .key = "validatorPubKey", .value = .{ .bytes = key } },
+        .{ .key = "nonce", .value = .{ .bytes = nonce } },
+        .{ .key = "signature", .value = .{ .bytes = sig } },
+    }) catch return .{ .refused = .{ .reason = "bad_reply", .detail = "out of memory" } };
     return .{ .ok = .{ .map = out } };
 }
 
