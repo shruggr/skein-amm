@@ -3,7 +3,7 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.10.0**, the Open Exchange as 0.9.1 left it (David Case,
+and its pages. Version **0.10.1** (0.10.0 with skein-1color 0.10.1's pages), the Open Exchange as 0.9.1 left it (David Case,
 2026-10-08/09; docs/AMM.md "The pool rule", "The claim and the listing",
 "Prices"): the contract is Swap and Close (`Close(lpSig, bsvFee)`, the LP's
 alone, everything out; AddLiquidity and RemoveLiquidity are gone: a
@@ -55,7 +55,7 @@ were.
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
 | | `web/ui`, `web/engine` | the pages (the Open Exchange: Landing, Swap, Liquidity, Your tokens, Settings) and the matching engine, built into `www/` |
-| | `www/color/` | skein-1color 0.10.0's pages: deploy a token, root's token topics |
+| | `www/color/` | skein-1color 0.10.1's pages: deploy a token (through the wallet's BRC-207 `color` module), root's token topics |
 | | `image/` | this app's skein image (shruggr/skein#152): the chain app and this app installed at birth, root's three routes (below, "The image") |
 
 docs/AMM.md has the pieces, the pool rule, the interfaces, the rows and
@@ -74,7 +74,7 @@ scripts/www.sh     # www/: the pages from web/ui, then the 1Color pages into www
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.14.0 and skein-1color v0.10.0 by tag
+`build.zig.zon` names skein-overlay v0.14.0 and skein-1color v0.10.1 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/color-topic.wasm`, `bin/color-lookup.wasm`
 from the skein-1color package, byte for byte. skein-1color's pages are
@@ -281,9 +281,9 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.10.0 |
+| this app | 0.10.1 |
 | skein-overlay | v0.14.0 (385e1b9) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.10.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-1color | v0.10.0 (3de96c4; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm`, the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
+| skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the rescind's createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.0) |

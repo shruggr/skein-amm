@@ -4,6 +4,19 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.10.1 (2026-10-21)
+
+Re-pinned onto shruggr/skein-1color 0.10.1 (d7348cf, tree 7342c1df): its
+pages, copied into `www/color/` by `scripts/color-pages.sh`, deploy through
+the wallet's BRC-207 `color` module (`@1sat/actions` 0.1.0 `deploy1Color`,
+the basket `p color <txid>v0`) instead of `deployMandala` and the basket
+`mandala <txid> 0`. skein-1color's programs are unchanged, so `bin/` is
+unchanged. The AMM's own pages (`web/ui`) are as in 0.10.0.
+
+`web/ui/test/manifest.test.ts` follows 690e754 (the manifest asks for no
+`spendingAuthorization` on connect, David Case 2026-10-21): the test still
+expected it. The manifest itself is as 690e754 left it.
+
 ## 0.10.0 (2026-10-21)
 
 Re-pinned onto shruggr/skein-1color 0.10.0 (the 1Color rename; BRC-162

@@ -23,14 +23,13 @@ function sources(dir: string): string[] {
 }
 
 describe("manifest.json", () => {
-  it("a W3C manifest with metanet.groupPermissions: description, spending, protocols, baskets, no certificates", () => {
+  it("a W3C manifest with metanet.groupPermissions: description, protocols, baskets, no certificates, no spending authorization", () => {
     expect(manifest.name).toBeTruthy();
     expect(manifest.start_url).toBe("./");
-    expect(Object.keys(g).sort()).toEqual(["basketAccess", "certificateAccess", "description", "protocolPermissions", "spendingAuthorization"]);
-    expect(g.spendingAuthorization).toEqual({ amount: 10_000_000, description: expect.any(String) });
+    expect(Object.keys(g).sort()).toEqual(["basketAccess", "certificateAccess", "description", "protocolPermissions"]);
     expect(g.certificateAccess).toEqual([]);
     expect(g.basketAccess.map((b: { basket: string }) => b.basket)).toEqual(["bsv21", "1sat", "1sat-deposit"]);
-    for (const e of [...g.protocolPermissions, ...g.basketAccess, g.spendingAuthorization]) {
+    for (const e of [...g.protocolPermissions, ...g.basketAccess]) {
       expect(e.description).toMatch(/^[A-Z][^.]*(\.[^.]+)*\.$/); // one sentence
     }
   });
