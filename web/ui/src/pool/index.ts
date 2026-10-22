@@ -6,6 +6,7 @@
 export {
   PoolTemplate,
   PoolBuildError,
+  RESCINDED_KEY,
   p2pkhUnlock,
   type Pool,
   type PoolArgs,
@@ -24,5 +25,5 @@ export {
   type SigSlot,
   type PoolBuildErrorCode,
 } from "./template";
-export { poolArtifact, METHOD_INDEX, type PoolMethod } from "./artifact";
+export { poolArtifact, poolArtifactV1, artifactOf, METHOD_INDEX, type PoolMethod, type PoolVersion } from "./artifact";
 export { decodeOneColor, oneColorValuePrefix, type OneColorPrefix, type OneColorRole } from "./oneColor";

@@ -37,7 +37,9 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
     try {
       const r = await closePosition({ outpoint: p.outpoint, bsvFee: fee });
       onClosed(
-        `Closed ${pair}: ${fmtSats(r.sats)} sats returned to your wallet; ${fmtAmount(r.tokens, p.dec)} ${p.sym} are in the swap basket (Your tokens, Move back).`,
+        r.tokensTo === "wallet"
+          ? `Closed ${pair}: ${fmtSats(r.sats)} sats and ${fmtAmount(r.tokens, p.dec)} ${p.sym} returned to your wallet.`
+          : `Closed ${pair}: ${fmtSats(r.sats)} sats returned to your wallet; ${fmtAmount(r.tokens, p.dec)} ${p.sym} are in the swap basket (Your tokens, Move back).`,
         r.txid,
       );
     } catch (e) {
@@ -52,8 +54,16 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
       <article className="panel pos pos-confirm" aria-label={`Close ${pair}`}>
         <h2 className="h2 h2-sm">Close {pair}?</h2>
         <p className="fg2 small">
-          Everything in the pool returns to you: {fmtSats(p.sats)} sats to your wallet, and {fmtAmount(p.tokens, p.dec)} {p.sym} to the swap basket, which Your
-          tokens moves back into your wallet.
+          {p.legacy ? (
+            <>
+              Everything in the pool returns to you: {fmtSats(p.sats)} sats to your wallet, and {fmtAmount(p.tokens, p.dec)} {p.sym} to the swap basket, which
+              Your tokens moves back into your wallet.
+            </>
+          ) : (
+            <>
+              Everything in the pool returns to your wallet: {fmtSats(p.sats)} sats and {fmtAmount(p.tokens, p.dec)} {p.sym}.
+            </>
+          )}
         </p>
         <div className="field">
           <label htmlFor={feeId}>Miner fee from the pool (sats)</label>
@@ -109,6 +119,12 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
           <span className="sr-only">{p.validator.live ? "live" : "offline"}</span>
           <Id value={p.validator.identityKey} kind="key" label="validator key" />
         </dd>
+        {p.rescinded && (
+          <>
+            <dt>Status</dt>
+            <dd className="fg2">Rescinded by its validator: no swaps. Close it to take everything back.</dd>
+          </>
+        )}
       </dl>
       <button type="button" className="btn btn-outline self-start" onClick={() => setConfirm(true)}>
         Close position

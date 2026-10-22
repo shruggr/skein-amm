@@ -1,40 +1,44 @@
 /**
- * Close through the user's wallet (skein-amm 0.9.0, David Case 2026-10-09:
- * "Liquidity is deploy + close (bsvFee) only"). The LP's alone
- * (Pool.runar.go `Close` checks the LP's signature only), so nothing is
- * relayed: the page builds it, signs it and submits it to the overlay.
+ * Close through the user's wallet: the LP's alone, so nothing is relayed: the
+ * page builds it, signs it and submits it to the overlay.
+ *
+ * Layout 2 (skein-amm 0.13.0, David Case 2026-10-22: `Close(lpSig)`, outputs
+ * free): the LP's wallet chooses where everything goes — the sats (less the
+ * fee) as a BRC-29 wallet payment to the LP key (to self), every token to a
+ * NEW module receiving key of the user's own (`newReceivingKey`, sender the
+ * user's identity), taken in through the module with its receipt
+ * (`receiptOutput`): no `amm-swap`, no Move back.
+ *
+ * Layout 1 (a pool deployed before 0.13.0: `Close(sig, bsvFee)`): the
+ * contract's outputs, everything to the LP key; the tokens, which no module key
+ * holds, are filed in the active swap basket `amm-swap` and come back with Your
+ * tokens' Move back (0.12.0, unchanged).
  *
  *   1. The pool's current output: followed from the position's deploy by the
  *      chain state (`GET <base>/spends`, src/lp/positions.ts), its BEEF from
  *      the token's 1Color lookup (`ls_color {txid, outputIndex}`): the
- *      listing (`ls_amm`) answers listed pools only.
- *   2. `PoolTemplate.planClose`: the outputs the contract requires (the BSV
- *      payout, the pool's sats less `bsvFee`, when nonzero; every token; both
- *      to Hash160 of the LpPubKey) and the method args.
+ *      listing (`ls_amm`) answers listed pools only (a rescinded pool too is
+ *      closed from here).
+ *   2. `PoolTemplate.planClose`: the outputs (the BSV payout, the pool's sats
+ *      less `bsvFee`, when nonzero; every token, one sat) and the method args.
  *   3. `bsvFee` > 0: the miner fee and the token output's sat come from the
  *      pool (no other input; `bsvFee` must cover them). `bsvFee` = 0: a
  *      **funding transaction** (`createFunding`, src/market/swapAction.ts,
  *      broadcast by the wallet at once: `noSend: false`) with one exact output
  *      — the token output's sat plus the close's miner fee at the rate — and
  *      no change.
- *   4. **Close transaction**, built here: input 0 the pool (`callUnlock`,
- *      `_changeAmount = 0`; the LP's slot filled with `createSignature`
- *      under the pool's LP key), the funding output (`createSignature`,
- *      ALL|FORKID); outputs exactly the contract's. Checked with `Spend`.
+ *   4. **Close transaction**, built here: input 0 the pool (`callUnlock`; the
+ *      LP's slot filled with `createSignature` under the pool's LP key), the
+ *      funding output (`createSignature`, ALL|FORKID). Checked with `Spend`.
  *   5. `POST <base>/submit` (`x-topics: tm_color_<assetId>`), the close's
  *      AtomicBEEF (the funding as its unproven parent): BRC-22's STEAK.
- *   6. `completeClose`: one `internalizeAction` — the BSV payout as a BRC-29
- *      wallet payment (the LP key is a BRC-29 key to self), the tokens as a
- *      basket insertion into the exchange's active swap basket `amm-swap`
- *      (0.12.0: the contract pays them to the LP key, which is not a BRC-207
- *      module key, so the module cannot take them in; Your tokens' "Move
- *      back" brings them into the wallet's balance, src/market/activeSwap.ts)
- *      — then `relinquishOutput` of the funding output and the pool row
- *      (`amm-pools`).
+ *   6. `completeClose`: the BSV payout (a BRC-29 wallet payment) and the
+ *      tokens (layout 2: the module's receipt; layout 1: `amm-swap`) taken in,
+ *      then `relinquishOutput` of the funding output and the pool row.
  *
- * A pool whose LP key predates BRC-29 LP keys (`P1SAT_PROTOCOL`, `amm-lp-…`)
- * cannot take its BSV payout as a wallet payment (the contract pays that
- * key): refused before anything is signed.
+ * A layout-1 pool whose LP key predates BRC-29 LP keys (`P1SAT_PROTOCOL`,
+ * `amm-lp-…`) cannot take its BSV payout as a wallet payment (the contract
+ * pays that key): refused before anything is signed.
  */
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { DEPOSIT_BASKET } from "@1sat/types";
@@ -42,11 +46,14 @@ import { LockingScript, PublicKey, Transaction, UnlockingScript, type Internaliz
 import { PoolTemplate, type CallPlan } from "../pool";
 import { SWAP_TTL_MS, createFunding, poolUtxoFrom, signP2pkhWithWallet, spendValid, swapFunding, type Funding, type SwapFunding } from "../market/swapAction";
 import { needSigned, type LookupOutput, type SignedFetch } from "../lib/overlay";
+import { Utils } from "@bsv/sdk";
 import type { BasketFiling } from "./poolDeploy";
 import type { LpKeyRef } from "./positions";
 import { WALLET_PAYMENT, identityKeyOf, isBrc29Protocol, splitBrc29KeyID, type Brc29Payout, type PaymentRemittance } from "../wallet/brc29";
 import { sdkTokenId } from "../lib/tokenId";
-import { POOLS_BASKET, SWAP_BASKET, swapInstructions } from "../wallet/color";
+import { POOLS_BASKET, SWAP_BASKET, newReceivingKey, receiptOutput, swapInstructions, type ColorReceipt } from "../wallet/color";
+import { tokenP2pkhScript } from "./poolDeploy";
+import { payoutId, type PendingPayoutStore } from "../wallet/pendingPayouts";
 
 export class CloseShapeError extends Error {
   constructor(message: string) {
@@ -85,10 +92,14 @@ export interface PreparedClose {
   beef: number[];
   /** `tm_color_<assetId>` */
   topic: string;
+  /** The pool's layout: 2 (0.13.0, the LP's outputs) or 1 (the contract's). */
+  version: 1 | 2;
   /** The BSV payout as a BRC-29 payment (null when bsvFee takes every sat). */
   payout: Brc29Payout | null;
-  /** The tokens into `amm-swap`. */
-  tokens: BasketFiling;
+  /** Layout 1: the tokens into `amm-swap`. */
+  tokens: BasketFiling | null;
+  /** Layout 2: the tokens to a module receiving key of the user's own, taken in with this receipt. */
+  receipt: { outputIndex: number; receipt: ColorReceipt; lockingScript: string } | null;
   /** What returns to the wallet. */
   sats: bigint;
   tokenAmount: bigint;
@@ -128,16 +139,31 @@ export async function prepareClose(i: CloseInput): Promise<PreparedClose> {
   const { publicKey: lpPub } = await wallet.getPublicKey({ ...lpArgs, forSelf: true });
   if (PublicKey.fromString(lpPub).toString() !== pool.state.lpPubKey) throw new CloseShapeError(`the wallet key ${i.lpKey.keyID} is not this pool's LP key`);
 
-  const plan = PoolTemplate.planClose({ pool: poolUtxo, bsvFee: i.bsvFee });
   const sdkId = sdkTokenId(i.tokenId);
+  // Layout 2: the LP's outputs — the sats (less bsvFee) to the LP key, the tokens to a fresh
+  // module key of the user's own. Layout 1: the contract's.
+  let receipt: PreparedClose["receipt"] = null;
+  let free: { satoshis: bigint; script: string }[] | undefined;
+  if (pool.version === 2) {
+    const k = await newReceivingKey(wallet, sdkId, await identityKeyOf(wallet));
+    const tokenScript = tokenP2pkhScript(sdkId, pool.state.tokenReserve, k.publicKey);
+    free = [];
+    if (sats - i.bsvFee > 0n) free.push({ satoshis: sats - i.bsvFee, script: `76a914${Utils.toHex(PublicKey.fromString(lpPub).toHash() as number[])}88ac` });
+    receipt = { outputIndex: free.length, receipt: k.receipt, lockingScript: tokenScript };
+    free.push({ satoshis: 1n, script: tokenScript });
+  }
+  const plan = PoolTemplate.planClose({ pool: poolUtxo, bsvFee: i.bsvFee, ...(free ? { outputs: free } : {}) });
   let at = 0;
   const payout: Brc29Payout | null = sats - i.bsvFee > 0n ? { outputIndex: at, satoshis: Number(plan.outputs[at]!.satoshis), lockingScript: plan.outputs[at++]!.script, remittance: remittance! } : null;
-  const tokens: BasketFiling = {
-    outputIndex: at,
-    basket: SWAP_BASKET,
-    tags: [],
-    customInstructions: swapInstructions({ assetId: sdkId, amount: pool.state.tokenReserve, protocolID: i.lpKey.protocolID, keyID: i.lpKey.keyID, counterparty: i.lpKey.counterparty }),
-  };
+  const tokens: BasketFiling | null =
+    pool.version === 1
+      ? {
+          outputIndex: at,
+          basket: SWAP_BASKET,
+          tags: [],
+          customInstructions: swapInstructions({ assetId: sdkId, amount: pool.state.tokenReserve, protocolID: i.lpKey.protocolID, keyID: i.lpKey.keyID, counterparty: i.lpKey.counterparty }),
+        }
+      : null;
 
   // Step 3: the fee from the pool, or a funding output.
   const expires = (i.now ?? Date.now()) + (i.ttlMs ?? SWAP_TTL_MS);
@@ -185,8 +211,10 @@ export async function prepareClose(i: CloseInput): Promise<PreparedClose> {
     txid: tx.id("hex"),
     beef: tx.toAtomicBEEF(true),
     topic: `tm_color_${sdkId}`,
+    version: pool.version,
     payout,
     tokens,
+    receipt,
     sats: sats - i.bsvFee,
     tokenAmount: pool.state.tokenReserve,
   };
@@ -199,22 +227,53 @@ export interface CompletedClose {
 }
 
 /**
- * Step 6, after a successful submit: the BSV payout (a BRC-29 wallet payment)
- * and the tokens (a basket insertion) in one `internalizeAction`; the funding
- * output and the pool row (`deployOutpoint`, the row the deploy filed)
- * relinquished.
+ * Step 6, after a successful submit: the BSV payout (a BRC-29 wallet payment) and, layout 1,
+ * the tokens (a basket insertion into `amm-swap`) in one `internalizeAction`; layout 2, the
+ * tokens through the module (`receiptOutput`, a second `internalizeAction`: the module takes in
+ * only an admitted output; kept in `payouts` when it does not, for a retry); then the funding
+ * output and the pool row (`deployOutpoint`, the row the deploy filed) relinquished.
  */
-export async function completeClose(wallet: WalletInterface, s: PreparedClose, deployOutpoint?: string): Promise<CompletedClose> {
+export async function completeClose(wallet: WalletInterface, s: PreparedClose, deployOutpoint?: string, payouts?: PendingPayoutStore): Promise<CompletedClose> {
   const out: CompletedClose = { internalized: false, relinquished: [], errors: [] };
   const outputs: InternalizeOutput[] = [];
   if (s.payout) outputs.push({ outputIndex: s.payout.outputIndex, protocol: WALLET_PAYMENT, paymentRemittance: { ...s.payout.remittance } });
-  outputs.push({ outputIndex: s.tokens.outputIndex, protocol: "basket insertion", insertionRemittance: { basket: s.tokens.basket, tags: s.tokens.tags, customInstructions: s.tokens.customInstructions } });
-  try {
-    const r = await wallet.internalizeAction({ tx: s.beef, outputs, description: "AMM close", labels: ["amm-close"] });
-    out.internalized = r.accepted;
-  } catch (err) {
-    out.errors.push(`internalizeAction: ${err instanceof Error ? err.message : String(err)}`);
+  if (s.tokens) outputs.push({ outputIndex: s.tokens.outputIndex, protocol: "basket insertion", insertionRemittance: { basket: s.tokens.basket, tags: s.tokens.tags, customInstructions: s.tokens.customInstructions } });
+  let ok = true;
+  if (outputs.length > 0) {
+    try {
+      const r = await wallet.internalizeAction({ tx: s.beef, outputs, description: "AMM close", labels: ["amm-close"] });
+      ok = r.accepted;
+    } catch (err) {
+      ok = false;
+      out.errors.push(`internalizeAction: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  if (s.receipt) {
+    const pending = {
+      id: payoutId(s.txid, s.receipt.outputIndex),
+      kind: "close" as const,
+      txid: s.txid,
+      vout: s.receipt.outputIndex,
+      satoshis: 1,
+      lockingScript: s.receipt.lockingScript,
+      receipt: s.receipt.receipt,
+      final: true,
+      tokenId: s.receipt.receipt.assetId,
+      atomicBeef: Utils.toHex(s.beef),
+      description: "AMM close: the tokens",
+      createdAt: Date.now(),
+    };
+    payouts?.save(pending);
+    try {
+      const r = await wallet.internalizeAction({ tx: s.beef, outputs: [receiptOutput(s.receipt.outputIndex, s.receipt.receipt)], description: "AMM close: the tokens", labels: ["amm-close"] });
+      ok = ok && r.accepted;
+      if (r.accepted) payouts?.remove(pending.id);
+    } catch (err) {
+      ok = false;
+      out.errors.push(`internalizeAction (the tokens): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  out.internalized = ok;
   const rel = [...(s.funding ? [{ basket: DEPOSIT_BASKET, output: s.funding.outpoint }] : []), ...(deployOutpoint ? [{ basket: POOLS_BASKET, output: deployOutpoint }] : [])];
   for (const r of rel) {
     try {

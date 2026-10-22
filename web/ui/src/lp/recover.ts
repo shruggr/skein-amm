@@ -1,5 +1,5 @@
 /**
- * Recover a position (skein-amm 0.12.1): file the `amm-pools` row of a pool
+ * Recover a position (skein-amm 0.12.1; 0.13.0: both pool layouts): file the `amm-pools` row of a pool
  * whose deploy left none (the deploy broadcast, its filing did not happen),
  * so the positions list shows it and Close works as for any other row. Pages
  * only: the row is the one a deploy files (src/lp/poolDeploy.ts
@@ -11,7 +11,11 @@
  *      does), its BEEF from the token's 1Color lookup (`ls_color {txid,
  *      outputIndex}`, as Close takes it), decoded with `PoolTemplate`: the
  *      asset id, the LpPubKey, the validator and the fees.
- *   2. The LP key: a deploy keys it by its input 0 (`lpDerivation`), so the
+ *   2. The LP key. A pool from 0.13.0 on (layout 2) has a random keyID, on no
+ *      chain: the deploy kept it in this browser until its row was filed
+ *      (src/lp/poolDeploy.ts `PendingDeployStore`); each kept keyID is tried
+ *      (`getPublicKey`, BRC-29 to self) against the LpPubKey. A pool before
+ *      0.13.0 (layout 1): a deploy keys it by its input 0 (`lpDerivation`), so the
  *      pool is walked back through the BEEF (each transaction's pool input)
  *      to the deploy, the transaction whose pool output carries the
  *      validator's affirmation; every transaction's input 0 on the way is a
@@ -36,7 +40,7 @@ import type { LookupOutput } from "../lib/overlay";
 import type { Spend } from "../lib/skein";
 import { parseOutpoint, sdkTokenId, tokenIdOfWire } from "../lib/tokenId";
 import { POOLS_BASKET } from "../wallet/color";
-import { LP_KEY_PROTOCOL, legacyLpKeyId, lpKeyId, poolCustomInstructions, type BasketFiling, type BasketRow } from "./poolDeploy";
+import { LP_KEY_PROTOCOL, PendingDeployStore, legacyLpKeyId, lpKeyId, poolCustomInstructions, type BasketFiling, type BasketRow } from "./poolDeploy";
 import { POOL_TAG, isPoolRow } from "./poolRows";
 
 export class RecoverError extends Error {
@@ -55,6 +59,7 @@ export const RECOVER_TEXT = {
   notPool: "That outpoint is not a pool.",
   noDeploy: "The overlay's answer does not reach back to this pool's deploy, so its LP key cannot be checked.",
   notMine: "This pool's LP key is not this wallet's.",
+  notKept: "This pool's LP key is not kept in this browser (it was deployed elsewhere, or the record is gone), so it cannot be recovered here.",
 } as const;
 
 /** How many transactions back the deploy is looked for (one per swap). */
@@ -149,6 +154,8 @@ export interface RecoverInput {
   outputOf: (outpoint: string) => Promise<LookupOutput>;
   /** Symbol and decimals: the token list, else `ls_color_deploys`. */
   metaOf: (tokenId: string) => Promise<{ sym?: string; dec?: number } | null>;
+  /** Layout 2: the LP keyIDs this browser kept (default: `PendingDeployStore`). */
+  pending?: PendingDeployStore;
 }
 
 export interface RecoveredPosition {
@@ -157,7 +164,7 @@ export interface RecoveredPosition {
   tokenId: string;
   sym?: string;
   lpKey: { protocolID: WalletProtocol; keyID: string; counterparty: "self" };
-  /** The deploy's input 0 the LP key is keyed by, `<txid>.<vout>`. */
+  /** Layout 1: the deploy's input 0 the LP key is keyed by, `<txid>.<vout>`; layout 2: "". */
   keyInput: string;
   filing: BasketFiling;
   internalizeArgs: Parameters<WalletInterface["internalizeAction"]>[0];
@@ -191,9 +198,23 @@ export async function recoverPosition(i: RecoverInput): Promise<RecoveredPositio
   const tokenId = sdkTokenId(tokenIdOfWire(Utils.toArray(pool.args.assetId, "hex")));
 
   // 2. The LP key.
-  const { candidates, reached } = keyInputCandidates(tx, op.vout, pool.args.assetId);
-  const lp = await findLpKey(i.wallet, pool.state.lpPubKey, candidates);
-  if (!lp) throw new RecoverError(reached ? RECOVER_TEXT.notMine : RECOVER_TEXT.noDeploy);
+  let lp: { protocolID: WalletProtocol; keyID: string; keyInput: string } | null = null;
+  if (pool.version === 2) {
+    const pending = i.pending ?? new PendingDeployStore();
+    const want = PublicKey.fromString(pool.state.lpPubKey).toString();
+    for (const d of pending.list()) {
+      const { publicKey } = await i.wallet.getPublicKey({ protocolID: LP_KEY_PROTOCOL, keyID: d.keyID, counterparty: "self", forSelf: true });
+      if (PublicKey.fromString(publicKey).toString() === want) {
+        lp = { protocolID: LP_KEY_PROTOCOL, keyID: d.keyID, keyInput: "" };
+        break;
+      }
+    }
+    if (!lp) throw new RecoverError(RECOVER_TEXT.notKept);
+  } else {
+    const { candidates, reached } = keyInputCandidates(tx, op.vout, pool.args.assetId);
+    lp = await findLpKey(i.wallet, pool.state.lpPubKey, candidates);
+    if (!lp) throw new RecoverError(reached ? RECOVER_TEXT.notMine : RECOVER_TEXT.noDeploy);
+  }
 
   // 3. The row.
   const meta = (await i.metaOf(tokenId).catch(() => null)) ?? {};
@@ -210,11 +231,13 @@ export async function recoverPosition(i: RecoverInput): Promise<RecoveredPositio
       keyID: lp.keyID,
       args: pool.args,
       validatorIdentity: pool.state.validatorIdentity,
+      ...(pool.state.nonce ? { nonce: pool.state.nonce } : {}),
     }),
   };
   const row: InternalizeOutput = { outputIndex: filing.outputIndex, protocol: "basket insertion", insertionRemittance: { basket: filing.basket, tags: filing.tags, customInstructions: filing.customInstructions } };
   const internalizeArgs = { tx: output.beef, outputs: [row], description: describe(`AMM pool recover: ${sym ?? "token"}`), labels: ["amm-pool-deploy"] };
   const r = await i.wallet.internalizeAction(internalizeArgs);
+  if (r.accepted && pool.version === 2) (i.pending ?? new PendingDeployStore()).remove(lp.keyID);
   return {
     outpoint: current,
     tokenId,

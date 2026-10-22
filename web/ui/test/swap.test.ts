@@ -345,7 +345,7 @@ async function satsIn(w = fakeWallet(), commissionPkh: string | null = v.commiss
   const pool = stateOf(poolDeploy, v.identity);
   const leg = legFor(pool, "bsvToToken", 20_000n);
   const prepared = await prepareSwap({ wallet: w.wallet, tokenId: TOKEN_ID, meta: { sym: "TST", dec: 0 }, direction: "bsvToToken", leg, pool, poolOutput: { beef: atomic(poolDeploy), outputIndex: 0 }, commissionPkh, satsPerKb: RATE, now: 1_000 });
-  return { ...w, pool, leg, prepared, vkey: validatorKey(tokenDeploy.id("hex"), 0) };
+  return { ...w, pool, leg, prepared, vkey: identity.deriveChild(anyone, `1-amm pool-${v.nonce}`) }; // 0.13.0: the deploy's key is keyed by the nonce
 }
 
 /** Tokens in on the fixture's second pool (swap_bsv_in:0), 50,000 tokens from pool_deploy:1. */

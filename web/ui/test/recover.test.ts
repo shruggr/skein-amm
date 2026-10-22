@@ -1,14 +1,18 @@
 /**
- * Recover a position (0.12.1, src/lp/recover.ts): both outpoint forms; the
- * LP key checked against the pool's LpPubKey (BRC-29, else pre-BRC-29, else
- * refused with nothing filed); the row byte for byte a deploy's; a pool
- * already filed left alone; the live testnet pool's lookup answer decoded.
+ * Recover a position (0.12.1, src/lp/recover.ts; 0.13.0: both layouts). A
+ * layout-1 pool (before 0.13.0): both outpoint forms; the LP key checked
+ * against the pool's LpPubKey (BRC-29, else pre-BRC-29, else refused with
+ * nothing filed); the row byte for byte a deploy's; a pool already filed left
+ * alone; the live testnet pool's lookup answer decoded. A layout-2 pool: the LP
+ * keyID kept in this browser by the deploy, else refused.
  */
 import { P1SAT_PROTOCOL } from "@1sat/actions";
-import { Beef, PrivateKey, Transaction, UnlockingScript, Utils, type WalletInterface, type WalletProtocol } from "@bsv/sdk";
+import { Beef, LockingScript, PrivateKey, Transaction, UnlockingScript, Utils, type WalletInterface, type WalletProtocol } from "@bsv/sdk";
+import { RunarContract, encodePushData } from "runar-sdk";
 import { describe, expect, it } from "vitest";
-import { PoolTemplate } from "../src/pool";
-import { legacyLpKeyId, lpKeyId, planPoolDeploy, poolCustomInstructions, type BasketRow } from "../src/lp/poolDeploy";
+import { PoolTemplate, oneColorValuePrefix, poolArtifactV1 } from "../src/pool";
+import { deriveValidatorPubKey } from "../src/lib/keys";
+import { PendingDeployStore, legacyLpKeyId, lpKeyId, poolCustomInstructions, type BasketRow } from "../src/lp/poolDeploy";
 import { RECOVER_TEXT, keyInputCandidates, parsePoolOutpoint, recoverPosition, type RecoverInput } from "../src/lp/recover";
 import type { Spend } from "../src/lib/skein";
 import type { LookupOutput } from "../src/lib/overlay";
@@ -32,25 +36,38 @@ function atomic(tx: Transaction, ancestors: Transaction[]): number[] {
   return b.toBinaryAtomic(tx.id("hex"));
 }
 
-/** A deploy whose input 0 is the key input and whose output 0 is an affirmed pool with LpPubKey `lpPub`. */
+const ASSET_ID = Utils.toHex(tokenDeploy.hash() as number[]);
+const ARGS = { assetId: ASSET_ID, lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: BigInt(v.commissionBps) };
+
+/**
+ * A layout-1 deploy (0.11.0-0.12.x): input 0 the key input, output 0 the pool (LpPubKey `lpPub`,
+ * the validator's child of the key input) with the affirmation as its 1Color payload.
+ */
 function deployTx(lpPub: string) {
-  const plan = planPoolDeploy({
-    tokenId: TOKEN_ID,
-    keyInput: { txid: tokenDeploy.id("hex"), vout: 0 },
-    tokens: 5_000_000n,
-    sats: 1_000_000n,
-    lpFeeBps: 30n,
-    validatorFeeBps: 5n,
-    commissionBps: BigInt(v.commissionBps),
-    lpPubKey: lpPub,
-    validator: { identityKey: v.identity },
-  });
+  const state = { tokenReserve: 5_000_000n, lpPubKey: lpPub, validatorPubKey: deriveValidatorPubKey(v.identity, { txid: tokenDeploy.id("hex"), vout: 0 }), validatorIdentity: v.identity };
+  const contract = new RunarContract(poolArtifactV1, [state.tokenReserve, state.lpPubKey, state.validatorPubKey, state.validatorIdentity, ARGS.assetId, ARGS.lpFeeBps, ARGS.validatorFeeBps, ARGS.commissionBps]);
+  const prefix = Utils.toHex(oneColorValuePrefix(Utils.toArray(ASSET_ID, "hex"), state.tokenReserve));
+  const lock = LockingScript.fromHex(prefix + encodePushData(v.affirmation) + "75" + contract.getLockingScript());
   const tx = new Transaction();
   tx.addInput({ sourceTXID: tokenDeploy.id("hex"), sourceOutputIndex: 0, sourceTransaction: tokenDeploy, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
   tx.addInput({ sourceTXID: "77".repeat(32), sourceOutputIndex: 1, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
-  tx.addOutput({ satoshis: 1_000_000, lockingScript: PoolTemplate.lockDeploy(plan.args, plan.state, v.affirmation) });
-  return { tx, plan };
+  tx.addOutput({ satoshis: 1_000_000, lockingScript: lock });
+  expect(PoolTemplate.decode(lock)!.version).toBe(1);
+  return { tx, plan: { args: ARGS, state } };
 }
+
+/** A layout-2 deploy (0.13.0): output 0 the pool with LpPubKey `lpPub`, the fixture's key, nonce and affirmation in state. */
+function deployTxV2(lpPub: string) {
+  const tx = new Transaction();
+  tx.addInput({ sourceTXID: tokenDeploy.id("hex"), sourceOutputIndex: 0, sourceTransaction: tokenDeploy, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
+  tx.addOutput({ satoshis: 1_000_000, lockingScript: PoolTemplate.lockDeploy(ARGS, { tokenReserve: 5_000_000n, lpPubKey: lpPub, validatorPubKey: v.pool0.validator, validatorIdentity: v.identity, nonce: v.nonce, affirmation: v.affirmation }) });
+  return tx;
+}
+
+const memStore = () => {
+  const m = new Map<string, string>();
+  return new PendingDeployStore({ getItem: (k) => m.get(k) ?? null, setItem: (k, val) => void m.set(k, val) });
+};
 
 /** A swap's continuation of `prev`'s pool: input 0 the pool, output 0 the next pool. */
 function continuation(prev: Transaction): Transaction {
@@ -96,7 +113,7 @@ function input(w: WalletInterface, outpoint: string, txs: Transaction[], rows: B
   return { wallet: w, outpoint, rows, spendOf, outputOf, metaOf: async () => ({ sym: "TST", dec: 0 }) };
 }
 
-describe("recover a position (0.12.1)", () => {
+describe("recover a position (0.12.1; a layout-1 pool)", () => {
   it("parses both outpoint forms, and nothing else", () => {
     const t = "Ab".repeat(32);
     expect(parsePoolOutpoint(`${t}.0`)).toBe(`${t.toLowerCase()}.0`);
@@ -215,5 +232,40 @@ describe("recover a position (0.12.1)", () => {
       candidates: ["1ad1c0917176341a02c6beb73ecc14512c5188f73cb0d7cfe2425a57f641806f.0"],
       reached: true,
     });
+  });
+});
+
+describe("recover a position (0.13.0: a layout-2 pool)", () => {
+  const keyID = "YW1tLWxw cmFuZG9tLWtleS1pZA==";
+  const lp = side.publicKey({ protocolID: BRC29, keyID, counterparty: "self", forSelf: true });
+
+  it("the LP keyID this browser kept: filed, the row a deploy's (with the nonce), the record dropped", async () => {
+    const tx = deployTxV2(lp);
+    const pending = memStore();
+    pending.save({ keyID: "YW1tLWxw b3RoZXI=", lpPubKey: "x", tokenId: TOKEN_ID, createdAt: 1 });
+    pending.save({ keyID, lpPubKey: lp, tokenId: TOKEN_ID, createdAt: 2 });
+    const { wallet } = fakeWallet();
+    const r = await recoverPosition({ ...input(wallet, `${tx.id("hex")}.0`, [tx]), pending });
+    expect(r.filed).toBe(true);
+    expect(r.lpKey).toEqual({ protocolID: BRC29, keyID, counterparty: "self" });
+    expect(r.keyInput).toBe("");
+    expect(JSON.parse(r.filing.customInstructions)).toEqual({
+      id: TOKEN_ID,
+      op: "amm-pool",
+      sym: "TST",
+      dec: "0",
+      protocolID: BRC29,
+      keyID,
+      counterparty: "self",
+      amm: { role: "lp", validatorIdentity: v.identity, lpFeeBps: "30", validatorFeeBps: "5", commissionBps: String(v.commissionBps), nonce: v.nonce },
+    });
+    expect(pending.list().map((d) => d.keyID)).toEqual(["YW1tLWxw b3RoZXI="]);
+  });
+
+  it("no kept keyID that is the pool's LP key: refused, nothing filed", async () => {
+    const tx = deployTxV2(lp);
+    const { wallet, calls } = fakeWallet();
+    await expect(recoverPosition({ ...input(wallet, `${tx.id("hex")}.0`, [tx]), pending: memStore() })).rejects.toThrow(RECOVER_TEXT.notKept);
+    expect(calls.some((c) => c.method === "internalizeAction")).toBe(false);
   });
 });

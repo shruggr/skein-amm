@@ -1,26 +1,54 @@
 import type { RunarArtifact } from "runar-sdk";
 import poolArtifactJson from "./pool.artifact.json";
+import poolArtifactV1Json from "./pool.v1.artifact.json";
 
 /**
  * The compiled Pool contract (pool/Pool.runar.go), as the Go compiler writes
  * it (`compiler.ArtifactToJSON`; see README.md "pool.artifact.json"). Its
- * `script` is byte-identical to the template in src/fixtures/pool_artifact.zig;
- * both are written by `go run ./gen/vectors` (0.9.0).
+ * `script` is byte-identical to the template in src/fixtures/pool_artifact.zig
+ * (there with its codeSepIndex slots resolved); both are written by
+ * `go run ./gen/vectors` (0.9.0).
+ *
+ * 0.13.0 (layout 2): state TokenReserve, LpPubKey, ValidatorPubKey,
+ * ValidatorIdentity, Nonce, Affirmation; methods Swap, Close (the LP's, outputs
+ * free), Rescind.
  */
-export const poolArtifact = poolArtifactJson as unknown as RunarArtifact;
+export const poolArtifact = resolveCodeSepSlots(poolArtifactJson as unknown as RunarArtifact);
 
-/** Public method indices (the method selector pushed last in a call). */
-export const METHOD_INDEX = { swap: 0, close: 1 } as const;
+/**
+ * The artifact with its codeSepIndex slots resolved in `script` (layout 2: its variable-length
+ * state makes each method push its OP_CODESEPARATOR's index). The separator is the code's
+ * byte 1, before every constructor slot, so each slot is OP_1 in every pool — as gen/vectors
+ * resolves them for src/pool.zig. runar-sdk's matcher (`matchesArtifact`,
+ * `extractConstructorArgs`) knows only constructor slots; its builder overwrites the resolved
+ * byte with the same OP_1.
+ */
+function resolveCodeSepSlots(a: RunarArtifact): RunarArtifact {
+  const slots = (a as { codeSepIndexSlots?: { byteOffset: number; codeSepIndex: number }[] }).codeSepIndexSlots ?? [];
+  if (slots.length === 0) return a;
+  let script = a.script;
+  for (const s of slots) {
+    if (s.codeSepIndex !== 1 || script.slice(s.byteOffset * 2, s.byteOffset * 2 + 2) !== "00") throw new Error("pool artifact: a codeSepIndex slot not at byte 1");
+    script = script.slice(0, s.byteOffset * 2) + "51" + script.slice(s.byteOffset * 2 + 2);
+  }
+  return { ...a, script };
+}
+
+/**
+ * The 0.9.0-0.12.x contract (layout 1, kept so a pool deployed before 0.13.0
+ * still decodes, closes and recovers): state TokenReserve, LpPubKey,
+ * ValidatorPubKey, ValidatorIdentity; Swap, and Close(sig, bsvFee) whose
+ * outputs are the contract's (everything to the LP key). Never deployed again.
+ */
+export const poolArtifactV1 = poolArtifactV1Json as unknown as RunarArtifact;
+
+/** A pool's layout: 2 from 0.13.0, 1 before. */
+export type PoolVersion = 1 | 2;
+
+export function artifactOf(version: PoolVersion): RunarArtifact {
+  return version === 2 ? poolArtifact : poolArtifactV1;
+}
+
+/** Public method indices (the method selector pushed last in a call). Rescind is layout 2's only. */
+export const METHOD_INDEX = { swap: 0, close: 1, rescind: 2 } as const;
 export type PoolMethod = keyof typeof METHOD_INDEX;
-
-/** Constructor parameter order (pool/Pool.runar.go's fields). */
-export const CTOR = {
-  tokenReserve: 0,
-  lpPubKey: 1,
-  validatorPubKey: 2,
-  validatorIdentity: 3,
-  assetId: 4,
-  lpFeeBps: 5,
-  validatorFeeBps: 6,
-  commissionBps: 7,
-} as const;

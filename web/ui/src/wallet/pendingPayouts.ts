@@ -33,7 +33,7 @@ export const PENDING_PAYOUTS_KEY = "amm-poc.pending-payouts.v1";
 export interface PendingPayout {
   /** `txid:vout` */
   id: string;
-  kind: "swap" | "remove-liquidity" | "move-back";
+  kind: "swap" | "remove-liquidity" | "move-back" | "close";
   txid: string;
   vout: number;
   satoshis: number;

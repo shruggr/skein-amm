@@ -1,10 +1,12 @@
 /**
  * The LP page's pool half: the pool deploy plan against amm-topic's fixture
- * pool deploy; the deploy (0.12.0: the validator's affirmation, then ONE
- * createAction through the wallet's BRC-207 module, the pool filed in
- * `amm-pools`) against a fake wallet and a fake `/call`; and Close (the fee
- * from the pool or a broadcast funding, page-built close validated against
- * the fixture pool, submit, internalize + relinquish).
+ * pool deploy; the deploy (0.13.0: the validator's affirmation — its key, its
+ * nonce, its signature, in the pool's state — then ONE createAction through
+ * the wallet's BRC-207 module naming no input, the pool filed in `amm-pools`)
+ * against a fake wallet and a fake `/call`; and Close (layout 2: the LP's
+ * outputs, the tokens to a module key; layout 1: the contract's, the tokens to
+ * `amm-swap`; the fee from the pool or a broadcast funding, page-built close
+ * validated against the fixture pool, submit, internalize + relinquish).
  */
 import {
   BigNumber,
@@ -24,17 +26,17 @@ import {
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import { ColorPlan, colorProtocolID } from "@bsv/color-permission-module";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PoolTemplate } from "../src/pool";
+import { PoolTemplate, RESCINDED_KEY } from "../src/pool";
 import { type SignedFetch } from "../src/lib/overlay";
 import {
   POOL_TAG,
+  PendingDeployStore,
   assetIdHex,
   deployPool,
   isPoolRow,
   legacyLpKeyId,
   lpKeyId,
   planPoolDeploy,
-  selectKeyInput,
   tokenP2pkhScript,
   valueOutputsOf,
   type BasketRow,
@@ -44,6 +46,7 @@ import { dagBytes, readBytes, type AuthFetchLike } from "../src/market/relay";
 import { BRC29, brc29Side, isBrc29, type KeyArgs } from "./brc29Wallet";
 import { tokenInputsOf } from "../src/market/swapAction";
 import v from "./fixtures/amm-topic-vectors.json";
+import v1 from "./fixtures/amm-topic-vectors-v1.json";
 
 // Keys and transactions of programs/amm-topic/gen/main.go.
 const key = (n: number) => new PrivateKey(n.toString(16).padStart(2, "0").repeat(32), 16);
@@ -52,8 +55,14 @@ const pub = (k: PrivateKey) => k.toPublicKey().toString();
 const fund = Transaction.fromHex(v.fund);
 const tokenDeploy = Transaction.fromHex(v.token_deploy);
 const poolDeploy = Transaction.fromHex(v.pool_deploy);
-/** The pool output before the validator's affirmation (what `amm.pool.affirm` is asked about). */
-const unaffirmedPool = Transaction.fromHex(v.pool_deploy_unaffirmed).outputs[0]!.lockingScript.toHex();
+/** The pool output as `amm.pool.affirm` is asked about it: the deploy's, its ValidatorPubKey, Nonce and Affirmation still to come. */
+const fixturePool = PoolTemplate.decode(poolDeploy.outputs[0]!.lockingScript)!;
+const proposedPool = PoolTemplate.lockDeploy(fixturePool.args, { ...fixturePool.state, validatorPubKey: RESCINDED_KEY, nonce: "00".repeat(32), affirmation: "" }).toHex();
+/** An in-memory PendingDeployStore. */
+const memStore = () => {
+  const m = new Map<string, string>();
+  return new PendingDeployStore({ getItem: (k) => m.get(k) ?? null, setItem: (k, val) => void m.set(k, val) });
+};
 const swap2 = Transaction.fromHex(v.swap_tokens_in);
 const DEPLOY_TXID = tokenDeploy.id("hex");
 // The page's token id and the module's asset id are the same `<txid>_0` (BRC-162 Token identification, David 2026-10-07).
@@ -68,29 +77,26 @@ afterEach(() => vi.unstubAllGlobals());
 const heldDeploy = { outpoint: `${DEPLOY_TXID}.0`, satoshis: 1, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex(), available: true };
 
 describe("pool deploy: plan", () => {
-  it("the fixture's key input gives the fixture's pool output, byte for byte (before and after the affirmation)", () => {
+  it("the plan is the fixture's pool as proposed, byte for byte; with the validator's key, nonce and affirmation, the fixture's pool output", () => {
     const outs = valueOutputsOf([heldDeploy], TOKEN_ID);
     expect(outs).toEqual([{ outpoint: `${DEPLOY_TXID}.0`, txid: DEPLOY_TXID, vout: 0, amount: 10_000_000n }]);
-    const sel = selectKeyInput(outs, 5_000_000n)!;
-    expect(sel.rest).toBe(5_000_000n); // no claim's unit any more (0.11.0)
     const plan = planPoolDeploy({
       tokenId: TOKEN_ID,
-      keyInput: sel.input,
       tokens: 5_000_000n,
       sats: 1_000_000n,
       lpFeeBps: BigInt(v.lpFeeBps),
       validatorFeeBps: BigInt(v.validatorFeeBps),
       commissionBps: BigInt(v.commissionBps),
       lpPubKey: pub(lpKey),
+      lpKeyId: "YW1tLWxw abc=",
       validator: { identityKey: v.identity },
     });
-    expect(plan.lockingScript).toBe(unaffirmedPool);
-    expect(PoolTemplate.lockDeploy(plan.args, plan.state, v.affirmation).toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
-    expect(plan.state.validatorPubKey).toBe(v.pool0.validator);
-    expect(plan.keyInput).toBe(`${DEPLOY_TXID}_0`);
-    expect(plan.validatorKeyId).toBe(`${DEPLOY_TXID}_0`);
-    // BRC-29 LP key: prefix base64("amm-lp"), suffix base64("<key input>").
-    expect(plan.lpKeyId).toBe(`YW1tLWxw ${Utils.toBase64(Utils.toArray(`${DEPLOY_TXID}_0`, "utf8"))}`);
+    expect(plan.lockingScript).toBe(proposedPool);
+    expect(plan.state.validatorPubKey).toBe(RESCINDED_KEY);
+    expect(PoolTemplate.lockDeploy(plan.args, { ...plan.state, validatorPubKey: v.pool0.validator, nonce: v.nonce, affirmation: v.affirmation }).toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
+    expect(plan.lpKeyId).toBe("YW1tLWxw abc=");
+    // Pools before 0.13.0: the LP key keyed by the deploy's key input (BRC-29), or the pre-BRC-29 key.
+    expect(lpKeyId(`${DEPLOY_TXID}_0`)).toBe(`YW1tLWxw ${Utils.toBase64(Utils.toArray(`${DEPLOY_TXID}_0`, "utf8"))}`);
     expect(legacyLpKeyId(`${DEPLOY_TXID}.0`)).toBe(`amm-lp-${DEPLOY_TXID}_0`);
     expect(plan.args.assetId).toBe(Utils.toHex(tokenDeploy.hash() as number[]));
     expect(plan.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
@@ -100,28 +106,18 @@ describe("pool deploy: plan", () => {
 
   it("refusals: legacy id, zero deposits, fees", () => {
     expect(() => assetIdHex(`${DEPLOY_TXID}_1`)).toThrow(/32-byte id/);
-    const base = { tokenId: TOKEN_ID, keyInput: { txid: DEPLOY_TXID, vout: 0 }, tokens: 1n, sats: 1n, lpFeeBps: 30n, validatorFeeBps: 5n, lpPubKey: pub(lpKey), validator: { identityKey: v.identity } };
+    const base = { tokenId: TOKEN_ID, tokens: 1n, sats: 1n, lpFeeBps: 30n, validatorFeeBps: 5n, lpPubKey: pub(lpKey), lpKeyId: "k", validator: { identityKey: v.identity } };
     expect(() => planPoolDeploy({ ...base, tokens: 0n })).toThrow(/token deposit/);
     expect(() => planPoolDeploy({ ...base, sats: 0n })).toThrow(/sats deposit/);
     expect(() => planPoolDeploy({ ...base, lpFeeBps: 10_000n })).toThrow(/LP fee/);
     expect(() => planPoolDeploy({ ...base, commissionBps: -1n })).toThrow(/commission/);
     expect(() => planPoolDeploy({ ...base, lpFeeBps: 5_000n, commissionBps: 5_000n })).toThrow(/below 100%/);
-    // Commission defaults to 0, and is the constructor's param 7.
+    // Commission defaults to 0.
     expect(planPoolDeploy(base).args.commissionBps).toBe(0n);
     expect(PoolTemplate.decode(planPoolDeploy({ ...base, commissionBps: 25n }).lockingScript)!.args.commissionBps).toBe(25n);
   });
 
-  it("the key input: the smallest output that covers the deposit (the rest comes back), else the largest (the module selects the rest); null when short; only available value outputs of the token", () => {
-    const mk = (amount: bigint, n: number) => ({ outpoint: `${"ab".repeat(32)}.${n}`, txid: "ab".repeat(32), vout: n, amount });
-    const c = [mk(5n, 0), mk(3n, 1), mk(2n, 2)];
-    expect(selectKeyInput(c, 4n)).toEqual({ input: c[0], rest: 1n });
-    expect(selectKeyInput(c, 3n)).toEqual({ input: c[1], rest: 0n });
-    expect(selectKeyInput(c, 1n)).toEqual({ input: c[2], rest: 1n });
-    expect(selectKeyInput(c, 7n)).toEqual({ input: c[0], rest: 0n });
-    expect(selectKeyInput(c, 10n)).toEqual({ input: c[0], rest: 0n });
-    expect(selectKeyInput(c, 11n)).toBeNull();
-    expect(selectKeyInput(c, 0n)).toBeNull();
-    // Reserved outputs, other tokens and pool outputs are not offered.
+  it("the wallet's tokens: only available value outputs of the token (what the module selects from)", () => {
     const pool = { outpoint: `${poolDeploy.id("hex")}.0`, satoshis: 1_000_000, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), available: true };
     const other = { ...heldDeploy, outpoint: `${"cd".repeat(32)}.0`, lockingScript: tokenP2pkhScript(`${"ef".repeat(32)}_0`, 9n, pub(lpKey)) };
     expect(valueOutputsOf([{ ...heldDeploy, available: false }, other], TOKEN_ID)).toEqual([]);
@@ -250,8 +246,8 @@ function atomic(tx: Transaction, ancestors: Transaction[]): number[] {
   return b.toBinaryAtomic(tx.id("hex"));
 }
 
-/** The wallet's honest keys, the fixture's LP key for the deposit's BRC-29 LP keyID (so the pool output is the fixture's byte for byte). */
-const deployKeys = (a: KeyArgs) => (a.keyID === lpKeyId(`${DEPLOY_TXID}_0`) ? lpKey : side.privateKey(a));
+/** The wallet's honest keys, the fixture's LP key for a new pool's BRC-29 LP keyID (prefix base64("amm-lp"), so the pool output is the fixture's byte for byte). */
+const deployKeys = (a: KeyArgs) => (isBrc29(a.protocolID) && a.keyID.startsWith("YW1tLWxw ") ? lpKey : side.privateKey(a));
 
 /**
  * A fake `/call` for `amm.pool.affirm`: answers the fixture's affirmation for the fixture's
@@ -263,14 +259,16 @@ function fakeAffirm(answer?: (args: Record<string, unknown>) => { status: number
     async fetch(_url, config) {
       const b = JSON.parse(config!.body!) as { fn: string; args: Record<string, unknown> };
       calls.push(b);
-      const a = answer ? answer(b.args) : { status: 200, body: { fn: b.fn, result: { signature: dagBytes(Utils.toArray(v.affirmation, "hex")) } } };
+      const a = answer
+        ? answer(b.args)
+        : { status: 200, body: { fn: b.fn, result: { validatorPubKey: dagBytes(Utils.toArray(v.pool0.validator, "hex")), nonce: dagBytes(Utils.toArray(v.nonce, "hex")), signature: dagBytes(Utils.toArray(v.affirmation, "hex")) } } };
       return { status: a.status, text: async () => JSON.stringify(a.body) };
     },
   };
   return { af, calls };
 }
 
-async function deploy(w = fakeWallet(0, deployKeys), af = fakeAffirm().af, submitted: { topic: string; beef: number[] }[] = []) {
+async function deploy(w = fakeWallet(0, deployKeys), af = fakeAffirm().af, submitted: { topic: string; beef: number[] }[] = [], pending = memStore()) {
   const d = await deployPool({
     wallet: w.wallet,
     af,
@@ -283,33 +281,32 @@ async function deploy(w = fakeWallet(0, deployKeys), af = fakeAffirm().af, submi
     held: [heldDeploy],
     meta: { sym: "TST", dec: 0 },
     submit: async (topic, beef) => (submitted.push({ topic, beef }), { steak: { [topic]: { outputsToAdmit: [0, 1], coinsToRetain: [], coinsRemoved: [0] } } }),
+    pending,
   });
-  return { ...w, d, submitted };
+  return { ...w, d, submitted, pending };
 }
 
-describe("pool deploy (0.12.0): the validator's affirmation, then one createAction through the wallet's BRC-207 module", () => {
-  it("amm.pool.affirm {pool: the unaffirmed script, satoshis, keyInput}; the affirmed pool at output 0, the key input first, the rest to a module key; a p color plan; filed in amm-pools; submitted to the token topic", async () => {
+describe("pool deploy (0.13.0): the validator's affirmation, then one createAction through the wallet's BRC-207 module, no input named", () => {
+  it("amm.pool.affirm {pool: the proposed script, satoshis}; the pool with the validator's key, nonce and signature at output 0, alone; a p color plan with no input positions; filed in amm-pools with the nonce; submitted to the token topic", async () => {
     const { af, calls: http } = fakeAffirm();
     const submitted: { topic: string; beef: number[] }[] = [];
-    const { d, calls } = await deploy(fakeWallet(0, deployKeys), af, submitted);
-    expect(http).toEqual([{ fn: "amm.pool.affirm", args: { pool: dagBytes(Utils.toArray(unaffirmedPool, "hex")), satoshis: 1_000_000, keyInput: `${DEPLOY_TXID}_0` } }]);
-    expect(d.affirmation).toBe(v.affirmation);
+    const pending = memStore();
+    const { d, calls } = await deploy(fakeWallet(0, deployKeys), af, submitted, pending);
+    expect(http).toEqual([{ fn: "amm.pool.affirm", args: { pool: dagBytes(Utils.toArray(proposedPool, "hex")), satoshis: 1_000_000 } }]);
+    expect(d.affirmation).toMatchObject({ validatorPubKey: v.pool0.validator, nonce: v.nonce, signature: v.affirmation });
 
-    // The wallet sequence: LP key, identity, the rest's module key; the action; its signing; the filing.
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "createAction", "signAction", "internalizeAction"]);
+    // The wallet sequence: the LP key; the action (signed and broadcast by the wallet); the filing.
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "createAction", "internalizeAction"]);
+    const lpReq = calls[0]!.args as KeyArgs;
+    expect(lpReq.protocolID).toEqual(BRC29);
+    expect(lpReq.keyID).toMatch(/^YW1tLWxw [A-Za-z0-9+/]{22}==$/); // base64("amm-lp"), 16 random bytes
     const create = calls.find((c) => c.method === "createAction")!.args as CreateActionArgs;
-    expect(create.inputs).toEqual([{ outpoint: `${DEPLOY_TXID}.0`, unlockingScriptLength: 108, inputDescription: "TST: the pool's key input" }]);
-    expect(create.outputs![0]).toEqual({ lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), satoshis: 1_000_000, outputDescription: "AMM pool: TST / BSV" });
+    expect(create.inputs).toBeUndefined();
+    expect(create.outputs).toEqual([{ lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), satoshis: 1_000_000, outputDescription: "AMM pool: TST / BSV" }]);
     expect(create.options).toEqual({ randomizeOutputs: false, acceptDelayedBroadcast: false });
     expect(create.labels!.at(-1)).toBe("amm-pool-deploy");
     const plan = ColorPlan.fromLabels(create.labels)!;
-    expect(plan).toMatchObject({ version: 1, assets: [SDK_ID], operations: [{ assetId: SDK_ID, operation: "transfer" }], inputPositions: [{ outpoint: `${DEPLOY_TXID}.0`, index: 0 }], changePositions: [], sighashTypes: [] });
-    // The key input's rest (5,000,000) back to a fresh module key of the user's own: the plan's owned output 1.
-    expect(plan.ownedOutputs).toHaveLength(1);
-    const own = plan.ownedOutputs[0]!;
-    expect(own).toMatchObject({ outputIndex: 1, assetId: SDK_ID, senderIdentityKey: side.identityKey });
-    const ownKey = side.publicKey({ protocolID: colorProtocolID(own.assetId, own.derivationPrefix, own.derivationSuffix), keyID: "color", counterparty: side.identityKey, forSelf: true });
-    expect(create.outputs![1]).toEqual({ lockingScript: tokenP2pkhScript(SDK_ID, 5_000_000n, ownKey), satoshis: 1, outputDescription: "TST kept back from the pool" });
+    expect(plan).toMatchObject({ version: 1, assets: [SDK_ID], operations: [{ assetId: SDK_ID, operation: "transfer" }], inputPositions: [], ownedOutputs: [], changePositions: [], sighashTypes: [] });
 
     // The broadcast deploy: output 0 the affirmed pool; listed (amm-lookup's rule).
     expect(PoolTemplate.affirmed(Transaction.fromAtomicBEEF(d.tx).outputs[0]!.lockingScript, 1_000_000n)).toBe(true);
@@ -318,7 +315,7 @@ describe("pool deploy (0.12.0): the validator's affirmation, then one createActi
     expect(submitted.map((x) => x.topic)).toEqual([`tm_color_${SDK_ID}`]);
     expect(d.submitted).toBe(`admitted under tm_color_${SDK_ID} (outputs 0, 1)`);
 
-    // The position row: output 0 into amm-pools, the LP key and the validator's terms, no claim.
+    // The position row: output 0 into amm-pools, the LP key, the validator's terms and nonce.
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { tx: number[]; outputs: { insertionRemittance: { basket: string; tags: string[]; customInstructions: string } }[]; labels: string[] };
     expect(ia.tx).toEqual(d.tx);
     expect(ia.labels).toEqual(["amm-pool-deploy"]);
@@ -329,64 +326,77 @@ describe("pool deploy (0.12.0): the validator's affirmation, then one createActi
       sym: "TST",
       dec: "0",
       protocolID: BRC29,
-      keyID: lpKeyId(`${DEPLOY_TXID}_0`),
+      keyID: lpReq.keyID,
       counterparty: "self",
-      amm: { role: "lp", validatorIdentity: v.identity, lpFeeBps: "30", validatorFeeBps: "5", commissionBps: String(v.commissionBps) },
+      amm: { role: "lp", validatorIdentity: v.identity, lpFeeBps: "30", validatorFeeBps: "5", commissionBps: String(v.commissionBps), nonce: v.nonce },
     });
     expect(d.filed).toBe(true);
+    // The LP keyID was kept in the browser until the row was filed.
+    expect(pending.list()).toEqual([]);
     expect(calls.some((c) => c.method === "abortAction" || c.method === "relinquishOutput")).toBe(false);
   });
 
-  it("an exact key input: no owned output; a signature that does not affirm the proposed pool is refused before the wallet's action", async () => {
-    // The validator's identity of gen/vectors: it affirms any proposed pool with its child of the key input.
+  it("a validator signing with its own nonce: affirmed; an answer whose key is not the child of its nonce, or whose signature does not affirm the pool, is refused before the wallet's action", async () => {
+    // The validator's identity of gen/vectors: it affirms any proposed pool with its child of a nonce of its own.
     const identity = key(0x7f);
     expect(pub(identity)).toBe(v.identity);
+    const nonce = "5a".repeat(32);
+    const child = identity.deriveChild(new PrivateKey(1).toPublicKey(), `1-amm pool-${nonce}`);
     const signing = fakeAffirm((args) => {
       const pool = PoolTemplate.decode(readBytes(args.pool)!)!;
-      const [txid, vout] = String(args.keyInput).split("_");
-      const child = identity.deriveChild(new PrivateKey(1).toPublicKey(), `1-amm pool-${txid}_${vout}`);
-      const sig = child.sign(PoolTemplate.affirmationMessage(pool, BigInt(args.satoshis as number)));
-      return { status: 200, body: { fn: "amm.pool.affirm", result: { signature: dagBytes(sig.toDER() as number[]) } } };
+      const filled = { ...pool, state: { ...pool.state, validatorPubKey: pub(child), nonce } };
+      const sig = child.sign(PoolTemplate.affirmationMessage(filled, BigInt(args.satoshis as number)));
+      return { status: 200, body: { fn: "amm.pool.affirm", result: { validatorPubKey: dagBytes(Utils.toArray(pub(child), "hex")), nonce: dagBytes(Utils.toArray(nonce, "hex")), signature: dagBytes(sig.toDER() as number[]) } } };
     });
-    const exactTx = new Transaction();
-    exactTx.addInput({ sourceTXID: DEPLOY_TXID, sourceOutputIndex: 0, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
-    exactTx.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(tokenP2pkhScript(SDK_ID, 5_000_000n, pub(lpKey))) });
-    const X = exactTx.id("hex");
-    sources.set(X, exactTx);
-    const exact = { ...heldDeploy, outpoint: `${X}.0`, lockingScript: exactTx.outputs[0]!.lockingScript.toHex() };
     const w = fakeWallet(0, deployKeys);
-    const d = await deployPool({ wallet: w.wallet, af: signing.af, base: "http://x/amm", tokenId: TOKEN_ID, tokens: 5_000_000n, sats: 1_000_000n, fees: { lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: 0n }, validator: { identityKey: v.identity }, held: [heldDeploy, exact], submit: async () => ({}) });
-    expect(signing.calls[0]!.args.keyInput).toBe(`${X}_0`);
-    const create = w.calls.find((c) => c.method === "createAction")!.args as CreateActionArgs;
-    expect(create.outputs).toHaveLength(1);
-    expect(ColorPlan.fromLabels(create.labels)!.ownedOutputs).toEqual([]);
-    expect(create.inputs![0]!.outpoint).toBe(`${X}.0`);
+    const pending = memStore();
+    const d = await deployPool({ wallet: w.wallet, af: signing.af, base: "http://x/amm", tokenId: TOKEN_ID, tokens: 5_000_000n, sats: 1_000_000n, fees: { lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: 0n }, validator: { identityKey: v.identity }, held: [heldDeploy], submit: async () => ({}), pending });
+    expect(PoolTemplate.decode(Transaction.fromAtomicBEEF(d.tx).outputs[0]!.lockingScript)!.state).toMatchObject({ validatorPubKey: pub(child), nonce });
     expect(d.errors).toEqual([]);
     expect(d.submitted).toBe("not decided yet");
 
-    // The fixture's signature is over the pool keyed by deploy:0, not this one.
+    // The fixture's signature over another deposit (900,000 sats): does not affirm this pool.
     const w2 = fakeWallet(0, deployKeys);
-    const refused = deployPool({ wallet: w2.wallet, af: fakeAffirm().af, base: "http://x/amm", tokenId: TOKEN_ID, tokens: 5_000_000n, sats: 1_000_000n, fees: { lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: 0n }, validator: { identityKey: v.identity }, held: [heldDeploy, exact] });
+    const refused = deployPool({ wallet: w2.wallet, af: fakeAffirm().af, base: "http://x/amm", tokenId: TOKEN_ID, tokens: 5_000_000n, sats: 900_000n, fees: { lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: BigInt(v.commissionBps) }, validator: { identityKey: v.identity }, held: [heldDeploy], pending });
     await expect(refused).rejects.toThrow(/does not affirm this pool/);
     expect(w2.calls.some((c) => c.method === "createAction")).toBe(false);
+    // A key that is not the validator's child of the nonce.
+    const wrongKey = fakeAffirm(() => ({ status: 200, body: { fn: "amm.pool.affirm", result: { validatorPubKey: dagBytes(Utils.toArray(v.pool1.validator, "hex")), nonce: dagBytes(Utils.toArray(v.nonce, "hex")), signature: dagBytes(Utils.toArray(v.affirmation, "hex")) } } }));
+    const w3 = fakeWallet(0, deployKeys);
+    await expect(deploy(w3, wrongKey.af)).rejects.toThrow(/not the validator's child of its nonce/);
+    expect(w3.calls.some((c) => c.method === "createAction")).toBe(false);
+    // An answer without the key and the nonce (0.11.0's shape).
+    const old = fakeAffirm(() => ({ status: 200, body: { fn: "amm.pool.affirm", result: { signature: dagBytes(Utils.toArray(v.affirmation, "hex")) } } }));
+    await expect(deploy(fakeWallet(0, deployKeys), old.af)).rejects.toThrow(/no validatorPubKey/);
   });
 
-  it("the validator's refusal (fees_unacceptable, wrong_validator_key …) stops the deploy before the wallet's action", async () => {
+  it("the validator's refusal (fees_unacceptable, …) stops the deploy before the wallet's action", async () => {
     const w = fakeWallet(0, deployKeys);
     const { af } = fakeAffirm(() => ({ status: 500, body: { fn: "amm.pool.affirm", error: { code: "failed", message: "fees_unacceptable: lpFeeBps 30 is not 25" } } }));
     await expect(deploy(w, af)).rejects.toThrow(/fees_unacceptable/);
     expect(w.calls.some((c) => c.method === "createAction")).toBe(false);
   });
 
-  it("a wallet that refuses the action: the error, nothing filed; a refused signing aborts the action", async () => {
+  it("a wallet that refuses the action: the error, nothing filed, the LP keyID kept in the browser; a refused signing aborts the action", async () => {
     const w = fakeWallet(0, deployKeys);
-    (w.wallet as unknown as { signAction: () => Promise<never> }).signAction = async () => {
-      w.calls.push({ method: "signAction", args: {} });
+    (w.wallet as unknown as { createAction: () => Promise<never> }).createAction = async () => {
+      w.calls.push({ method: "createAction", args: {} });
       throw new Error("BRC-207: the user declined the color_send request");
     };
-    await expect(deploy(w)).rejects.toThrow(/declined the color_send/);
-    expect(w.calls.map((c) => c.method).slice(-2)).toEqual(["signAction", "abortAction"]);
+    const pending = memStore();
+    await expect(deploy(w, undefined, [], pending)).rejects.toThrow(/declined the color_send/);
     expect(w.calls.some((c) => c.method === "internalizeAction")).toBe(false);
+    expect(pending.list()).toHaveLength(1);
+    // The wallet hands the action back for signing and the user declines: aborted.
+    const w2 = fakeWallet(0, deployKeys);
+    const ca = w2.wallet.createAction.bind(w2.wallet);
+    (w2.wallet as unknown as { createAction: (a: CreateActionArgs) => unknown }).createAction = (a: CreateActionArgs) => ca({ ...a, options: { ...a.options, signAndProcess: false } });
+    (w2.wallet as unknown as { signAction: () => Promise<never> }).signAction = async () => {
+      w2.calls.push({ method: "signAction", args: {} });
+      throw new Error("BRC-207: the user declined the color_send request");
+    };
+    await expect(deploy(w2)).rejects.toThrow(/declined the color_send/);
+    expect(w2.calls.map((c) => c.method).slice(-2)).toEqual(["signAction", "abortAction"]);
   });
 });
 
@@ -394,7 +404,7 @@ describe("pool deploy (0.12.0): the validator's affirmation, then one createActi
 // Close (0.9.0)
 // ---------------------------------------------------------------------------
 
-describe("close: the whole pool to the LP, the fee from the pool or a broadcast funding; submit, internalize, relinquish", () => {
+describe("close (0.13.0, layout 2): the LP's outputs — the sats to the LP key, the tokens to a module key of the user's own; the fee from the pool or a broadcast funding; submit, internalize, relinquish", () => {
   // A pool like the fixture's after swap2, whose LP key is the wallet's BRC-29 LP key for some deposit outpoint.
   const depositOp = `${"33".repeat(32)}_0`;
   const lpRef = { protocolID: BRC29 as never, keyID: lpKeyId(depositOp), counterparty: "self" };
@@ -407,10 +417,11 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
   const sats = BigInt(poolTx.outputs[0]!.satoshis!);
   const [derivationPrefix, derivationSuffix] = lpRef.keyID.split(" ") as [string, string];
 
-  it("bsvFee 0: a funding output broadcast by the wallet (no noSend, exact: the token output's sat + fee); [pool, funding] → [every sat, every token] to the LP key; both inputs validate; completeClose files both and relinquishes the funding and the pool row", async () => {
-    const { wallet, calls } = fakeWallet(3, honest());
+  it("bsvFee 0: a funding output broadcast by the wallet (no noSend, exact: the token output's sat + fee); [pool, funding] → [every sat to the LP key, every token to a module key]; both inputs validate; completeClose takes in the payment and, through the module, the tokens, and relinquishes the funding and the pool row", async () => {
+    const { wallet, calls } = fakeWallet(3, honest((a) => side.privateKey(a)));
     const s = await prepareClose({ wallet, tokenId: TOKEN_ID, meta: { sym: "TST", dec: 0 }, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: 0n, satsPerKb: RATE, now: 1_000 });
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "createAction", "createSignature", "createSignature", "getPublicKey"]);
+    // The identity and the LP key; the module receiving key (the identity, then the key); the funding (its key); the signatures.
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "createAction", "createSignature", "createSignature", "getPublicKey"]);
     const create = calls.find((c) => c.method === "createAction")!.args as CreateActionArgs;
     expect(create.options).toEqual({ randomizeOutputs: false, acceptDelayedBroadcast: false });
     expect(JSON.parse(create.outputs![0]!.customInstructions!).amm).toEqual({ close: `${poolTx.id("hex")}_0`, expires: 121_000 });
@@ -427,33 +438,39 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
     expect(s.sats).toBe(sats);
     expect(s.tokenAmount).toBe(base.state.tokenReserve);
     expect(s.payout).toEqual({ outputIndex: 0, satoshis: Number(sats), lockingScript: tx.outputs[0]!.lockingScript.toHex(), remittance: { derivationPrefix, derivationSuffix, senderIdentityKey: side.identityKey } });
-    // The tokens (0.12.0): the contract pays them to the LP key, so they go to the active swap basket under it (Move back).
-    expect(JSON.parse(s.tokens.customInstructions)).toEqual({ assetId: SDK_ID, amount: String(base.state.tokenReserve), protocolID: BRC29, keyID: lpRef.keyID, counterparty: "self" });
+    // The tokens (0.13.0): to a fresh module receiving key of the user's own (sender the user), no amm-swap.
+    expect(s.version).toBe(2);
+    expect(s.tokens).toBeNull();
+    const r = s.receipt!;
+    expect(r.outputIndex).toBe(1);
+    expect(r.receipt).toMatchObject({ assetId: SDK_ID, senderIdentityKey: side.identityKey });
+    const moduleKey = side.publicKey({ protocolID: colorProtocolID(SDK_ID, r.receipt.derivationPrefix, r.receipt.derivationSuffix), keyID: "color", counterparty: side.identityKey, forSelf: true });
+    expect(tx.outputs[1]!.lockingScript.toHex()).toBe(tokenP2pkhScript(SDK_ID, base.state.tokenReserve, moduleKey));
     expect(s.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
 
     const before = calls.length;
-    const c = await completeClose(wallet, s, `${DEPLOY_TXID}.0`);
+    const kept = new Map<string, string>();
+    const { PendingPayoutStore } = await import("../src/wallet/pendingPayouts");
+    const payouts = new PendingPayoutStore({ getItem: (k) => kept.get(k) ?? null, setItem: (k, val) => void kept.set(k, val) });
+    const c = await completeClose(wallet, s, `${DEPLOY_TXID}.0`, payouts);
     expect(c).toEqual({ internalized: true, relinquished: [f.outpoint, `${DEPLOY_TXID}.0`], errors: [] });
+    expect(payouts.list()).toEqual([]);
     const after = calls.slice(before);
-    expect(after.map((x) => x.method)).toEqual(["internalizeAction", "relinquishOutput", "relinquishOutput"]);
+    expect(after.map((x) => x.method)).toEqual(["internalizeAction", "internalizeAction", "relinquishOutput", "relinquishOutput"]);
     const ia = after[0]!.args as { tx: number[]; outputs: unknown[]; labels: string[] };
     expect(ia.tx).toEqual(s.beef);
     expect(ia.labels).toEqual(["amm-close"]);
-    expect(ia.outputs).toEqual([
-      { outputIndex: 0, protocol: "wallet payment", paymentRemittance: s.payout!.remittance },
-      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "amm-swap", tags: [], customInstructions: s.tokens.customInstructions } },
-    ]);
-    expect(after.slice(1).map((x) => x.args)).toEqual([
+    expect(ia.outputs).toEqual([{ outputIndex: 0, protocol: "wallet payment", paymentRemittance: s.payout!.remittance }]);
+    const ib = after[1]!.args as { outputs: { insertionRemittance: { basket: string } }[] };
+    expect(ib.outputs[0]!.insertionRemittance.basket).toBe(`p color ${DEPLOY_TXID}v0`);
+    expect(after.slice(2).map((x) => x.args)).toEqual([
       { basket: "1sat-deposit", output: f.outpoint },
       { basket: "amm-pools", output: `${DEPLOY_TXID}.0` },
     ]);
-    // The close's tokens are an amm-swap input the legs and Move back can spend (the LP key signs).
-    const row = { outpoint: `${s.txid}.1`, satoshis: 1, lockingScript: s.tx.outputs[1]!.lockingScript.toHex(), customInstructions: s.tokens.customInstructions };
-    expect(tokenInputsOf([row], TOKEN_ID)).toEqual([expect.objectContaining({ amount: base.state.tokenReserve, protocolID: BRC29, keyID: lpRef.keyID, counterparty: "self" })]);
   });
 
   it("bsvFee > 0: no funding (the wallet makes no action); [pool] → [sats − bsvFee, every token]; validates; a fee too small for the miner and the token's sat, or over the pool, is refused", async () => {
-    const { wallet, calls } = fakeWallet(3, honest());
+    const { wallet, calls } = fakeWallet(3, honest((a) => side.privateKey(a)));
     const s = await prepareClose({ wallet, tokenId: TOKEN_ID, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: 1_000n, satsPerKb: RATE });
     expect(s.funding).toBeNull();
     expect(calls.some((c) => c.method === "createAction")).toBe(false);
@@ -466,7 +483,38 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
     const all = await prepareClose({ wallet, tokenId: TOKEN_ID, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: sats, satsPerKb: RATE });
     expect(all.payout).toBeNull();
     expect(all.tx.outputs).toHaveLength(1);
-    expect(all.tokens.outputIndex).toBe(0);
+    expect(all.receipt!.outputIndex).toBe(0);
+  });
+
+  it("a layout-1 pool (before 0.13.0): the contract's outputs, everything to the LP key; the tokens into amm-swap (Move back), as 0.12.x", async () => {
+    const swap2v1 = Transaction.fromHex(v1.swap_tokens_in);
+    const b1 = PoolTemplate.decode(swap2v1.outputs[0]!.lockingScript)!;
+    expect(b1.version).toBe(1);
+    const t1 = new Transaction();
+    t1.addInput({ sourceTXID: "44".repeat(32), sourceOutputIndex: 0, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
+    t1.addOutput({ satoshis: swap2v1.outputs[0]!.satoshis!, lockingScript: PoolTemplate.lockContinuation(b1, { ...b1.state, lpPubKey: lpPub }) });
+    const { wallet, calls } = fakeWallet(3, honest());
+    const tokenId1 = `${Transaction.fromHex(v1.token_deploy).id("hex")}_0`;
+    const s = await prepareClose({ wallet, tokenId: tokenId1, poolOutput: { beef: atomic(t1, []), outputIndex: 0 }, lpKey: lpRef, bsvFee: 0n, satsPerKb: RATE, now: 1_000 });
+    expect(s.version).toBe(1);
+    expect(s.receipt).toBeNull();
+    const sats1 = BigInt(t1.outputs[0]!.satoshis!);
+    expect(s.tx.outputs.map((o) => o.satoshis)).toEqual([Number(sats1), 1]);
+    expect(s.tx.outputs[0]!.lockingScript.toHex()).toBe(new P2PKH().lock(PublicKey.fromString(lpPub).toAddress()).toHex());
+    expect(s.tx.outputs[1]!.lockingScript.toHex()).toBe(tokenP2pkhScript(tokenId1, b1.state.tokenReserve, lpPub));
+    for (const i of [0, 1]) expect(verify(s.tx, i)).toBe(true);
+    expect(JSON.parse(s.tokens!.customInstructions)).toEqual({ assetId: tokenId1, amount: String(b1.state.tokenReserve), protocolID: BRC29, keyID: lpRef.keyID, counterparty: "self" });
+    const before = calls.length;
+    const c = await completeClose(wallet, s, `${DEPLOY_TXID}.0`);
+    expect(c.internalized).toBe(true);
+    const ia = calls.slice(before)[0]!.args as { outputs: unknown[] };
+    expect(ia.outputs).toEqual([
+      { outputIndex: 0, protocol: "wallet payment", paymentRemittance: s.payout!.remittance },
+      { outputIndex: 1, protocol: "basket insertion", insertionRemittance: { basket: "amm-swap", tags: [], customInstructions: s.tokens!.customInstructions } },
+    ]);
+    // The close's tokens are an amm-swap input the legs and Move back can spend (the LP key signs).
+    const row = { outpoint: `${s.txid}.1`, satoshis: 1, lockingScript: s.tx.outputs[1]!.lockingScript.toHex(), customInstructions: s.tokens!.customInstructions };
+    expect(tokenInputsOf([row], tokenId1)).toEqual([expect.objectContaining({ amount: b1.state.tokenReserve, protocolID: BRC29, keyID: lpRef.keyID, counterparty: "self" })]);
   });
 
   it("refuses a wallet key that is not the pool's LP key, and a pre-BRC-29 LP key with a payout, before any funding", async () => {
@@ -479,7 +527,7 @@ describe("close: the whole pool to the LP, the fee from the pool or a broadcast 
   });
 
   it("the submit (BRC-22, plain fetch): the STEAK, or nothing decided (503); awaitAdmitted asks ls_color", async () => {
-    const { wallet } = fakeWallet(3, honest());
+    const { wallet } = fakeWallet(3, honest((a) => side.privateKey(a)));
     const s = await prepareClose({ wallet, tokenId: TOKEN_ID, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: 1_000n, satsPerKb: RATE });
     const STEAK = { [s.topic]: { outputsToAdmit: [1], coinsToRetain: [], coinsRemoved: [0] } };
     const seen: { url: string; init: RequestInit }[] = [];

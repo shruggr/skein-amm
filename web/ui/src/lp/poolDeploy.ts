@@ -1,55 +1,49 @@
 /**
- * Creating a pool from a token in the wallet (skein-amm 0.12.0, David Case
- * 2026-10-21/22: pool deploys move to the BRC-207 wallet module): ONE
- * wallet-built createAction, affirmed first by this skein's validator. The
- * page holds no keys: every key and signature comes from the wallet.
+ * Creating a pool from a token in the wallet (skein-amm 0.13.0, David Case
+ * 2026-10-22, plans/validator-signoff §2): ONE wallet-built createAction,
+ * affirmed first by this skein's validator. The page holds no keys and names
+ * no token input: the wallet's BRC-207 module selects the token inputs and
+ * adds token change; every key and signature comes from the wallet.
  *
- *   1. The key input: one of the wallet's own value outputs of the token
- *      (`p color assets`), named as the deploy's input 0. The pool's first
- *      ValidatorPubKey is the validator's child of the deploy's first token
- *      input (docs/AMM.md "Keys rotate"), so the page must know that input
- *      before the pool script exists; the module's own selection is not
- *      known in advance. The smallest output that covers the deposit, else
- *      the largest (the module selects the rest).
+ *   1. The LP key: a BRC-29 key to self under a fresh random keyID
+ *      (`newLpKey`: derivationPrefix base64("amm-lp"), derivationSuffix 16
+ *      random bytes), kept in the position row (and, until the row is filed,
+ *      in this browser: `PendingDeployStore`, so Recover can find it).
  *   2. `amm.pool.terms` (the validator and its fees), then `amm.pool.affirm
- *      {pool, satoshis, keyInput}`: the proposed pool output without its
- *      payload, its sats and the key input → the validator's signature,
- *      which becomes the pool output's BRC-162 payload
- *      (`PoolTemplate.lockDeploy(args, state, affirmation)`), checked here
- *      (`PoolTemplate.affirmed`) before the wallet sees it.
- *   3. `createAction`: the key input (`inputPositions` index 0), output 0
- *      the pool (the deposit's tokens to the pool script: a transfer to a
- *      foreign script in the `p color plan`), and, when the key input
- *      carries more than the deposit, output 1 the rest back to a fresh
- *      module key (the plan's `ownedOutputs`); `randomizeOutputs: false`.
- *      The module adds any further token inputs and their token change; the
- *      wallet funds the sats, signs and broadcasts; the module submits to
- *      `tm_color_<assetId>`. The page submits it there too (plain fetch, a
- *      repeat is harmless).
+ *      {pool, satoshis}`: the proposed pool output, its ValidatorPubKey,
+ *      Nonce and Affirmation still to come (33 zero bytes, 32 zero bytes,
+ *      empty) → `{validatorPubKey, nonce, signature}`. The page checks the
+ *      key is the validator's child of the nonce and the signature affirms
+ *      the pool (`PoolTemplate.affirmed`), then writes the three into the
+ *      pool's state (`PoolTemplate.lockDeploy`).
+ *   3. `createAction`: outputs [the pool] (the deposit's tokens to a foreign
+ *      script: a transfer in the `p color plan`, no `inputPositions`, no
+ *      owned outputs), `randomizeOutputs: false`. The module selects the token
+ *      inputs and adds the token change; the wallet funds the sats, signs and
+ *      broadcasts; the module submits to `tm_color_<assetId>`. The page submits
+ *      it there too (plain fetch, a repeat is harmless). The input BEEF of the
+ *      module's own inputs is the module's (BRC-207 module 0.1.1; the
+ *      validator-signoff record §10).
  *   4. The position row: output 0 filed in the exchange's own basket
  *      `amm-pools` (basket insertion; customInstructions the LP key, the
- *      validator and its fees).
+ *      validator, its fees and its nonce).
  *
  * Keys:
- *  - LP key: a BRC-29 key (src/wallet/brc29.ts) — `getPublicKey({protocolID:
- *    [2, "3241645161d8"], keyID: "<derivationPrefix> <derivationSuffix>",
- *    counterparty: "self", forSelf: true})` with derivationPrefix =
- *    base64("amm-lp") and derivationSuffix = base64("<txid>_<vout>") of the
- *    key input. Close pays the pool's BSV to Hash160 of it, so the payout is
- *    a wallet payment the wallet internalizes (sender = the user's own
- *    identity). Pools created before have a 1sat-sdk LP key (`P1SAT_PROTOCOL`,
- *    keyID "amm-lp-<txid>_<vout>", `legacyLpKeyId`).
- *  - Validator key: the anyone-child of the validator's identity for
- *    `1-amm pool-<key input>` (src/lib/keys.ts), a public derivation.
+ *  - LP key: as above. Pools before 0.13.0 keyed it by the deploy's first
+ *    token input (`lpDerivation`, `lpKeyId`; before BRC-29, `legacyLpKeyId`
+ *    under `P1SAT_PROTOCOL`): kept for their rows and for Recover.
+ *  - Validator key: the anyone-child of the validator's identity keyed by
+ *    the nonce (src/lib/keys.ts `deriveFirstValidatorPubKey`), a public
+ *    derivation the page checks.
  */
 import { P2PKH, PublicKey, Transaction, Utils, type CreateActionOutput, type InternalizeOutput, type WalletInterface, type WalletProtocol } from "@bsv/sdk";
 import type { ColorRemittance } from "@bsv/color-permission-module";
-import { PoolTemplate, decodeOneColor, oneColorValuePrefix, type PoolArgs, type PoolFields } from "../pool";
-import { deriveValidatorPubKey, validatorKeyId } from "../lib/keys";
+import { PoolTemplate, RESCINDED_KEY, decodeOneColor, oneColorValuePrefix, type PoolArgs, type PoolFields } from "../pool";
+import { deriveFirstValidatorPubKey } from "../lib/keys";
 import { priceOf } from "../market/view";
 import { callApp, dagBytes, readBytes, type AuthFetchLike } from "../market/relay";
-import { BRC29_PROTOCOL, brc29KeyID, identityKeyOf } from "../wallet/brc29";
-import { POOLS_BASKET, newReceivingKey, runTokenAction, transferPlanLabels, type HeldOutput } from "../wallet/color";
+import { BRC29_PROTOCOL, brc29KeyID, randomBase64 } from "../wallet/brc29";
+import { POOLS_BASKET, runTokenAction, transferPlanLabels, type HeldOutput } from "../wallet/color";
 import { POOL_OP, POOL_TAG, isPoolRow } from "./poolRows";
 import { parseOutpoint, parseTokenId, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId";
 import { submitToOverlay, steakText } from "./close";
@@ -69,10 +63,8 @@ const LP_DERIVATION_PREFIX = Utils.toBase64(Utils.toArray("amm-lp", "utf8"));
 /** The validator's default terms (amm-validator's, `config.amm.ammValidator`); a deploy takes the skein's own from `amm.pool.terms`. */
 export const DEFAULT_LP_FEE_BPS = 30n;
 export const DEFAULT_VALIDATOR_FEE_BPS = 5n;
-/** `amm.pool.affirm` (amm-p2p, 0.11.0). */
+/** `amm.pool.affirm` (amm-p2p, 0.11.0; 0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`). */
 export const POOL_AFFIRM_FN = "amm.pool.affirm";
-/** A P2PKH unlocking script's upper bound: push(DER ≤ 72 + sighash byte) + push(33-byte key). */
-const P2PKH_UNLOCK_LENGTH = 108;
 
 const toHex = (b: number[] | Uint8Array) => Utils.toHex(Array.from(b));
 
@@ -80,7 +72,12 @@ function describe(text: string): string {
   return text.length <= 50 ? text : `${text.slice(0, 49)}…`;
 }
 
-/** The LP key's BRC-29 derivation for a pool output created by a transaction whose key input spends `outpoint` (`<txid>_<vout>` or `txid.vout`). */
+/** A new pool's LP key derivation (0.13.0): derivationPrefix base64("amm-lp"), derivationSuffix 16 random bytes, base64. */
+export function newLpDerivation(): { derivationPrefix: string; derivationSuffix: string } {
+  return { derivationPrefix: LP_DERIVATION_PREFIX, derivationSuffix: randomBase64(16) };
+}
+
+/** A pool before 0.13.0: the LP key's BRC-29 derivation for a pool output created by a transaction whose key input spends `outpoint` (`<txid>_<vout>` or `txid.vout`). */
 export function lpDerivation(outpoint: string): { derivationPrefix: string; derivationSuffix: string } {
   const [txid, vout] = outpoint.split(/[._]/);
   return { derivationPrefix: LP_DERIVATION_PREFIX, derivationSuffix: Utils.toBase64(Utils.toArray(`${txid}_${vout}`, "utf8")) };
@@ -107,11 +104,11 @@ export interface BasketRow {
 }
 
 // ---------------------------------------------------------------------------
-// The key input
+// The wallet's tokens
 // ---------------------------------------------------------------------------
 
 /** One of the wallet's own value outputs of a token, as the module holds it. */
-export interface KeyInput {
+export interface HeldValue {
   /** `txid.vout` */
   outpoint: string;
   txid: string;
@@ -119,15 +116,15 @@ export interface KeyInput {
   amount: bigint;
 }
 
-/** The wallet's available value outputs of `tokenId` (a fixed-supply deploy output among them), from `p color assets`. */
-export function valueOutputsOf(held: HeldOutput[], tokenId: string): KeyInput[] {
+/** The wallet's available value outputs of `tokenId` (a fixed-supply deploy output among them), from `p color assets`: what the module selects from. */
+export function valueOutputsOf(held: HeldOutput[], tokenId: string): HeldValue[] {
   const want = tokenIdText(parseTokenId(tokenId) ?? { txid: "", vout: -1 });
-  const out: KeyInput[] = [];
+  const out: HeldValue[] = [];
   for (const h of held) {
     if (!h.available) continue;
     const op = parseOutpoint(h.outpoint);
     if (!op) continue;
-    // A pool output carries the same 1Color prefix; it is never a key input.
+    // A pool output carries the same 1Color prefix; it is never a token input.
     if (PoolTemplate.decode(h.lockingScript)) continue;
     const t = decodeOneColor(Utils.toArray(h.lockingScript, "hex"));
     if (!t || t.amount <= 0n) continue;
@@ -138,29 +135,12 @@ export function valueOutputsOf(held: HeldOutput[], tokenId: string): KeyInput[] 
   return out;
 }
 
-/**
- * The key input for a deposit of `amount`: the smallest output carrying at
- * least `amount` (its rest comes back as the plan's owned output), else the
- * largest (the module selects more inputs and adds token change). Null when
- * the outputs together carry less.
- */
-export function selectKeyInput(outputs: KeyInput[], amount: bigint): { input: KeyInput; rest: bigint } | null {
-  if (amount <= 0n || outputs.length === 0) return null;
-  if (outputs.reduce((a, o) => a + o.amount, 0n) < amount) return null;
-  const sorted = [...outputs].sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
-  const cover = sorted.find((o) => o.amount >= amount);
-  if (cover) return { input: cover, rest: cover.amount - amount };
-  return { input: sorted[sorted.length - 1]!, rest: 0n };
-}
-
 // ---------------------------------------------------------------------------
 // The plan (pure)
 // ---------------------------------------------------------------------------
 
 export interface PoolDeployForm {
   tokenId: string;
-  /** The deploy's input 0 (`selectKeyInput`): the pool's first validator key is keyed by it. */
-  keyInput: { txid: string; vout: number };
   tokens: bigint;
   sats: bigint;
   lpFeeBps: bigint;
@@ -168,6 +148,8 @@ export interface PoolDeployForm {
   /** The relay's commission (the contract's CommissionBps), fixed at deploy. Default 0. */
   commissionBps?: bigint;
   lpPubKey: string;
+  /** The LP key's keyID (BRC-29, `newLpDerivation`). */
+  lpKeyId: string;
   validator: ValidatorChoice;
   dec?: number;
 }
@@ -177,13 +159,10 @@ export interface PoolDeployPlan {
   /** `tm_color_<assetId>`, `tm_color_<txid>_0`: the token's topic (BRC-207). */
   topic: string;
   args: PoolArgs;
+  /** The pool's state as proposed: its ValidatorPubKey (33 zero bytes), Nonce and Affirmation still to come. */
   state: PoolFields;
-  /** Output 0's script without the affirmation, hex: what `amm.pool.affirm` is asked about. */
+  /** Output 0's script as proposed, hex: what `amm.pool.affirm` is asked about. */
   lockingScript: string;
-  /** The key input, `<txid>_<vout>`. */
-  keyInput: string;
-  /** `1-amm pool-<keyInput>`'s key ID. */
-  validatorKeyId: string;
   lpKeyId: string;
   sats: bigint;
   /** Initial marginal price, sats per token (display units when `dec` is known). */
@@ -213,13 +192,14 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
     if (bps < 0n || bps >= 10_000n) throw new PoolDeployError(`${name}: 0-9999 bps`);
   }
   if (f.lpFeeBps + f.validatorFeeBps + commissionBps >= 10_000n) throw new PoolDeployError("the fees together must stay below 100%");
-  const key = { txid: f.keyInput.txid, vout: f.keyInput.vout };
   const args: PoolArgs = { assetId, lpFeeBps: f.lpFeeBps, validatorFeeBps: f.validatorFeeBps, commissionBps };
   const state: PoolFields = {
     tokenReserve: f.tokens,
     lpPubKey: PublicKey.fromString(f.lpPubKey).toString(),
-    validatorPubKey: deriveValidatorPubKey(f.validator.identityKey, key),
+    validatorPubKey: RESCINDED_KEY, // to come: the validator's
     validatorIdentity: PublicKey.fromString(f.validator.identityKey).toString(),
+    nonce: "00".repeat(32),
+    affirmation: "",
   };
   return {
     tokenId: f.tokenId,
@@ -227,9 +207,7 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
     args,
     state,
     lockingScript: PoolTemplate.lockDeploy(args, state).toHex(),
-    keyInput: validatorKeyId(key),
-    validatorKeyId: validatorKeyId(key),
-    lpKeyId: lpKeyId(`${key.txid}_${key.vout}`),
+    lpKeyId: f.lpKeyId,
     sats: f.sats,
     price: priceOf(f.sats, f.tokens, f.dec),
   };
@@ -250,6 +228,8 @@ export function poolCustomInstructions(o: {
   keyID: string;
   args: PoolArgs;
   validatorIdentity: string;
+  /** The validator's nonce (0.13.0), hex; absent for a pool before it. */
+  nonce?: string;
 }): string {
   return JSON.stringify({
     id: o.tokenId,
@@ -259,7 +239,7 @@ export function poolCustomInstructions(o: {
     protocolID: o.protocolID,
     keyID: o.keyID,
     counterparty: "self",
-    amm: { role: "lp", validatorIdentity: o.validatorIdentity, lpFeeBps: String(o.args.lpFeeBps), validatorFeeBps: String(o.args.validatorFeeBps), commissionBps: String(o.args.commissionBps) },
+    amm: { role: "lp", validatorIdentity: o.validatorIdentity, lpFeeBps: String(o.args.lpFeeBps), validatorFeeBps: String(o.args.validatorFeeBps), commissionBps: String(o.args.commissionBps), ...(o.nonce ? { nonce: o.nonce } : {}) },
   });
 }
 
@@ -267,35 +247,97 @@ export function poolCustomInstructions(o: {
 // The affirmation
 // ---------------------------------------------------------------------------
 
+/** The validator's affirmation (0.13.0): its key, its nonce, its signature; and the pool's state with them. */
+export interface Affirmation {
+  validatorPubKey: string;
+  nonce: string;
+  signature: string;
+  state: PoolFields;
+  lockingScript: string;
+}
+
 /**
- * `amm.pool.affirm {pool, satoshis, keyInput}` (docs/AMM.md "The deploy and
- * the affirmation") → the pool output's script with the validator's
- * signature as its payload, checked against the plan before it is used.
+ * `amm.pool.affirm {pool, satoshis}` (docs/AMM.md "The deploy and the affirmation") →
+ * `{validatorPubKey, nonce, signature}`, checked before it is used: the key is the validator's
+ * child of the nonce, and the pool with the three in its state attests itself.
  */
-export async function affirmPool(af: AuthFetchLike, base: string, plan: PoolDeployPlan): Promise<{ affirmation: string; lockingScript: string }> {
+export async function affirmPool(af: AuthFetchLike, base: string, plan: PoolDeployPlan): Promise<Affirmation> {
   const r = (await callApp(af, base, POOL_AFFIRM_FN, {
     pool: dagBytes(Utils.toArray(plan.lockingScript, "hex")),
     satoshis: Number(plan.sats),
-    keyInput: plan.keyInput,
   })) as Record<string, unknown> | null;
   const sig = readBytes(r?.signature);
+  const key = readBytes(r?.validatorPubKey);
+  const nonce = readBytes(r?.nonce);
   if (!sig || sig.length === 0) throw new PoolDeployError(`${POOL_AFFIRM_FN}: no signature in the answer`);
-  const affirmation = toHex(sig);
-  const lockingScript = PoolTemplate.lockDeploy(plan.args, plan.state, affirmation).toHex();
+  if (!key || key.length !== 33 || !nonce || nonce.length !== 32) throw new PoolDeployError(`${POOL_AFFIRM_FN}: no validatorPubKey (33 bytes) and nonce (32 bytes) in the answer`);
+  const validatorPubKey = toHex(key);
+  if (deriveFirstValidatorPubKey(plan.state.validatorIdentity, toHex(nonce)) !== validatorPubKey) throw new PoolDeployError(`${POOL_AFFIRM_FN}: the key is not the validator's child of its nonce`);
+  const state: PoolFields = { ...plan.state, validatorPubKey, nonce: toHex(nonce), affirmation: toHex(sig) };
+  const lockingScript = PoolTemplate.lockDeploy(plan.args, state).toHex();
   if (!PoolTemplate.affirmed(lockingScript, plan.sats)) throw new PoolDeployError(`${POOL_AFFIRM_FN}: the signature does not affirm this pool (not the ValidatorPubKey's over its parameters)`);
-  return { affirmation, lockingScript };
+  return { validatorPubKey, nonce: toHex(nonce), signature: toHex(sig), state, lockingScript };
 }
 
 // ---------------------------------------------------------------------------
 // The wallet sequence
 // ---------------------------------------------------------------------------
 
-/** The LP key for a deposit whose key input is `keyInput`. */
-export async function deriveLpKey(wallet: WalletInterface, keyInput: { txid: string; vout: number }): Promise<{ protocolID: WalletProtocol; keyID: string; publicKey: string }> {
+/** A new pool's LP key (0.13.0): a BRC-29 key to self under a fresh random keyID (`newLpDerivation`). */
+export async function newLpKey(wallet: WalletInterface): Promise<{ protocolID: WalletProtocol; keyID: string; publicKey: string }> {
   const protocolID = LP_KEY_PROTOCOL;
-  const keyID = lpKeyId(`${keyInput.txid}_${keyInput.vout}`);
+  const keyID = brc29KeyID(newLpDerivation());
   const { publicKey } = await wallet.getPublicKey({ protocolID, keyID, counterparty: "self", forSelf: true });
   return { protocolID, keyID, publicKey };
+}
+
+/** A deploy's LP key kept in this browser until its row is filed (Recover's fallback: a 0.13.0 pool's LP keyID is on no chain). */
+export interface PendingDeploy {
+  keyID: string;
+  lpPubKey: string;
+  tokenId: string;
+  createdAt: number;
+}
+
+export const PENDING_DEPLOYS_KEY = "skein-amm.pending-deploys.v1";
+
+/** The browser's record of deploys whose row is not filed yet (localStorage; every access may fail: then nothing is kept). */
+export class PendingDeployStore {
+  constructor(private readonly kv: { getItem(k: string): string | null; setItem(k: string, v: string): void } | null = defaultKV()) {}
+
+  list(): PendingDeploy[] {
+    try {
+      const raw = this.kv?.getItem(PENDING_DEPLOYS_KEY);
+      const v = raw ? JSON.parse(raw) : [];
+      return Array.isArray(v) ? (v as PendingDeploy[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private write(all: PendingDeploy[]): void {
+    try {
+      this.kv?.setItem(PENDING_DEPLOYS_KEY, JSON.stringify(all));
+    } catch {
+      /* not kept */
+    }
+  }
+
+  save(d: PendingDeploy): void {
+    this.write([...this.list().filter((x) => x.keyID !== d.keyID), d]);
+  }
+
+  remove(keyID: string): void {
+    this.write(this.list().filter((x) => x.keyID !== keyID));
+  }
+}
+
+function defaultKV(): { getItem(k: string): string | null; setItem(k: string, v: string): void } | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
 }
 
 export class DeployShapeError extends Error {
@@ -329,12 +371,15 @@ export interface DeployPoolInput {
   meta?: { sym?: string; dec?: number };
   /** The submit to this skein (default: `POST <base>/submit`, plain fetch). */
   submit?: (topic: string, beef: number[]) => Promise<{ steak?: unknown }>;
+  /** Where the LP key waits until the row is filed (default: this browser's). */
+  pending?: PendingDeployStore;
 }
 
 export interface DeployedPool {
   plan: PoolDeployPlan;
   lpKey: { protocolID: WalletProtocol; keyID: string; publicKey: string };
-  affirmation: string;
+  /** The validator's affirmation and the deployed pool's state. */
+  affirmation: Affirmation;
   /** The createAction arguments the wallet was given. */
   createArgs: Parameters<WalletInterface["createAction"]>[0];
   txid: string;
@@ -357,38 +402,33 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
   const meta = i.meta ?? {};
   const sdkId = sdkTokenId(i.tokenId);
   assetIdHex(i.tokenId);
-  // 1. The key input.
-  const sel = selectKeyInput(valueOutputsOf(i.held, i.tokenId), i.tokens);
-  if (!sel) throw new PoolDeployError(`Your wallet holds fewer than ${i.tokens} base units of that token`);
-  const lpKey = await deriveLpKey(wallet, sel.input);
+  const held = valueOutputsOf(i.held, i.tokenId).reduce((a, o) => a + o.amount, 0n);
+  if (held < i.tokens) throw new PoolDeployError(`Your wallet holds fewer than ${i.tokens} base units of that token`);
+  // 1. The LP key.
+  const lpKey = await newLpKey(wallet);
   const plan = planPoolDeploy({
     tokenId: i.tokenId,
-    keyInput: sel.input,
     tokens: i.tokens,
     sats: i.sats,
     ...i.fees,
     lpPubKey: lpKey.publicKey,
+    lpKeyId: lpKey.keyID,
     validator: i.validator,
     ...(meta.dec !== undefined ? { dec: meta.dec } : {}),
   });
 
   // 2. The affirmation.
-  const { affirmation, lockingScript } = await affirmPool(i.af, i.base, plan);
+  const affirmation = await affirmPool(i.af, i.base, plan);
+  const { lockingScript } = affirmation;
 
-  // 3. The deploy: the pool, and the key input's rest to a fresh module key of our own.
+  // 3. The deploy: the pool alone; the module selects the token inputs and adds their change.
   const sym = meta.sym ?? "token";
+  const pending = i.pending ?? new PendingDeployStore();
+  pending.save({ keyID: lpKey.keyID, lpPubKey: lpKey.publicKey, tokenId: sdkId, createdAt: Date.now() });
   const outputs: CreateActionOutput[] = [{ lockingScript, satoshis: Number(plan.sats), outputDescription: describe(`AMM pool: ${sym} / BSV`) }];
-  const ownedOutputs: ColorRemittance[] = [];
-  if (sel.rest > 0n) {
-    const me = await identityKeyOf(wallet);
-    const k = await newReceivingKey(wallet, sdkId, me);
-    outputs.push({ lockingScript: tokenP2pkhScript(sdkId, sel.rest, k.publicKey), satoshis: 1, outputDescription: describe(`${sym} kept back from the pool`) });
-    ownedOutputs.push({ outputIndex: 1, ...k.receipt });
-  }
   const createArgs = {
     description: describe(`AMM pool deploy: ${sym}`),
-    labels: [...transferPlanLabels(sdkId, { ownedOutputs, inputPositions: [{ outpoint: sel.input.outpoint, index: 0 }] }), "amm-pool-deploy"],
-    inputs: [{ outpoint: sel.input.outpoint, unlockingScriptLength: P2PKH_UNLOCK_LENGTH, inputDescription: describe(`${sym}: the pool's key input`) }],
+    labels: [...transferPlanLabels(sdkId), "amm-pool-deploy"],
     outputs,
     options: { randomizeOutputs: false, acceptDelayedBroadcast: false },
   };
@@ -406,16 +446,14 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
       outputIndex: 0,
       basket: POOLS_BASKET,
       tags: [POOL_TAG],
-      customInstructions: poolCustomInstructions({ tokenId: sdkId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity }),
+      customInstructions: poolCustomInstructions({ tokenId: sdkId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity, nonce: affirmation.nonce }),
     },
     filed: false,
     submitted: "not submitted",
     errors: [],
   };
   const final = Transaction.fromAtomicBEEF(tx);
-  const in0 = final.inputs[0];
   if (final.outputs[0]?.lockingScript.toHex() !== lockingScript) out.errors.push("the wallet's deploy has another output 0 than the affirmed pool");
-  if (!in0 || `${in0.sourceTXID}.${in0.sourceOutputIndex}` !== sel.input.outpoint) out.errors.push(`the wallet's deploy does not spend the key input ${sel.input.outpoint} first: the validator will not sign this pool's swaps (Close it)`);
 
   // The page's own submit to this skein (the module submitted at the wallet's overlay).
   try {
@@ -431,6 +469,7 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
   try {
     const r = await wallet.internalizeAction({ tx, outputs: [row], description: describe(`AMM pool deploy: ${sym}`), labels: ["amm-pool-deploy"] });
     out.filed = r.accepted;
+    if (r.accepted) pending.remove(lpKey.keyID);
   } catch (err) {
     out.errors.push(`internalizeAction: ${err instanceof Error ? err.message : String(err)}`);
   }

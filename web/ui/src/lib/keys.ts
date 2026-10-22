@@ -9,17 +9,19 @@ import { KeyDeriver, PublicKey, type WalletProtocol } from "@bsv/sdk";
  * counterparty: invoice `1-amm pool-<txid>_<vout>`.
  *
  * The pool's rotating `ValidatorPubKey` is always a child of the
- * validator's own stable `ValidatorIdentity`, keyed by the outpoint of the
- * *last input the validator signed*. At deploy nothing is signed yet, so
- * the starting point is the LP's token deposit: the first input spending
- * an output of this token id (state layout, pool/Pool.runar.go).
+ * validator's own stable `ValidatorIdentity`. The first (a deploy's,
+ * skein-amm 0.13.0) is keyed by the validator's nonce, 64 lowercase hex
+ * digits (`deriveFirstValidatorPubKey`): the validator picks it at
+ * `amm.pool.affirm` and the pool's state carries it. Each Swap's next key is
+ * keyed by the pool outpoint the Swap spends (`deriveValidatorPubKey`).
+ * (Before 0.13.0 the first key was keyed by the deploy's first token input.)
  *
  * Because the counterparty is "anyone", this is a public one-way function
  * of the validator's identity public key and the key ID: anyone holding
  * `validatorIdentity` (published, part of every pool's state) can compute
- * the derived child public key without the validator's private key. The
- * LP's deploy-time UI uses this to fill the pool's initial `ValidatorPubKey`
- * state field before ever talking to the validator.
+ * the derived child public key without the validator's private key: the
+ * page checks the validator's answer with it, and the lookup lists a pool
+ * only when it holds.
  */
 export const AMM_POOL_PROTOCOL: WalletProtocol = [1, "amm pool"];
 
@@ -44,4 +46,10 @@ export function deriveValidatorPubKey(
   return anyone
     .derivePublicKey(AMM_POOL_PROTOCOL, keyId, identity, false)
     .toString();
+}
+
+/** A pool's first validator key (0.13.0): the identity's anyone-child keyed by the nonce (64 hex digits). */
+export function deriveFirstValidatorPubKey(validatorIdentityHex: string, nonceHex: string): string {
+  const anyone = new KeyDeriver("anyone");
+  return anyone.derivePublicKey(AMM_POOL_PROTOCOL, nonceHex.toLowerCase(), PublicKey.fromString(validatorIdentityHex), false).toString();
 }

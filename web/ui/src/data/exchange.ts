@@ -64,6 +64,7 @@ import { basketRows } from "../lp/wallet";
 import { buildInventory, decodeTokenRow, deployIcon } from "../lp/inventory";
 import { imageDataUrl } from "../lp/images";
 import { deployPool } from "../lp/poolDeploy";
+import { PoolTemplate } from "../pool";
 import { colorOutput, positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
 import { recoverPosition as recoverPoolRow } from "../lp/recover";
 import { POOLS_BASKET, assetBalance, heldOutputs } from "../wallet/color";
@@ -207,6 +208,10 @@ export interface Position {
   /** Fees the pool has earned the LP, when it can be told. */
   feesEarnedSats?: bigint;
   validator: ValidatorRef;
+  /** A pool deployed before 0.13.0 (layout 1): its Close pays the tokens to the LP key, so they land in the swap basket (Move back). */
+  legacy?: boolean;
+  /** The validator rescinded the pool (0.13.0): no swaps; the LP closes it. */
+  rescinded?: boolean;
 }
 
 export interface DeployRequest {
@@ -243,6 +248,8 @@ export interface CloseResult {
   /** Returned to the wallet. */
   sats: bigint;
   tokens: bigint;
+  /** Where the tokens went: the wallet's balance (0.13.0, through the module), or the swap basket (a pool before 0.13.0: Move back). */
+  tokensTo: "wallet" | "swap basket";
 }
 
 /** One of the user's own 1Color tokens. */
@@ -776,6 +783,8 @@ export async function myPositions(): Promise<Position[]> {
       sats: pos.sats,
       tokens: pos.pool.state.tokenReserve,
       validator: { identityKey: identity, live: live ? validatorStatus(identity, live).live : false },
+      ...(pos.pool.version === 1 ? { legacy: true } : {}),
+      ...(PoolTemplate.rescinded(pos.pool) ? { rescinded: true } : {}),
     });
   }
   return out;
@@ -808,10 +817,12 @@ export async function validatorTerms(): Promise<ValidatorTerms> {
 }
 
 /**
- * Deploys a new position (src/lp/poolDeploy.ts, 0.12.0): this skein's
- * validator affirms the proposed pool at its terms (`amm.pool.affirm`), then
- * the wallet's BRC-207 module builds, signs and broadcasts the deploy in one
- * createAction; the pool output is filed as a position row (`amm-pools`).
+ * Deploys a new position (src/lp/poolDeploy.ts, 0.13.0): this skein's
+ * validator affirms the proposed pool at its terms (`amm.pool.affirm`: its
+ * key, its nonce, its signature, written into the pool's state), then the
+ * wallet's BRC-207 module selects the token inputs, builds, signs and
+ * broadcasts the deploy in one createAction; the pool output is filed as a
+ * position row (`amm-pools`).
  */
 export async function deployPosition(req: DeployRequest): Promise<DeployResult> {
   const { wallet, af } = needWallet();
@@ -859,10 +870,10 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     satsPerKb: FEE_RATE_SATS_PER_KB,
   });
   await submitToOverlay(context.base, prepared.topic, prepared.beef);
-  await completeClose(wallet, prepared, pos.row.deployOutpoint);
+  await completeClose(wallet, prepared, pos.row.deployOutpoint, context.payouts);
   loaded.delete(req.outpoint);
   emit();
-  return { txid: prepared.txid, sats: prepared.sats, tokens: prepared.tokenAmount };
+  return { txid: prepared.txid, sats: prepared.sats, tokens: prepared.tokenAmount, tokensTo: prepared.version === 2 ? "wallet" : "swap basket" };
 }
 
 /**

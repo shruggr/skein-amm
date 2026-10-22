@@ -1,5 +1,34 @@
 # @amm-poc/market-ui
 
+**skein-amm 0.13.0: the validator's nonce, no input named, the LP's Close**
+(David Case, 2026-10-22; docs/AMM.md). The pool's state carries the
+validator's key, nonce and affirmation (layout 2, `src/pool/artifact.ts`;
+layout 1, before 0.13.0, still decodes, closes and recovers).
+
+- **Pool deploy** (`deployPool`): the LP key is a BRC-29 key to self under
+  a fresh random keyID (`newLpKey`), kept in this browser
+  (`PendingDeployStore`, localStorage) until the row is filed;
+  `amm.pool.affirm {pool, satoshis}` (the pool as proposed: ValidatorPubKey
+  33 zero bytes, Nonce 32 zero bytes, Affirmation empty) →
+  `{validatorPubKey, nonce, signature}`, checked (the key the validator's
+  child of the nonce, `PoolTemplate.affirmed`) and written into the pool's
+  state; ONE `createAction`: outputs [the pool], the `p color plan` a
+  transfer with no `inputPositions` and no owned outputs, no inputs named,
+  `randomizeOutputs: false` (the module selects the token inputs and adds
+  their change; the input BEEF of its own inputs is the module's). The row's
+  customInstructions carry the nonce.
+- **Close** (`prepareClose`, layout 2: `Close(lpSig)`, outputs free): the
+  sats (less `bsvFee`) to the LP key as a BRC-29 payment to self, every token
+  to a NEW module receiving key of the user's own (sender the user's
+  identity), taken in through the module with its receipt (a second
+  `internalizeAction`; kept in pending payouts when the module does not take
+  it at once). No `amm-swap`, no Move back. Layout 1: as 0.12.x (the
+  contract's outputs, the tokens into `amm-swap`).
+- **Recover** (`recoverPosition`): layout 1 as 0.12.1; layout 2 tries the LP
+  keyIDs this browser kept (a 0.13.0 pool's LP keyID is on no chain).
+- **Positions**: a rescinded pool (the validator's Rescind: ValidatorPubKey
+  cleared) is shown as such; the LP closes it as any.
+
 **skein-amm 0.12.0: the pages on the wallet's BRC-207 1Color module**
 (David Case, 2026-10-21/22). The user's tokens are the wallet's `color`
 module's (`@bsv/color-permission-module`, the interim `@bopen-io` repack;
@@ -1171,17 +1200,22 @@ tree-shakes it out.
 
 `PoolTemplate` (src/pool/template.ts), independent of React:
 
-- `decode(script)`: the 1Color value prefix (32-byte id; on a deploy, the
-  affirmation as its payload, 0.11.0: `affirmation`, hex), the
-  artifact match with its constructor slots (runar-sdk `matchesArtifact`,
-  `extractConstructorArgs`), the state (`extractStateFromScript`); requires
-  prefix id == assetId and prefix amount == TokenReserve. Null otherwise.
-- `lockDeploy(args, state, affirmation?)`: the prefix (with the validator's
-  affirmation as its payload when given, 0.11.0) plus runar-sdk's locking script.
-- `affirmationMessage(pool, satoshis)`, `termsHash(args)`, `affirmed(script,
-  satoshis)` (0.11.0): the 221 bytes the validator's affirmation signs
+- `decode(script)`: the 1Color value prefix (32-byte id), the artifact match
+  with its constructor slots (runar-sdk `matchesArtifact`,
+  `extractConstructorArgs`; layout 2's codeSepIndex slots resolved to OP_1 in
+  the artifact, `src/pool/artifact.ts`), the state (`extractStateFromScript`);
+  layout 2 first, then layout 1 (whose deploy carries the affirmation as its
+  payload: `affirmation`); requires prefix id == assetId and prefix amount ==
+  TokenReserve. Null otherwise. `version` says which.
+- `lockDeploy(args, state)` (layout 2): the prefix plus runar-sdk's locking
+  script, the key, nonce and affirmation in state (or still to come).
+- `affirmationMessage(pool, satoshis)`, `affirmed(script, satoshis)`
+  (0.13.0, message v2): the 221 bytes the validator's affirmation signs
   (docs/AMM.md "The deploy and the affirmation"; src/pool.zig
-  `affirmMessage`), and whether a pool output carries a valid one.
+  `affirmMessage`), and whether a pool attests itself (the key derived from
+  the identity and the nonce, the signature verifying). `rescinded(pool)`.
+- `planClose` / `close`: layout 2 takes the LP's `outputs` (Close has no
+  change parameters); layout 1 the contract's, `bsvFee`.
 - `swap`, `addLiquidity`, `removeLiquidity`: the whole transaction the
   contract enforces (pool at output 0; payouts; LP / validator fees and the
   commission to `commissionPkh` on swap, each only when nonzero; change), the pool input's unlocking
