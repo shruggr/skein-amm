@@ -9,6 +9,7 @@ import { Id } from "../components/Id";
 import {
   closePosition,
   deployPosition,
+  recoverPosition,
   useMyPositions,
   useMyTokens,
   useValidatorTerms,
@@ -242,6 +243,62 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   );
 }
 
+/** Recover a position: file the row of a pool this wallet deployed whose row was never filed (0.12.1). */
+function RecoverForm() {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ outpoint: string; sym: string; filed: boolean } | null>(null);
+
+  async function recover() {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const r = await recoverPosition(text.trim());
+      setDone(r);
+      if (r.filed) setText("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="panel recover"
+      aria-label="Recover a position"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void recover();
+      }}
+    >
+      <div className="field">
+        <label htmlFor="recover-outpoint">Recover a position</label>
+        <input id="recover-outpoint" className="mono" placeholder="<txid>.<vout>" value={text} onChange={(e) => setText(e.target.value)} aria-describedby="recover-help" />
+        <span id="recover-help" className="help">
+          A pool you deployed that is missing here: paste its outpoint.
+        </span>
+      </div>
+      {error && <Notice kind="bad">{error}</Notice>}
+      {done &&
+        (done.filed ? (
+          <Notice kind="ok">
+            Recovered {done.sym} / BSV: <Id value={done.outpoint} kind="outpoint" label="pool" /> is in your positions.
+          </Notice>
+        ) : (
+          <Notice kind="bad">Your wallet did not accept the pool&apos;s row.</Notice>
+        ))}
+      <div className="actions">
+        <button type="submit" className="btn btn-outline" disabled={busy || text.trim() === ""}>
+          {busy ? "Recovering…" : "Recover"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function Liquidity({ session, hosted }: { session: Session; hosted: HostedToken[] | null }) {
   const connected = session.status === "connected";
   const positions = useMyPositions(connected);
@@ -278,6 +335,7 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
             ))}
           </div>
         )}
+        <RecoverForm />
       </section>
       <section className="stack">
         <h2 className="section-title">Deploy a position</h2>

@@ -4,6 +4,20 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.12.1 (2026-10-22)
+
+Pages only (`web/ui`, `www/`): no contract, validator, lookup or manifest
+change.
+
+- **Recover a position** (Liquidity, src/lp/recover.ts): paste a pool
+  outpoint (`<txid>.<vout>` or `<txid>_<vout>`, the deploy's or a later
+  one); the pool is followed to its current output (`/spends`), read from
+  `ls_color`, walked back through its BEEF to the deploy, and its LpPubKey
+  checked against the wallet's LP key for the deploy's input 0 (BRC-29,
+  else pre-BRC-29). A match is filed in `amm-pools` as a deploy files it
+  (`poolCustomInstructions`, label `amm-pool-deploy`); no match files
+  nothing. A pool already filed is left alone. Close is unchanged.
+
 ## 0.12.0 (2026-10-22)
 
 The pages (`web/ui`, `www/`) move onto the wallet's BRC-207 1Color module

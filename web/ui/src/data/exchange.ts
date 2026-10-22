@@ -50,7 +50,7 @@ import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName } from "../lib/config";
 import { fetchLive, listTokenTopics, lookup, lookupPoolOutput, parseOutputList, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readRequests, readTokenList, sendMessage, type Beat, type ListedToken } from "../lib/skein";
+import { readBeats, readRequests, readSpend, readTokenList, sendMessage, type Beat, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -64,7 +64,8 @@ import { basketRows } from "../lp/wallet";
 import { buildInventory, decodeTokenRow, deployIcon } from "../lp/inventory";
 import { imageDataUrl } from "../lp/images";
 import { deployPool } from "../lp/poolDeploy";
-import { positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
+import { colorOutput, positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
+import { recoverPosition as recoverPoolRow } from "../lp/recover";
 import { POOLS_BASKET, assetBalance, heldOutputs } from "../wallet/color";
 import { completeClose, prepareClose, submitToOverlay } from "../lp/close";
 
@@ -221,6 +222,14 @@ export interface DeployResult {
   txid: string;
   /** What did not complete after the broadcast (the position row's filing, the page's own submit). */
   warnings?: string[];
+}
+
+export interface RecoverResult {
+  /** The pool filed, `<txid>.<vout>` (its current output). */
+  outpoint: string;
+  sym: string;
+  /** False when the wallet did not accept the filing. */
+  filed: boolean;
 }
 
 export interface CloseRequest {
@@ -854,6 +863,27 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   loaded.delete(req.outpoint);
   emit();
   return { txid: prepared.txid, sats: prepared.sats, tokens: prepared.tokenAmount };
+}
+
+/**
+ * Recovers a position whose deploy filed no row (src/lp/recover.ts, 0.12.1):
+ * the pool at `outpoint` (the deploy's or a later one), checked to be this
+ * wallet's by its LP key, filed in `amm-pools` as a deploy files it. Close
+ * then works as for any position.
+ */
+export async function recoverPosition(outpoint: string): Promise<RecoverResult> {
+  const { wallet, af } = needWallet();
+  const [rows, meta] = await Promise.all([basketRows(wallet, POOLS_BASKET), tokenMeta()]);
+  const r = await recoverPoolRow({
+    wallet,
+    outpoint,
+    rows,
+    spendOf: (o) => readSpend(context.base, o),
+    outputOf: (o) => colorOutput(af, context.base, o),
+    metaOf: async (tokenId) => meta.get(tokenId) ?? (await deployMeta(tokenId)),
+  });
+  emit();
+  return { outpoint: r.outpoint, sym: r.sym ?? r.tokenId.slice(0, 8), filed: r.filed };
 }
 
 // ---------------------------------------------------------------------------

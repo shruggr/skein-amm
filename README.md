@@ -3,7 +3,10 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.12.0** (David Case, 2026-10-21/22; docs/AMM.md
+and its pages. Version **0.12.1** (2026-10-22, pages only; docs/AMM.md
+"The pages and the wallet's module", "Recover a position"): Liquidity
+files the position row of a pool whose deploy left none, so Close works
+for it. Since **0.12.0** (David Case, 2026-10-21/22; docs/AMM.md
 "The pages and the wallet's module"): the pages hold the user's tokens in
 the wallet's BRC-207 1Color module — Your tokens reads its assets and
 balances, a pool deploy is the validator's affirmation and then one
@@ -293,7 +296,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.12.0 |
+| this app | 0.12.1 |
 | skein-overlay | v0.14.0 (385e1b9) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.10.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

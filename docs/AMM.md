@@ -187,6 +187,22 @@ counterparty}`).
   (`createSignature` under each output's key), relayed, and their inputs
   relinquished from `amm-swap` once accepted; an output a failed leg did
   not spend stays there for a later swap.
+- **Recover a position** (0.12.1, `src/lp/recover.ts`). A deploy whose
+  `amm-pools` row was never filed (the deploy broadcast, the filing did
+  not happen) is not in the positions list, so it cannot be closed there.
+  Liquidity's Recover takes the pool's outpoint (`<txid>.<vout>` or
+  `<txid>_<vout>`, the deploy's or a later continuation), follows it to its
+  current output (`GET <base>/spends`), reads that output's BEEF from
+  `ls_color {txid, outputIndex}` and decodes the pool; walks the BEEF back
+  to the deploy (the transaction whose pool output carries the
+  affirmation) and derives the LP key from the deploy's input 0 as a
+  deploy does (`lpKeyId`, else the pre-BRC-29 `legacyLpKeyId`), checked
+  with `getPublicKey` against the pool's LpPubKey. On a match it files the
+  current output in `amm-pools` with `internalizeAction` (basket
+  insertion, tag `amm-pool`, the deploy's `poolCustomInstructions`, label
+  `amm-pool-deploy`); otherwise it files nothing ("This pool's LP key is
+  not this wallet's."). A pool the wallet already files is left alone.
+  The row is then an ordinary position: Close as below.
 - **Close.** As before, the page's own Close (`bsvFee`). The contract pays
   every token to the LP key, which is not a module key, so the token output
   is filed in `amm-swap` under the LP key.
