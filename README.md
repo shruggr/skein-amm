@@ -3,10 +3,22 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.12.1** (2026-10-22, pages only; docs/AMM.md
-"The pages and the wallet's module", "Recover a position"): Liquidity
-files the position row of a pool whose deploy left none, so Close works
-for it. Since **0.12.0** (David Case, 2026-10-21/22; docs/AMM.md
+and its pages. Version **0.13.0** (David Case, 2026-10-22; docs/AMM.md
+"The pool rule", "The deploy and the affirmation", "The listing"): the
+validator's nonce and affirmation live in every pool's state (Nonce,
+Affirmation; message v2, no termsHash), the validator's first key is its
+child keyed by the nonce it picks at `amm.pool.affirm {pool, satoshis}` →
+`{validatorPubKey, nonce, signature}`, and `ls_amm` lists a pool only when
+it derives that key itself and the affirmation verifies (a Swap's
+continuation when it names the next key). The pages name no token input:
+the deploy is one module-built createAction with the pool as its only
+output. `Close(lpSig)` is the LP's alone with free outputs (the tokens go
+straight to a module key, the sats to a BRC-29 key); the validator's
+`Rescind` writes the pool back with its key cleared, which ends its swaps
+and its listing (root's `rescind` replaces `close`). Pools from before
+0.13.0 still close and recover in the pages. Since **0.12.1** (pages only):
+Liquidity files the position row of a pool whose deploy left none, so Close
+works for it. Since **0.12.0** (David Case, 2026-10-21/22; docs/AMM.md
 "The pages and the wallet's module"): the pages hold the user's tokens in
 the wallet's BRC-207 1Color module — Your tokens reads its assets and
 balances, a pool deploy is the validator's affirmation and then one
@@ -296,11 +308,11 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.12.1 |
+| this app | 0.13.0 |
 | skein-overlay | v0.14.0 (385e1b9) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.10.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
-| skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
+| skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.0) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions`, `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types` 0.1.0 (published; `OneColor`); `@bsv/sdk` 4.0.1, `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0 as the interim `@bopen-io` repacks (npm aliases and `overrides`, one copy each; `web/ui/package-lock.json`) |

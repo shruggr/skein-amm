@@ -14,7 +14,7 @@ topic per token, registered by root at runtime.
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
 | `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
-| `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0: called in-VM by `amm.pool.affirm`), root's `close` (0.11.0) |
+| `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the holders' listing requests, the reads `/requests` and `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
 | | `src/pool.zig` | the pool library (module `pool`), over `1color`'s parser and rules |
 | | `pool/Pool.runar.go` | the contract |
@@ -28,116 +28,132 @@ spent is the validator's.
 ## The pool rule
 
 A pool is a BRC-162 value output at output 0 whose lock is the compiled
-Pool code, `OP_RETURN`, and the state: TokenReserve (8 bytes), LpPubKey,
-ValidatorPubKey, ValidatorIdentity (33 bytes each). The BSV reserve is the
-output's satoshis; the token reserve is the prefix's amount, duplicated in
-state. A deploy's pool output carries the validator's affirmation as its
-BRC-162 payload (0.11.0, below, "The affirmation"): `0x20 <assetId>
-<amount> OP_2DROP <push affirmation> OP_DROP`, then the code. The payload
-sits before the code's `OP_CODESEPARATOR`, so the contract never sees it, and
-every continuation the contract writes has none.
+Pool code, `OP_RETURN`, and the state (0.13.0, layout 2; David Case
+2026-10-22, agent-env plans/validator-signoff-2026-10-22.md §9):
+
+| bytes | state field |
+|---|---|
+| 8 | TokenReserve (little-endian sign-magnitude, Rúnar's bigint) |
+| 33 | LpPubKey |
+| 33 | ValidatorPubKey (33 zero bytes once rescinded) |
+| 33 | ValidatorIdentity |
+| 32 | Nonce (Rúnar's fixed 32-byte type, raw) |
+| 1 + n | Affirmation: one length byte, then the validator's DER signature (n ≤ 72; `OP_0` when empty) |
+
+The BSV reserve is the output's satoshis; the token reserve is the prefix's
+amount, duplicated in state. There is no payload (0.11.0–0.12.x carried the
+affirmation as the deploy's BRC-162 payload). Nonce and Affirmation are
+never assigned, so Rúnar carries them into every continuation: every pool
+output attests itself (below, "The deploy and the affirmation"). The
+compiled template is 3,568 bytes (0.12.x: 2,657), a pool output 4,011 bytes
+with its args and a 71-byte DER (0.12.x: 2,996): the variable-length
+Affirmation costs each method a state parser, and Rescind its own copy of
+the continuation writer. A pool deployed before 0.13.0 (layout 1: the first
+four state fields, `Close(sig, bsvFee)`) is still decoded, closed and
+recovered by the pages; amm-lookup and amm-validator know layout 2 only
+(below, "Not wired").
 
 - **Indexed** (amm-lookup, `pool.check`): at output 0; the prefix's id and
   amount equal the AssetId and TokenReserve the code and state carry (the
   contract writes the prefix from its copies and never reads it). The id is
-  32 bytes, so only a token deployed at output 0 has pools. The
-  ValidatorPubKey is not checked.
-- **Methods** (the contract; 0.9.0, David Case 2026-10-09: "Contract =
-  Swap + Close"): `Swap(validatorSig, nextValidatorPubKey, amountIn, bsvIn,
-  userPkh, commissionPkh)`, the validator's; `Close(sig, bsvFee)` (0.11.0,
-  David Case 2026-10-21: callable by either party), the LP's or the current
-  validator's: 0 ≤ bsvFee ≤ the pool's sats, the BSV payout (the pool's sats
-  less bsvFee, an output only when nonzero) to P2PKH of the LP key, then
-  every token to the same key in one BRC-162 value output, no continuation;
-  the payout is the LP's whoever closes. bsvFee 0 pays everything out (the
-  closer funds the fee from another input, its change Rúnar's change
-  output). The LP's signature closes with any bsvFee; the validator's
-  (its current ValidatorPubKey) only with bsvFee 0, so it pays the miner
-  from its own input and cannot spend the pool's sats as fee. In script:
-  bsvFee > 0 checks `sig` against the LP key alone (`OP_CHECKSIG`); bsvFee 0
-  checks it as one of the two keys, LP then validator (a 1-of-2
-  `OP_CHECKMULTISIG`, so a validator's signature is never a failed
-  `OP_CHECKSIG` against the LP key, which NULLFAIL forbids). AddLiquidity and RemoveLiquidity are
-  gone: resizing a position is a Close and a new deploy. Fees are fixed at
-  deploy, in basis points of the input, rounded up, paid in the input
-  asset: LpFeeBps to the LP, ValidatorFeeBps to the validator,
-  CommissionBps to whoever relays the swap — the validator's terms (below,
-  "The deploy and the affirmation"). The contract builds every output; a swap carries no
-  others.
-- **Keys rotate.** The validator names its next key on every Swap it signs;
-  the LP's key is the pool's for its life. The
-  validator's key is the BRC-42 child of its ValidatorIdentity,
-  protocol `[1, "amm pool"]`, key ID the outpoint of input 0 of the
-  transaction that created the pool, counterparty anyone. The overlay does
-  not check it; the validator does before signing.
+  32 bytes, so only a token deployed at output 0 has pools.
+- **Methods** (the contract; 0.13.0, David Case 2026-10-22, three):
+  `Swap(validatorSig, nextValidatorPubKey, amountIn, bsvIn, userPkh,
+  commissionPkh)`, the validator's, unchanged; `Close(lpSig)`, the LP's
+  alone: a plain `OP_CHECKSIG` against the LP key, the **outputs free** (no
+  output covenant: the LP spends the LP's own funds, its wallet decides
+  where they go; the method writes no state and adds no output, so Rúnar
+  checks no hashOutputs and takes no change parameters); `Rescind(
+  validatorSig)`, the validator's: `OP_CHECKSIG` against the current
+  ValidatorPubKey, exactly one continuation at output 0 — the same sats,
+  TokenReserve, LpPubKey, ValidatorIdentity, Nonce and Affirmation — with
+  ValidatorPubKey 33 zero bytes, then Rúnar's change output (the validator
+  pays the fee from an input of its own; nothing is taken from the pool).
+  After a Rescind no Swap can be signed (no key matches the zero key) and no
+  second Rescind; the LP closes the pool as any. Fees are fixed at deploy,
+  in basis points of the input, rounded up, paid in the input asset:
+  LpFeeBps to the LP, ValidatorFeeBps to the validator, CommissionBps to
+  whoever relays the swap — the validator's terms. A swap carries only the
+  contract's outputs. (0.11.0–0.12.x: `Close(sig, bsvFee)`, the LP's or
+  the validator's, everything to the LP key.)
+- **Keys rotate.** The validator's key is the BRC-42 child of its
+  ValidatorIdentity, protocol `[1, "amm pool"]`, counterparty anyone: a
+  pool's first key (its deploy's) keyed by the Nonce, as 64 lowercase hex
+  digits; each Swap's next key keyed by the pool outpoint that Swap spends,
+  `<txid>_<vout>` (0.9.0's convention, kept). The LP's key is the pool's
+  for its life. amm-lookup checks both derivations (below, "The listing");
+  the validator derives its key before signing (`currentKeyId`).
 - **The validator signs last** (amm-validator README "What is checked"):
-  the pool is ours and live, the call is the method's, the next key is our
-  child, the topic would admit the transaction, the pool checks pass, the
-  outputs are the contract's, every other input (and every unproven parent)
-  is signed. Then it signs the pool input through the signer and submits
-  the transaction to its own overlay by message — `{fn: "submit", args:
-  {beef, topics: [tm_color_<txid>_0]}}` from the instance to itself, box
-  `amm/submit` —
-  and answers the direct call on the engine's first answer (`admitted`,
-  `rejected`).
+  the pool is ours, live and not rescinded, the call is the method's, the
+  next key is our child of the spent outpoint, the topic would admit the
+  transaction, the pool checks pass, the outputs are the contract's, every
+  other input (and every unproven parent) is signed. Then it signs the pool
+  input through the signer and submits the transaction to its own overlay
+  by message — `{fn: "submit", args: {beef, topics: [tm_color_<txid>_0]}}`
+  from the instance to itself, box `amm/submit` — and answers the direct
+  call on the engine's first answer (`admitted`, `rejected`).
 
-## The deploy and the affirmation (0.11.0)
+## The deploy and the affirmation (0.13.0)
 
 David Case, 2026-10-09: "Fees are the validator's"; 2026-10-21: pool
-deploys move to the BRC-207 wallet module.
+deploys move to the BRC-207 wallet module; 2026-10-22: the validator's
+nonce, the attestation in state, no input named by the page.
 
 - **The terms.** The validator's fees are skein-wide config,
   `config.amm.ammValidator` `{lpFeeBps, validatorFeeBps, commissionBps}`
   (this manifest: 30, 5, 0; amm-validator's defaults the same). An LP
   posting here accepts them: the page has no fee inputs and reads them with
-  `amm.pool.terms`.
+  `amm.pool.terms`. The three fees are the terms (no termsHash).
 - **The affirmation.** Before the LP's wallet builds the deploy, the page
-  asks this skein's validator, `amm.pool.affirm {pool, satoshis, keyInput}`
-  (below, "Interfaces"): `pool` the pool output's locking script as the
-  deploy will carry it but without the payload, `satoshis` its BSV reserve,
-  `keyInput` the deploy's first token input (`<txid>_<vout>`, the outpoint
-  keying the pool's first validator key). amm-validator checks it — a pool
-  (the Pool code; prefix id and amount the asset id and TokenReserve the
-  code and state carry; no payload), its ValidatorIdentity ours, its token's
-  topic registered, its fees our terms exactly (`fees_unacceptable`, the
-  field and the term in `detail`), its reserves positive, its
-  ValidatorPubKey our child of `keyInput` (`wrong_validator_key`) and the
-  signer agreeing — and answers `{signature}`: the ValidatorPubKey's DER
-  signature over sha256 of the message below. Nothing is recorded or
-  submitted.
-- **The message** (src/pool.zig `affirmMessage`, web/ui
+  asks this skein's validator, `amm.pool.affirm {pool, satoshis}` (below,
+  "Interfaces"): `pool` the pool output's locking script as the deploy will
+  carry it, its ValidatorPubKey, Nonce and Affirmation still to come (the
+  page sends 33 zero bytes, 32 zero bytes and an empty Affirmation; the
+  validator ignores those three), `satoshis` its BSV reserve. amm-validator
+  checks it — a pool (the Pool code; prefix id and amount the asset id and
+  TokenReserve the code and state carry; no payload), its
+  ValidatorIdentity ours, its token's topic registered, its fees our terms
+  exactly (`fees_unacceptable`, the field and the term in `detail`), its
+  reserves positive — then picks a random 32-byte nonce, derives its key
+  from it, has the signer agree (`wrong_validator_key`), and signs the
+  message below. It answers `{validatorPubKey, nonce, signature}`. Nothing
+  is recorded or submitted.
+- **The message v2** (src/pool.zig `affirmMessage`, web/ui
   `PoolTemplate.affirmationMessage`, gen/vectors `affirmMessage`; 221
-  bytes, no field of the signature itself):
+  bytes):
 
   | bytes | field |
   |---|---|
-  | 18 | `"skein-amm affirm 1"`, ASCII: the tag (a domain separator, the layout's version) |
+  | 18 | `"skein-amm affirm 2"`, ASCII: the tag (a domain separator, the layout's version) |
   | 32 | AssetId: the bytes the pool script pushes (the token's deploy txid, internal byte order) |
   | 8 × 3 | LpFeeBps, ValidatorFeeBps, CommissionBps: int64, little-endian |
   | 8 | TokenReserve: uint64, little-endian |
   | 8 | the pool output's satoshis (the BSV reserve): uint64, little-endian |
   | 33 × 3 | LpPubKey, ValidatorPubKey, ValidatorIdentity: compressed |
-  | 32 | termsHash: sha256(lpFeeBps ‖ validatorFeeBps ‖ commissionBps, each int64 LE), the terms agreed to |
+  | 32 | Nonce |
 
-  The signature is ECDSA by the ValidatorPubKey over sha256(message)
+  The signature is ECDSA by the ValidatorPubKey over sha256(message), DER
   (the signer signs that digest as is: BRC-100 `createSignature`
   `hashToDirectlySign`; `@bsv/sdk`'s `PublicKey.verify(message, sig)`
-  hashes the message itself).
-- **The deploy.** The LP's wallet builds, signs and broadcasts the deploy
-  as one createAction (the BRC-207 module submits it to the token topic
-  `tm_color_<assetId>`; the page also submits it): output 0 the pool,
-  its prefix carrying the signature as its payload (`<push sig> OP_DROP`;
-  `PoolTemplate.lockDeploy(args, state, affirmation)`, pool.zig
-  `withAffirmation`), the deposit's first token input the `keyInput` it was
-  affirmed with. The validator's part at deploy time ends with the
-  affirmation. (0.9.0's delivered deploy — every input SIGHASH_SINGLE, one
-  unit left, `amm.pool.submit`, the validator's appended claim and its
-  filing in the wallet — is gone.) The pages' side is below, "The pages
-  and the wallet's module".
+  hashes the message itself). ValidatorPubKey = the anyone-child of
+  ValidatorIdentity, `[1, "amm pool"]`, key ID the nonce's 64 hex digits.
+- **The deploy.** The page checks the answer (the key is the validator's
+  child of the nonce; the pool with the three in its state attests itself)
+  and writes ValidatorPubKey, Nonce and Affirmation into the pool's state.
+  The LP's wallet builds, signs and broadcasts the deploy as one
+  createAction naming **no input**: outputs [the pool], the `p color plan`
+  a transfer with no `inputPositions` and no owned outputs; the BRC-207
+  module selects the token inputs and adds the token change, and supplies
+  the input BEEF of its own selected inputs (agent-env
+  plans/validator-signoff-2026-10-22.md §10: `@bopen-io/color-permission-module`
+  0.1.1, the module paging its asset basket; not the toolbox). The module
+  submits to the token topic `tm_color_<assetId>`; the page submits it too.
+  The validator's part at deploy time ends with the affirmation. The pages'
+  side is below, "The pages and the wallet's module".
 
-## The pages and the wallet's module (0.12.0)
+## The pages and the wallet's module (0.12.0; 0.13.0)
 
-David Case, 2026-10-21/22. The pages (`web/ui`, the Open Exchange) hold the
+David Case, 2026-10-21/22; 0.13.0, 2026-10-22 (deploy, Close, Recover). The pages (`web/ui`, the Open Exchange) hold the
 user's tokens in the wallet's BRC-207 `color` module (`@bsv/color-permission-module`;
 Yours, branch `1color`, registers it, its overlay on testnet this skein,
 `https://swap.skein.nexus`). The module's names are the page's
@@ -161,19 +177,21 @@ counterparty}`).
   the token list (`/color/tokens`), else `ls_color_deploys {tokenId}`, else
   a deploy the wallet holds. Beside it, what `amm-swap` holds, with Move
   back.
-- **Deploy a position.** `amm.pool.terms`; the key input: one of the
-  wallet's own outputs of the token (`p color assets`), the smallest that
-  covers the deposit, else the largest; `amm.pool.affirm {pool, satoshis,
-  keyInput}`, the answer checked (`PoolTemplate.affirmed`); one
-  `createAction`: input 0 the key input (`inputPositions`), output 0 the
-  pool (a transfer to a foreign script), output 1 the key input's rest to a
-  fresh module key of the user's (the plan's `ownedOutputs`) when there is
-  one; the module adds further inputs and change. The wallet funds the sats
-  (one spend prompt, one module prompt). The page submits the deploy to
-  `tm_color_<assetId>` too, then files output 0 in `amm-pools` (customInstructions
-  `{id, op: "amm-pool", sym, dec, protocolID, keyID, counterparty, amm:
-  {role, validatorIdentity, lpFeeBps, validatorFeeBps, commissionBps}}`, the
-  LP key BRC-29 as before).
+- **Deploy a position** (0.13.0). The LP key: a BRC-29 key to self under a
+  fresh random keyID (derivationPrefix base64("amm-lp"), derivationSuffix
+  16 random bytes), kept in this browser (localStorage,
+  `PendingDeployStore`) until the row is filed. `amm.pool.terms`;
+  `amm.pool.affirm {pool, satoshis}` → `{validatorPubKey, nonce,
+  signature}`, checked and written into the pool's state; one
+  `createAction`: outputs [the pool] (a transfer to a foreign script), no
+  inputs, no `inputPositions`, `randomizeOutputs: false`; the module selects
+  the token inputs and adds the change. The wallet funds the sats (one spend
+  prompt, one module prompt). The page submits the deploy to
+  `tm_color_<assetId>` too, then files output 0 in `amm-pools`
+  (customInstructions `{id, op: "amm-pool", sym, dec, protocolID, keyID,
+  counterparty, amm: {role, validatorIdentity, lpFeeBps, validatorFeeBps,
+  commissionBps, nonce}}`). (0.12.x: the page named a key input, input 0,
+  and keyed the LP key by it.)
 - **Swap, sats in.** As before (`1sat-deposit` funding, the leg built here,
   the relay). The token payout is locked to a module receiving key whose
   sender is the pool's ValidatorIdentity; accepted, the page takes it in
@@ -193,25 +211,35 @@ counterparty}`).
   Liquidity's Recover takes the pool's outpoint (`<txid>.<vout>` or
   `<txid>_<vout>`, the deploy's or a later continuation), follows it to its
   current output (`GET <base>/spends`), reads that output's BEEF from
-  `ls_color {txid, outputIndex}` and decodes the pool; walks the BEEF back
-  to the deploy (the transaction whose pool output carries the
-  affirmation) and derives the LP key from the deploy's input 0 as a
-  deploy does (`lpKeyId`, else the pre-BRC-29 `legacyLpKeyId`), checked
-  with `getPublicKey` against the pool's LpPubKey. On a match it files the
+  `ls_color {txid, outputIndex}` and decodes the pool. A pool before
+  0.13.0: walks the BEEF back to the deploy (the transaction whose pool
+  output carries the affirmation as its payload) and derives the LP key
+  from the deploy's input 0 (`lpKeyId`, else the pre-BRC-29
+  `legacyLpKeyId`). A pool from 0.13.0 on: its LP keyID is random and on no
+  chain, so the keyIDs this browser kept for deploys whose row was not
+  filed are tried; none: "not kept in this browser", nothing filed. Each
+  candidate is checked with `getPublicKey` against the pool's LpPubKey. On a match it files the
   current output in `amm-pools` with `internalizeAction` (basket
   insertion, tag `amm-pool`, the deploy's `poolCustomInstructions`, label
   `amm-pool-deploy`); otherwise it files nothing ("This pool's LP key is
   not this wallet's."). A pool the wallet already files is left alone.
   The row is then an ordinary position: Close as below.
-- **Close.** As before, the page's own Close (`bsvFee`). The contract pays
-  every token to the LP key, which is not a module key, so the token output
-  is filed in `amm-swap` under the LP key.
+- **Close** (0.13.0: `Close(lpSig)`, outputs free). The page's own Close
+  (`bsvFee`: the miner fee left from the pool, or 0 for a funding output the
+  wallet broadcasts): the sats less `bsvFee` to the LP key, a BRC-29 wallet
+  payment to self; every token, one sat, to a NEW module receiving key of
+  the user's own (`newReceivingKey`, sender the user's identity), taken in
+  through the module with its receipt (a second `internalizeAction`; kept in
+  pending payouts if the module does not take it at once). No `amm-swap`,
+  no Move back. A pool before 0.13.0 closes as 0.12.x did (the contract's
+  outputs, the tokens to the LP key, filed in `amm-swap`, Move back). A
+  rescinded pool is shown as such and closes as any.
 - **Move back** (Your tokens). Every `amm-swap` output of the token, and a
   funding output the wallet broadcasts for the fee, spent by an app-built
   transaction to one module receiving key of the user's own (sender: the
   user's identity), submitted to `tm_color_<assetId>`, taken in through the
   module, the spent outputs relinquished. A swap that got stuck, and a
-  closed position's tokens, come back this way.
+  pre-0.13.0 position's closed tokens, come back this way.
 - **Pending payouts** (`wallet/pendingPayouts.ts`) keep both kinds: a
   BRC-29 remittance or a module receipt, retried with the final
   transaction's BEEF.
@@ -219,41 +247,59 @@ counterparty}`).
   baskets `amm-swap`, `amm-pools`, `1sat-deposit`; protocols BRC-29 to self,
   `[2, "amm swap"]` to self, identity, AuthFetch's two, the action labels;
   no spending authorization; no `p color` entry (the module asks for those).
+  0.13.0 adds nothing (the deploy, Close and Recover use the labels
+  `amm-pool-deploy` and `amm-close` as before).
 
-## The listing (0.11.0)
+## The listing (0.13.0)
 
-`ls_amm` lists a deploy's pool only when its pool output's payload is the
-affirmation and it verifies against the pool's parameters and the
-ValidatorPubKey in its state (pool.zig `affirmed`); a deploy without it (no
-payload, another key's signature, any field changed since it was signed) is
-never listed, and not indexed. A Swap's continuation (no payload) is listed
-when the pool it spends was. Every query answers listed pools only. A pool
-leaves the listing when its output is spent with no continuation: Close,
-the LP's or the validator's.
+`ls_amm` (programs/amm-lookup `listedAt`) lists a pool output when
 
-**The validator's Close** (root's message `{fn: "close", args: {pool:
-"<txid>.<vout>"}}` in the box `amm/validator`, gated by `roles: {root:
-["close"]}`; it replaces 0.9.0's `rescind`): amm-validator follows `pool`
-(any of the pool's outputs, its deploy's among them) to its newest output
-and has the instance's wallet build the Close with the pool as a caller
-input (shruggr/skein#93): `createAction` with the pool
-(`unlockingScriptLength` the longest the call can be, its transaction's
-BEEF), the contract's two outputs (the pool's sats, then every token, to
-the LP key), `noSend` — the wallet adds its funding input and its change
-after them — a draft; it writes the pool input's Rúnar call of Close over
-the draft (`sig` the pool's current validator key's, through the signer,
-over the draft's BIP-143 preimage; bsvFee 0; the wallet's change as
-Rúnar's `_changePKH` / `_changeAmount`); `signAction {reference, spends}`;
-then submits it to its overlay for the token topic (the topic admits the
-LP's tokens; `ls_amm` drops the pool) and answers root `{fn: "close",
+- **(a) it attests itself** (src/pool.zig `affirmed`): not rescinded; its
+  ValidatorPubKey equals the ValidatorIdentity's child keyed by its Nonce,
+  derived by the lookup (not trusted); and its Affirmation verifies over
+  message v2 under that key — a deploy; or
+- **(b) it is a Swap's continuation of a listed pool** (`nextKeyOf`): the
+  transaction spends a pool of this token in `pools` (`spent` runs after
+  `admitted`, so it is still there) with an unlocking script whose last
+  push selects Swap (`methodOf`), the output is at 0, not rescinded, carries
+  the same ValidatorIdentity, and its ValidatorPubKey is the identity's
+  child keyed by that spent outpoint (David Case 2026-10-22: the lookup
+  checks the next key).
+
+Nothing else is listed: a rescinded pool (ValidatorPubKey 33 zero bytes:
+Rescind's continuation), a pool-shaped output a Close wrote (Close's
+outputs are free; it is no Swap), a continuation naming another next key,
+a deploy under a key of the LP's own (v0.11.0's defect: its signature
+verified but the key was not derived). Only listed pools are indexed, and
+every query answers listed pools only. A listed pool leaves the listing
+when its output is spent with no listed continuation: the LP's Close, or
+the validator's Rescind.
+
+**The validator's Rescind** (0.13.0; it replaces 0.11.0's validator Close,
+which replaced 0.9.0's rescind of the claim): root's message `{fn:
+"rescind", args: {pool: "<txid>.<vout>"}}` in the box `amm/validator`,
+gated by `roles: {root: ["rescind"]}`. amm-validator follows `pool` (any of
+the pool's outputs, its deploy's among them) to its newest output (refused
+when it is closed, or rescinded already) and has the instance's wallet
+build the Rescind with the pool as a caller input (shruggr/skein#93):
+`createAction` with the pool (`unlockingScriptLength` the longest the call
+can be, its transaction's BEEF), the contract's one output (the pool's
+sats, its script with the ValidatorPubKey zeroed), label `amm-rescind`,
+`noSend` — the wallet adds its funding input and its change after it — a
+draft; it writes the pool input's Rúnar call of Rescind over the draft
+(`validatorSig` the pool's current validator key's, through the signer,
+over the draft's BIP-143 preimage; the wallet's change as Rúnar's
+`_changePKH` / `_changeAmount`); `signAction {reference, spends}`; then
+submits it to its overlay for the token topic (the topic admits the
+rescinded pool; `ls_amm` drops it) and answers root `{fn: "rescind",
 request, result | error}`. Each wallet call is a thread of the genesis
-wallet program (amm-validator `close.zig`).
+wallet program (amm-validator `rescind.zig`).
 
 **The LP's view** comes from the chain state by outpoint, not the listing:
 the read `GET <base>/spends?outpoint=<txid>.<vout>` (amm-p2p, the chain
 app's `spent` as the overlay reads it) follows the pool from its deploy to
-its current output (each spender's output 0 while it is a pool; `closed`
-once a Close spent it). The current output's BEEF comes from `ls_color
+its current output (each spender's output 0 while it is a pool — a
+Rescind's included; `closed` once a Close spent it). The current output's BEEF comes from `ls_color
 {txid, outputIndex}`.
 
 ## Prices (0.9.0)
@@ -317,14 +363,15 @@ box `amm` before 0.7.0), and the route `/call` (a signed request):
 | interface | functions | from |
 |---|---|---|
 | `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (root too) |
-| `amm.pool/1` | `terms` (0.9.0: `{validator, peerId?, lpFeeBps, validatorFeeBps, commissionBps}`, this skein's validator and its terms), `affirm` (0.11.0: `{pool: bytes, satoshis: int, keyInput: "<txid>_<vout>"}` → `{signature: bytes}`, or the refusal `<reason>[: <detail>]`; no writes) | anyone |
+| `amm.pool/1` | `terms` (0.9.0: `{validator, peerId?, lpFeeBps, validatorFeeBps, commissionBps}`, this skein's validator and its terms), `affirm` (0.13.0: `{pool: bytes, satoshis: int}` → `{validatorPubKey: bytes, nonce: bytes, signature: bytes}`, or the refusal `<reason>[: <detail>]`; no writes; 0.11.0–0.12.x: `{pool, satoshis, keyInput}` → `{signature}`) | anyone |
 
 `amm.liquidity/1` is gone (0.9.0, with AddLiquidity); `amm.pool.submit` and
 `amm.pool.status` (0.9.0's delivered deploy) are gone (0.11.0).
 
-**Box `amm/validator`** (0.11.0): root's `{fn: "close", args: {pool:
-"<txid>.<vout>"}}` → amm-validator (above, "The validator's Close"), answered
-`{fn: "close", request, result | error}` to the sender in this box.
+**Box `amm/validator`** (0.11.0): root's `{fn: "rescind", args: {pool:
+"<txid>.<vout>"}}` (0.13.0; `close` before) → amm-validator (above, "The
+validator's Rescind"), answered `{fn: "rescind", request, result | error}`
+to the sender in this box.
 
 **Box `amm/requests`** (0.9.0): a holder's listing request, `{fn:
 "request", args: {tokenId}}` from anyone → amm-p2p, recorded under the head
@@ -427,7 +474,8 @@ root's switch); `config.amm` (`ammValidator`: the validator's terms
 bounds `minValidatorFeeBps`, `maxLpFeeBps`, `maxCommissionBps`;
 `commission`); `provides` the two `amm.*` interfaces (`amm.swap.submit` with
 `peerId: "string"` beside `validator`, 0.4.0; `amm.pool.terms`, 0.9.0;
-`amm.pool.affirm`, 0.11.0, in place of `amm.pool.submit` / `status`);
+`amm.pool.affirm`, 0.11.0, in place of `amm.pool.submit` / `status`;
+0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`);
 `requires: ["chain/1"]`; no `start` / `stop` (0.6.0). No
 `config.overlay.terms`: skein's install refuses an unknown `config.overlay`
 field (the topic beat's `terms`, skein-overlay 0.12.1, waits on it).
@@ -437,7 +485,7 @@ field (the topic beat's `terms`, skein-overlay 0.12.1, waits on it).
 shruggr/skein#143 (0.7.0): a route names a transport, an address, its
 filters and a handler; no sender. Mailbox addresses are relative to the app
 (shruggr/skein#128: `"x"` is the box `amm/x`); one route per box. Who may
-run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterLookup", "close"]}`.
+run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterLookup", "rescind"]}`.
 
 1. `register` → `overlay.register` (register / deregister and
    registerLookup / deregisterLookup; root's: any other key's message is recorded and runs nothing)
@@ -449,8 +497,8 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    after the engine's `event` and `$self` rows); since #143 a box has one
    route, and `amm` is the engine's (its own watch, resume and wait), so the
    relay took its own box.
-4. `validator` → `amm-validator` (0.11.0: root's `close`, and the steps
-   of its thread; 0.9.0–0.10.2: `rescind`)
+4. `validator` → `amm-validator` (0.13.0: root's `rescind`, and the steps
+   of its thread; 0.11.0–0.12.x: `close`; 0.9.0–0.10.2: the claim's `rescind`)
 5. `requests` → `amm-p2p` (0.9.0: a holder's listing request, anyone)
 6. http `/call`, `kernel.brc104` → `amm-p2p.call` (a signed request; the
    caller is its key)
@@ -502,9 +550,16 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
 
 ## Not wired
 
-- **A validator's Close, as the LP sees it.** The pool leaves the LP's
-  positions (it is closed); the payout to the LP key (sats and tokens) is
-  not taken into the wallet by the pages.
+- **Pools deployed before 0.13.0, on chain.** amm-lookup and
+  amm-validator know layout 2 only: a layout-1 pool still listed stays in
+  `pools` until it is spent (the spend drops it), its Swap continuations
+  are not listed, and the validator does not sign its swaps (`not_a_pool`)
+  or rescind it. The pages close and recover it (the contract's own Close,
+  the LP key from its deploy's input 0).
+- **Recovering a 0.13.0 pool from another browser.** Its LP keyID is random
+  and kept only in its row (and in the deploying browser until the row is
+  filed): a deploy whose filing failed can be recovered only in that
+  browser. The validator can still Rescind it.
 
 - **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
   0.7.1+'s manifest row): not carried, as skein-1color 0.6.0 does not; a
@@ -550,4 +605,6 @@ skein routes add --transport http --prefix --filters amm.page --settings '{"root
   listing does not fold them out (skein-overlay 0.12.1 "Beats"); the LP's
   page reads them (`/spends`).
 - **Run end to end.** The programs are tested natively and the pages
-  against fakes; this app has not been installed on a skein.
+  against fakes. 0.13.0's deploy depends on the BRC-207 module supplying the
+  input BEEF of the token inputs it selects (color-permission-module 0.1.1,
+  in progress), not tested here against a live wallet.

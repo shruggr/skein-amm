@@ -4,6 +4,43 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.13.0 (2026-10-22)
+
+The validator sign-off redesign (David Case, 2026-10-22; agent-env
+plans/validator-signoff-2026-10-22.md §1, §2, §7, §9; docs/AMM.md).
+
+- **Contract** (pool/Pool.runar.go): state gains `Nonce` (32 bytes) and
+  `Affirmation` (the validator's DER signature), never assigned, carried by
+  every continuation; no BRC-162 payload any more. `Close(lpSig)`: a plain
+  signature by the LP key, outputs free. `Rescind(validatorSig)`: the pool
+  written back at output 0 with ValidatorPubKey 33 zero bytes, everything
+  else kept, the validator's change after it; Swap (unchanged) is impossible
+  after it. The template grows from 2,657 to 3,568 bytes (a pool output from
+  2,996 to 4,011).
+- **The affirmation**: message v2 (`"skein-amm affirm 2"`, no termsHash, the
+  nonce last; 221 bytes); the first validator key is the identity's child
+  keyed by the nonce (64 hex digits); `amm.pool.affirm {pool, satoshis}` →
+  `{validatorPubKey, nonce, signature}` (no `keyInput`; the validator picks a
+  random nonce).
+- **ls_amm**: lists a pool that attests itself (the key derived from
+  identity + nonce, compared, the affirmation verified) or a Swap's
+  continuation of a listed pool naming the next key (the identity's child of
+  the spent outpoint); a rescinded pool, a Close's output and any other key
+  are not listed.
+- **amm-validator**: root's `close` → `rescind` (rescind.zig); the current
+  key: a Swap's continuation by the spent outpoint, else a self-attesting
+  pool by its nonce.
+- **Pages**: the deploy names no input (outputs [pool], no `inputPositions`;
+  the module selects the token inputs); the LP key a fresh random BRC-29
+  keyID kept in the row (and in the browser until the row is filed); the
+  Close pays the tokens to a new module receiving key and the sats as a
+  BRC-29 payment (no `amm-swap`, no Move back); Recover takes both layouts;
+  pools before 0.13.0 decode, close (their covenant outputs) and recover.
+- Fixtures regenerated (`pool_deploy_own_key`, `swap_bad_next`, `rescind`,
+  `close_rescinded`; `close_fee` and `close_validator` gone); the 0.12.x
+  artifact and vectors kept for the pages' layout-1 path.
+- Tests: Go 8 (73 with subtests), `zig build test` 63, web/ui 144, web/engine 35.
+
 ## 0.12.1 (2026-10-22)
 
 Pages only (`web/ui`, `www/`): no contract, validator, lookup or manifest
