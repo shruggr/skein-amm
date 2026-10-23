@@ -3,11 +3,14 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.13.1** (2026-10-22: a BEEF out of order — a
-child before its parent, as a wallet's ts-sdk writer emits — is sorted
-parents-first and verified, not refused, by the chain app (skein-chain
-0.6.1, which the image installs), the engine (skein-overlay 0.14.1) and
-the validator and relay; skein-sdk 0.11.1). Since **0.13.0** (David Case, 2026-10-22; docs/AMM.md
+and its pages. Version **0.13.2** (2026-10-23: the pages read the token
+list a page at a time, `limit` 100, as skein-1color's route takes it; the
+Swap page shows every token's symbol and decimals again). 0.13.1
+(2026-10-22): a BEEF out of order — a child before its parent, as a
+wallet's ts-sdk writer emits — is sorted parents-first and verified, not
+refused, by the chain app (skein-chain 0.6.1, which the image installs),
+the engine (skein-overlay 0.14.1) and the validator and relay; skein-sdk
+0.11.1. Since **0.13.0** (David Case, 2026-10-22; docs/AMM.md
 "The pool rule", "The deploy and the affirmation", "The listing"): the
 validator's nonce and affirmation live in every pool's state (Nonce,
 Affirmation; message v2, no termsHash), the validator's first key is its
@@ -312,7 +315,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.13.1 |
+| this app | 0.13.2 |
 | skein-overlay | v0.14.1 (968356d) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's; skein-1color 0.10.x carries 0.14.0's), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.10.1 (d7348cf; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

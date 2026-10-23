@@ -4,6 +4,15 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.13.2 (2026-10-23)
+
+The Swap page showed tokens without symbol or decimals. The pages asked
+the token list (`GET <base>/color/tokens`, skein-1color's `color-lookup`
+`tokens`) with `limit=1000`; the route takes `limit` 1 to 100 and answered
+an error the pages read as an empty list. `readTokenList` now reads 100 at
+a time (`skip`) until a short page. Contract, programs, manifest and image
+unchanged.
+
 ## 0.13.1 (2026-10-22)
 
 A BEEF out of order is sorted, not refused (David Case, 2026-10-22). A

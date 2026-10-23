@@ -100,8 +100,23 @@ export interface ListedToken {
   icon?: string;
 }
 
+/** The route's page size: `limit` is 1 to 100, `skip` up to 100000 (skein-1color color-lookup `tokens`). */
+const TOKEN_LIST_PAGE = 100;
+const TOKEN_LIST_MAX_SKIP = 100_000;
+
+/** The whole token list, read a page at a time, newest first as the route lists it. */
 export async function readTokenList(base: string, fetchFn: typeof fetch = fetch): Promise<ListedToken[]> {
-  const a = await getJson(`${base}/color/tokens?limit=1000`, fetchFn);
+  const tokens: ListedToken[] = [];
+  for (let skip = 0; skip <= TOKEN_LIST_MAX_SKIP; skip += TOKEN_LIST_PAGE) {
+    const page = await readTokenPage(base, skip, fetchFn);
+    tokens.push(...page);
+    if (page.length < TOKEN_LIST_PAGE) break;
+  }
+  return tokens;
+}
+
+async function readTokenPage(base: string, skip: number, fetchFn: typeof fetch): Promise<ListedToken[]> {
+  const a = await getJson(`${base}/color/tokens?limit=${TOKEN_LIST_PAGE}&skip=${skip}`, fetchFn);
   const list = Array.isArray(a) ? a : a && typeof a === "object" && Array.isArray((a as { tokens?: unknown }).tokens) ? (a as { tokens: unknown[] }).tokens : [];
   return (list as Record<string, unknown>[])
     .filter((t) => typeof t.tokenId === "string")
