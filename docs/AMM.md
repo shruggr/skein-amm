@@ -402,7 +402,9 @@ registered topic (skein-overlay 0.12.0; `-admit` before); `tm_color_<txid>_0-liv
 beaconed by a validator's host and subscribed, without admitting anything,
 by a market's liveness tool (below); `ls_amm-live`, the AMM lookup's beat
 (the prices, above), once root registers `ls_amm`; `/skein/overlay/sync/1.0.0`,
-the overlay sync protocol, answered by the engine's filter `sync` (0.14.0).
+the overlay sync protocol, answered by the engine's filter `sync` (0.14.0);
+`/skein/overlay/beef/1.0.0`, the engine's receive row, a catch-up's fetched
+Atomic BEEFs (0.14.1).
 
 **Box `amm/amm-p2p`** (also): the cron provider's ticks, `{kind: "amm-p2p-tick",
 job: "catchup"}` — a utility nothing schedules (0.6.0). amm-p2p takes no
@@ -511,7 +513,12 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    peer's catch-up frames (the locator, the admitted lists by height
    range, a transaction's Atomic BEEF), answered by the engine through the
    front door, a read, nothing logged
-9. the read routes, below
+9. libp2p `/skein/overlay/beef/1.0.0`, `kernel.beef` → `overlay.submit`
+   (0.14.1, as in skein-overlay's own manifest): the host hands each
+   Atomic BEEF a catch-up fetches to this row, as from the serving peer;
+   without it the puller refused every one ("no route for
+   libp2p:/skein/overlay/beef/1.0.0")
+10. the read routes, below
 
 then, derived by the install from `config.overlay`: the box `amm` as an
 `event` route and a `mailbox` route → `overlay` (gossiped submissions,

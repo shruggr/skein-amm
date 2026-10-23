@@ -4,6 +4,25 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.14.1 (2026-10-23)
+
+The receive row (shruggr/skein#154). A local node catching up from the
+rack's `swap` pulled the ranges and fetched the transactions over libp2p,
+then refused every fetched BEEF: "no route for
+libp2p:/skein/overlay/beef/1.0.0". The host hands each Atomic BEEF a
+catch-up fetches to the engine's receive row, as from the serving peer,
+and the manifest did not declare it. Nothing else changes in behaviour;
+the pages, the contract and the image are unchanged.
+
+- `etc/app.json`: the route `{"transport": "libp2p", "address":
+  "/skein/overlay/beef/1.0.0", "filters": ["kernel.beef"], "handler":
+  "overlay.submit"}`, as in skein-overlay's own manifest, beside the sync
+  row; the description names it and the new pin.
+- skein-1color v0.11.0 → v0.11.1 (tag URL and hash; the same row in its
+  own manifest): `bin/color-*.wasm` the same bytes;
+  `scripts/color-pages.sh` pins the v0.11.1 tarball (sha256
+  0b49e277…14af4) and `www/color/` is unchanged.
+
 ## 0.14.0 (2026-10-23)
 
 The sync row (shruggr/skein-overlay#5, shruggr/skein#154; David,
