@@ -4,6 +4,21 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.14.2 (2026-10-23)
+
+Engine 0.15.1: pending-parent pause (shruggr/skein-overlay#6). A
+submission whose parent is held but not yet admitted now pauses and
+resumes on the parent's admission. Nothing else changes in behaviour; the
+pages, the contract, the manifest's rows and the image are unchanged.
+
+- skein-overlay v0.15.0 → v0.15.1 (tag URL and hash; skein-sdk v0.11.1
+  through it, unchanged): `bin/overlay.wasm` is the tag's engine (sha256
+  2b11a447…6f02).
+- skein-1color v0.11.1 → v0.11.2 (tag URL and hash; the same engine pin):
+  `bin/color-*.wasm` the same bytes; `scripts/color-pages.sh` pins the
+  v0.11.2 tarball (sha256 5be817d2…40a1) and `www/color/` is unchanged.
+- `etc/app.json`: version 0.14.2; the description names both pins.
+
 ## 0.14.1 (2026-10-23)
 
 The receive row (shruggr/skein#154). A local node catching up from the

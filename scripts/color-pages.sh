@@ -7,9 +7,9 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TAG=v0.11.1
+TAG=v0.11.2
 URL="https://github.com/shruggr/skein-1color/archive/refs/tags/${TAG}.tar.gz"
-SHA256=0b49e277021f68482887fa962437184e31252f7c7fe0adba36b44b01e9614af4
+SHA256=5be817d2375d28882635734a5f77f2f6dacd8fb2a5317e447cd6126deea040a1
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
