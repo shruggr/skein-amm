@@ -10,7 +10,7 @@ topic per token, registered by root at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.14.1 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
+| `overlay` | skein-overlay 0.15.0 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
 | `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
@@ -401,7 +401,8 @@ fn `affirm` in-VM, which answers at once.
 registered topic (skein-overlay 0.12.0; `-admit` before); `tm_color_<txid>_0-live`,
 beaconed by a validator's host and subscribed, without admitting anything,
 by a market's liveness tool (below); `ls_amm-live`, the AMM lookup's beat
-(the prices, above), once root registers `ls_amm`.
+(the prices, above), once root registers `ls_amm`; `/skein/overlay/sync/1.0.0`,
+the overlay sync protocol, answered by the engine's filter `sync` (0.14.0).
 
 **Box `amm/amm-p2p`** (also): the cron provider's ticks, `{kind: "amm-p2p-tick",
 job: "catchup"}` — a utility nothing schedules (0.6.0). amm-p2p takes no
@@ -505,7 +506,12 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
 7. libp2p `/amm-validator/1/swap` → `amm-validator.swap` (refused
    `not_validating` for a topic not registered; `/addLiquidity` gone, 0.9.0;
    `/deploy` gone, 0.11.0: `affirm` is called in-VM only)
-8. the read routes, below
+8. libp2p `/skein/overlay/sync/1.0.0`, no handler, the filter `sync` →
+   `overlay.sync` (0.14.0, skein-overlay 0.15.0, shruggr/skein#154): a
+   peer's catch-up frames (the locator, the admitted lists by height
+   range, a transaction's Atomic BEEF), answered by the engine through the
+   front door, a read, nothing logged
+9. the read routes, below
 
 then, derived by the install from `config.overlay`: the box `amm` as an
 `event` route and a `mailbox` route → `overlay` (gossiped submissions,

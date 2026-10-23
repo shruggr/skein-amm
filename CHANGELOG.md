@@ -4,6 +4,30 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.14.0 (2026-10-23)
+
+The sync row (shruggr/skein-overlay#5, shruggr/skein#154; David,
+2026-10-23: each app declares the engine's sync filter and the libp2p read
+row in its own manifest, no handler). A peer's catch-up from an amm
+instance failed at the locator (`/amm/anchors`: not found): the host
+answered sync frames through the app's http table, which has no such
+reads. Now the engine answers them through the front door. Nothing else
+changes in behaviour; the pages, the contract and the image are unchanged.
+
+- `etc/app.json`: `filters.sync = "overlay.sync"` and the route
+  `{"transport": "libp2p", "address": "/skein/overlay/sync/1.0.0",
+  "filters": ["sync"]}`; the description names it and the new pins.
+- skein-overlay v0.14.1 → v0.15.0 (tag URL and hash): `bin/overlay.wasm`
+  is its build (sha256 45a2d8f1…dc267, the tag's committed bytes).
+  amm-lookup, amm-validator and amm-p2p rebuilt against it: the same bytes.
+- skein-1color v0.10.1 → v0.11.0 (tag URL and hash; its sync row and the
+  same engine): `bin/color-*.wasm` the same bytes; `scripts/color-pages.sh`
+  pins the v0.11.0 tarball (sha256 865113dd…15e58) and `www/color/` is
+  unchanged.
+- A host serves the row once it takes shruggr/skein#154 (until then its
+  kernel refuses a libp2p row with no handler): do not install 0.14.0 on a
+  host without it.
+
 ## 0.13.2 (2026-10-23)
 
 The Swap page showed tokens without symbol or decimals. The pages asked

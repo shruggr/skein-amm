@@ -12,11 +12,11 @@
 // `1color` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.14.1)
-//                          and bin/color-{topic,lookup}.wasm (skein-1color v0.10.1) copied beside
+//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.15.0)
+//                          and bin/color-{topic,lookup}.wasm (skein-1color v0.11.0) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
-// The 1Color pages (skein-1color v0.10.1's www/) are copied into www/color/ by
+// The 1Color pages (skein-1color v0.11.0's www/) are copied into www/color/ by
 // scripts/color-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
 // The AMM pages are built from web/ui into www/ (scripts/www.sh runs both).
 const std = @import("std");
