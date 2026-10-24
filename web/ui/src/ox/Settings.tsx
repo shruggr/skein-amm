@@ -2,18 +2,22 @@
  * Settings, root only: register a token picked from discovery (topic and
  * lookup names derived, never typed), the registered list with Deregister,
  * and holders' requests to list; and (0.15.0) the validator's terms: shown,
- * set or cleared by root's message to `<app>/validator`. Discovery is
- * always on: no toggles.
+ * set or cleared by root's message to `<app>/validator`; and (0.16.0) the
+ * market's terms, its minimum commission: shown, set or cleared by root's
+ * message to `<app>/amm-p2p`. Discovery is always on: no toggles.
  */
 import { useState } from "react";
 import { Id } from "../components/Id";
 import { shortTokenId } from "../lib/tokenId";
 import {
   NO_TERMS_TEXT,
+  clearMarketMinimum,
   clearValidatorTerms,
   deregisterToken,
   hasTerms,
+  setMarketMinimum,
   setValidatorTerms,
+  useMarketMinimum,
   useValidatorTerms,
   lookupOf,
   registerToken,
@@ -201,6 +205,75 @@ function ValidatorTermsCard() {
   );
 }
 
+/** Market terms (0.16.0, root only): this market's minimum commission, as amm.swap.terms answers it; set or clear it. */
+function MarketTermsCard() {
+  const market = useMarketMinimum(true);
+  const [min, setMin] = useState("");
+  const [error, busy, run] = useAct();
+  const [done, setDone] = useState<string | null>(null);
+  const m = market.data;
+  const minN = bps(min);
+
+  return (
+    <form
+      className="panel stack-sm"
+      aria-labelledby="market-h"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (minN === null) return;
+        setDone(null);
+        run(async () => {
+          await setMarketMinimum(minN);
+          setDone("The minimum is sent. It applies once this skein has taken the message.");
+          market.reload();
+        });
+      }}
+    >
+      <h2 id="market-h" className="h2">
+        Market terms
+      </h2>
+      {m === null ? (
+        <p className="muted">{market.error ? `Could not read the market terms: ${market.error}` : "Reading the market terms…"}</p>
+      ) : m > 0 ? (
+        <p className="fg2">Minimum commission {m} bps. The Swap page lists only pools at or above it.</p>
+      ) : (
+        <p className="fg2">No minimum commission: the Swap page lists every pool.</p>
+      )}
+      <div className="row row-wrap">
+        <div className="field">
+          <label htmlFor="market-min">Minimum commission (bps)</label>
+          <input id="market-min" inputMode="numeric" value={min} onChange={(e) => setMin(e.target.value)} aria-invalid={(min !== "" && minN === null) || undefined} />
+        </div>
+      </div>
+      <div className="row row-wrap">
+        <button type="submit" className="btn btn-primary" disabled={busy || minN === null}>
+          {busy ? "Sending…" : "Set minimum"}
+        </button>
+        {m !== null && m > 0 && (
+          <button
+            type="button"
+            className="btn btn-outline"
+            disabled={busy}
+            onClick={() => {
+              setDone(null);
+              run(async () => {
+                await clearMarketMinimum();
+                setDone("Clearing is sent. Once taken, the Swap page lists every pool.");
+                market.reload();
+              });
+            }}
+          >
+            Clear minimum
+          </button>
+        )}
+      </div>
+      <span className="help">An integer from 0 to 10000 basis points. A listing preference of this market: anyone can still swap against any pool elsewhere.</span>
+      {error && <Notice kind="bad">Could not send: {error}</Notice>}
+      {done && <Notice kind="ok">{done}</Notice>}
+    </form>
+  );
+}
+
 function RegisteredRow({ t }: { t: RegisteredToken }) {
   const [confirm, setConfirm] = useState(false);
   const [error, busy, run] = useAct();
@@ -281,6 +354,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
       ) : (
         <>
           <ValidatorTermsCard />
+          <MarketTermsCard />
           <Register />
           <section className="panel stack-sm" aria-labelledby="regd-h">
             <h2 id="regd-h" className="h2">

@@ -231,8 +231,11 @@ amm.swap.status   writes: false
   answer  the record                      error `not_found`
 amm.swap.terms    writes: false
   args    {}
-  answer  {commissionPkh?: bytes}         the relay's commission pkh (20 bytes; null when none is set),
-                                          for the page to name as Swap's commissionPkh before it builds the swap
+  answer  {commissionPkh?: bytes,         the relay's commission pkh (20 bytes; 0.16.0: hash160 of the instance's own
+           minCommissionBps?: int}        key, BRC-43 level 1 `amm commission` / `relay`, counterparty anyone; null only
+                                          when the signer gives none), for the page to name as Swap's commissionPkh
+                                          before it builds the swap; and (0.16.0) this market's minimum commission, the
+                                          record `amm/market` root sets (0 when unset): the pools the Swap page lists
 record    {id: string, status: string, funding: bytes, swap: bytes, pool: string, validator: bytes,
            expires: ms, created: ms, updated: ms, tx?: bytes, txid?: string, reason?: string,
            detail?: string, poolState?: map}
@@ -245,7 +248,7 @@ status    pending | accepted (tx: the validator's signed swap, txid) | refused (
 - `swap`: the raw swap. `id` is sha256 of these bytes (hex): the swap with the validator's slot empty.
 - `pool`: the pool outpoint `<txid>_<vout>`; `validator`: the pool's ValidatorIdentity (33 bytes); `expires`: ms since the epoch.
 
-**Checks** (`relay.checkPair`; a refusal is the function's error, `failed`, message `<reason>[: <detail>]`, and nothing is written): `bad_validator`, `expired`, `bad_funding`, `bad_swap`, `bad_pool`; `pool_not_input_0` (input 0 spends `pool`); `funding_not_spent` (another input spends an output of the funding transaction); `funding_unsigned`, `swap_unsigned` (an input with no unlocking script; the validator verifies the signatures); `not_a_swap`, `bad_call` (the pool call is Rúnar's `Swap(validatorSig, nextValidatorPubKey, amountIn, bsvIn, userPkh, commissionPkh)`, 11 pushes, 20-byte pkhs), `signature_slot_not_empty`; `bad_outputs` (output 0 a pool, then the payout, the LP and validator fees when nonzero, the commission when the pool's CommissionBps of amountIn is nonzero: in the input asset — sats, or a 1-sat BRC-162 value output — to the call's commissionPkh, then at most one change output when `_changeAmount > 0`), `wrong_validator` (the continuation's ValidatorIdentity is not `validator`); `commission_missing` (config `commission.pkh` set, the pool charges a commission, and the call's commissionPkh is not ours; a pool whose CommissionBps is 0 has no commission output and passes); then `bad_peer` (0.4.0: `peerId` is not a peer ID's text; the relay dials it, or calls its own validator when it is this node's).
+**Checks** (`relay.checkPair`; a refusal is the function's error, `failed`, message `<reason>[: <detail>]`, and nothing is written): `bad_validator`, `expired`, `bad_funding`, `bad_swap`, `bad_pool`; `pool_not_input_0` (input 0 spends `pool`); `funding_not_spent` (another input spends an output of the funding transaction); `funding_unsigned`, `swap_unsigned` (an input with no unlocking script; the validator verifies the signatures); `not_a_swap`, `bad_call` (the pool call is Rúnar's `Swap(validatorSig, nextValidatorPubKey, amountIn, bsvIn, userPkh, commissionPkh)`, 11 pushes, 20-byte pkhs), `signature_slot_not_empty`; `bad_outputs` (output 0 a pool, then the payout, the LP and validator fees when nonzero, the commission when the pool's CommissionBps of amountIn is nonzero: in the input asset — sats, or a 1-sat BRC-162 value output — to the call's commissionPkh, then at most one change output when `_changeAmount > 0`), `wrong_validator` (the continuation's ValidatorIdentity is not `validator`); `commission_missing` (the pool charges a commission and the call's commissionPkh is not ours, the derived key's hash, 0.16.0; before, config `commission.pkh` when set; a pool whose CommissionBps is 0 has no commission output and passes); then `bad_peer` (0.4.0: `peerId` is not a peer ID's text; the relay dials it, or calls its own validator when it is this node's).
 
 **Submit** records `{status: "pending", …}` under the app's head and launches the relay thread (this program, args `{kind: "amm-swap-relay", id}`). Over `/amm/call` the request waits on that thread (`{wait: true}`) and answers the settled record when it comes to rest; a message caller is answered by the relay thread with the settled record; an in-VM call gets the pending record. The same swap again answers its record (a `/call` waits on the relay while it is pending); one that timed out or failed is relayed again.
 
@@ -319,10 +322,14 @@ status    pending | accepted (tx: the validator-signed add, txid: its txid) | re
 
 The app's state is `{kind: "amm-app-state", swaps: <MST: id → swap record>, pools: <MST: id → deploy record>, liquidity: <MST: id → AddLiquidity record>}` under the app's root head `amm/app` (an app's heads are `<app>/…`; `relay.app_head`, checked against skein-sdk's `app.headOf`): the installed app record's `state` (APPS.md §1: the head's root with `state` replaced), or, on an instance wired by its genesis (no app record at `amm/app`), the head's root itself. The record kept there adds the relay's own fields (`peer`, `dial`, `stream`, `thread`, `request`), which the answer leaves out.
 
+### The market record (0.16.0)
+
+Root's message `{fn: "market", args: {minCommissionBps}}` (an integer, 0 to 10 000) in this program's box `amm/amm-p2p` sets the market's minimum commission; `{fn: "market", args: null}` clears it (`roles.root` gates `market`; src/market.zig). Kept as the root of the head `amm/market` (`{minCommissionBps}`, or `null` once cleared); answered to root in the box, `{fn: "market", request, replyTo, result: <the record> | null}` or `error: {code: "bad-args", message}` with nothing written. Unset: 0. `amm.swap.terms` answers it; the relay reads nothing of it (a listing preference of this market, not a rule: it refuses nothing by it).
+
 ### Configuration
 
 ```
-config.amm.commission (app record)  |  genesis defaults.ammCommission (JSON text):  {pkh?: <40 hex> | null}
+(0.16.0: no config.amm.commission / genesis defaults.ammCommission: the commission key is derived, above)
 config.amm.ammP2p (app record)  |  genesis defaults.ammP2p (JSON text)        (as below)
 the functions' declarations:  the app record's `provides`  |  genesis defaults.ammProvides (JSON text: the manifest's `provides`)
 box amm      {address: "amm", sender: "*", program: "amm-p2p"} (manifest; after the owner's, the events' and $self's rows to the engine)

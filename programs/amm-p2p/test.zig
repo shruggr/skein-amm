@@ -871,6 +871,7 @@ const TestEnv = struct {
     self_peer: ?[]const u8 = null,
     launched: usize = 0,
     commission: relay.Commission = ours,
+    market: relay.market.Market = .{},
     seen_writes: ?bool = null,
     launched_kind: ?relay.Kind = null,
 };
@@ -916,7 +917,7 @@ fn testStatus(c: *app.Call) anyerror!scbor.Value {
 }
 fn testTerms(c: *app.Call) anyerror!scbor.Value {
     test_env.seen_writes = c.writes;
-    return toSdk(c.a, try relay.terms(c.a, test_env.commission));
+    return toSdk(c.a, try relay.terms(c.a, test_env.commission, test_env.market));
 }
 const test_fns = [_]app.Function{
     .{ .name = relay.fn_submit, .run = testSubmit },
@@ -1026,6 +1027,12 @@ test "relay: dispatch by the manifest (app/etc/app.json, amm.swap/1) — submit 
     try testing.expect(t2 == .ok);
     try testing.expect((try fromSdk(a, t2.ok)).get("commissionPkh").? == .null);
     test_env.commission = ours;
+    // 0.16.0: the market's minimum beside it, 0 when none is set; the record's when set.
+    try testing.expectEqual(@as(u64, 0), (try fromSdk(a, t1.ok)).getUint("minCommissionBps").?);
+    test_env.market = .{ .min_commission_bps = 1 };
+    const t3 = try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_terms, null, null);
+    try testing.expectEqual(@as(u64, 1), (try fromSdk(a, t3.ok)).getUint("minCommissionBps").?);
+    test_env.market = .{};
     var targs = scbor.MapBuilder.init(a);
     try targs.put("pool", scbor.string(p.pool));
     try expectErr(try app.run(a, in, relay.app_name, m, &test_fns, relay.fn_terms, targs.value(), null), .@"bad-args", "args.pool: not in the shape");
@@ -1122,7 +1129,7 @@ test "market and validator are the engine's (0.6.0, shruggr/skein#120), root's s
     }
     try testing.expect(m.get("start") == null and m.get("stop") == null);
     const config = m.get("config").?;
-    if (config.get("amm").?.get("ammP2p")) |p2p| {
+    if (if (config.get("amm")) |c| c.get("ammP2p") else null) |p2p| {
         try testing.expect(p2p.get("market") == null and p2p.get("heartbeatSeconds") == null and p2p.get("offlineSeconds") == null);
     }
     // "this shouldn't have been a config in the manifest. This should be a setting that the user is
@@ -1140,9 +1147,9 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
     const gated = m.get("roles").?.get("root").?.array;
     // register, registerLookup, deregisterLookup (skein-overlay 0.11.0); no market / validator
     // (0.8.1, skein-overlay 0.12.0: always both, no switch); rescind, the validator's (0.13.0; 0.11.0's close);
-    // terms, the validator's (0.15.0: the runtime record).
-    try testing.expectEqual(@as(usize, 5), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind", "terms" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    // terms, the validator's (0.15.0: the runtime record); market, the market's (0.16.0: the runtime record).
+    try testing.expectEqual(@as(usize, 6), gated.len);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind", "terms", "market" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
     try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
@@ -1296,6 +1303,78 @@ test "amm.pool.terms (0.15.0): the record root set, with this validator's identi
     try testing.expectEqualStrings("no validator here", terms.no_validator);
     // The manifest ships no terms: config.amm has no ammValidator; amm.pool.terms is still declared.
     const m = try dagjson.decode(a, manifest_json);
-    try testing.expect(m.get("config").?.get("amm").?.get("ammValidator") == null);
+    try testing.expect(m.get("config").?.get("amm") == null); // 0.16.0: no config.amm at all (commission gone too)
     try testing.expect((try app.declOf(a, m, relay.fn_pool_terms)) != null);
+}
+
+test "market terms (0.16.0, David 2026-10-24): a runtime record root sets — fn market gated by roles.root in the box amm/amm-p2p, the head amm/market; set, clear, refused shapes; unset 0; no config.amm.commission" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const market = relay.market;
+
+    // The manifest: `market` is root's; the box amm-p2p routes to this program; no commission config.
+    const m = try dagjson.decode(a, manifest_json);
+    const gated = for (m.get("roles").?.get("root").?.array) |g| {
+        if (eql(u8, scbor.Value.str(g).?, market.fn_market)) break true;
+    } else false;
+    try testing.expect(gated);
+    try testing.expect(m.get("config").?.get("amm") == null);
+    try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
+    try testing.expectEqualStrings("amm/market", try market.headName(a, relay.app_name));
+
+    // Set: {minCommissionBps}, an integer 0 to 10 000.
+    const set: Value = .{ .map = &.{.{ .key = "minCommissionBps", .value = .{ .uint = 25 } }} };
+    const p = market.parseArgs(set);
+    try testing.expect(p == .set);
+    try testing.expectEqual(@as(u64, 25), p.set.min_commission_bps);
+    try testing.expect(market.parseArgs(.{ .map = &.{.{ .key = "minCommissionBps", .value = .{ .uint = 10_000 } }} }) == .set);
+    // Clear: args null, or none.
+    try testing.expect(market.parseArgs(.null) == .clear);
+    try testing.expect(market.parseArgs(null) == .clear);
+    // Refused: over 10 000, negative, text, another key, missing, not a map.
+    const bads = [_]Value{
+        .{ .map = &.{.{ .key = "minCommissionBps", .value = .{ .uint = 10_001 } }} },
+        .{ .map = &.{.{ .key = "minCommissionBps", .value = .{ .nint = 0 } }} },
+        .{ .map = &.{.{ .key = "minCommissionBps", .value = .{ .text = "1" } }} },
+        .{ .map = &.{ .{ .key = "minCommissionBps", .value = .{ .uint = 1 } }, .{ .key = "tokenId", .value = .{ .text = "x" } } } },
+        .{ .map = &.{} },
+        .{ .uint = 1 },
+    };
+    for (bads) |b| try testing.expect(market.parseArgs(b) == .bad);
+
+    // The record round trip; cleared (null), no head or a bad record: 0.
+    const rec = try market.record(a, p.set);
+    try testing.expectEqualSlices(u8, try cbor.encode(a, set), try cbor.encode(a, rec));
+    try testing.expectEqual(@as(u64, 25), market.fromRecord(rec).min_commission_bps);
+    try testing.expectEqual(@as(u64, 0), market.fromRecord(.null).min_commission_bps);
+    try testing.expectEqual(@as(u64, 0), market.fromRecord(null).min_commission_bps);
+
+    // The relay refuses nothing by it: checkPair takes no market (a listing preference, not a rule).
+    const info = @typeInfo(@TypeOf(relay.checkPair)).@"fn";
+    inline for (info.params) |prm| try testing.expect(prm.type != market.Market);
+}
+
+test "the commission key (0.16.0): the instance's own, BRC-43 level 1 `amm commission` / `relay`, counterparty anyone — the signer's key for it is the one anyone derives from the identity" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const kd_mod = bsvz.primitives.key_deriver;
+    const proto: kd_mod.Protocol = .{ .security_level = relay.commission_protocol.level, .name = relay.commission_protocol.name };
+    try testing.expectEqual(@as(u8, 1), relay.commission_protocol.level);
+    try testing.expectEqualStrings("amm commission", relay.commission_protocol.name);
+    try testing.expectEqualStrings("relay", relay.commission_key_id);
+    const root = try bsvz.primitives.ec.PrivateKey.fromBytes(.{0x07} ** 32);
+    const identity = (try root.publicKey()).toCompressedSec1();
+    // The signer's (forSelf, counterparty anyone: getPublicKey's answer to main.zig `commissionKey`).
+    const signer = kd_mod.KeyDeriver.init(root);
+    const mine = (try signer.derivePublicKey(a, proto, relay.commission_key_id, .{ .type_ = .anyone }, true)).toCompressedSec1();
+    // Anyone's, from the identity alone.
+    const anyone = kd_mod.KeyDeriver.init(null);
+    const theirs = (try anyone.derivePublicKey(a, proto, relay.commission_key_id, .{ .type_ = .other, .public_key = try bsvz.primitives.ec.PublicKey.fromSec1(&identity) }, false)).toCompressedSec1();
+    try testing.expectEqualSlices(u8, &mine, &theirs);
+    // amm.swap.terms answers its hash160.
+    const pkh = hash160(&mine);
+    const t = try relay.terms(a, .{ .pkh = pkh }, .{});
+    try testing.expectEqualSlices(u8, &pkh, t.getBytes("commissionPkh").?);
 }

@@ -725,16 +725,19 @@ describe("pending payouts: a swap's BRC-29 payout survives a reload and is inter
 // ---------------------------------------------------------------------------
 
 describe("the commission", () => {
-  it("amm.swap.terms: {fn, args: {}} on the app's /call route; commissionPkh as DAG-JSON bytes, or null", async () => {
+  it("amm.swap.terms: {fn, args: {}} on the app's /call route; commissionPkh as DAG-JSON bytes, or null; minCommissionBps (0.16.0), absent 0", async () => {
     const pkhBytes = Utils.toArray(v.commissionPkh, "hex");
     const { af, calls } = fakeRelay((fn) => ok(fn, { commissionPkh: dagBytes(pkhBytes) }));
-    expect(await swapTerms(af, "http://amm2.localhost:8300/amm")).toEqual({ commissionPkh: v.commissionPkh });
+    expect(await swapTerms(af, "http://amm2.localhost:8300/amm")).toEqual({ commissionPkh: v.commissionPkh, minCommissionBps: 0 });
     expect(calls.map((c) => [c.url, c.method, c.body])).toEqual([["http://amm2.localhost:8300/amm/call", "POST", { fn: "amm.swap.terms", args: {} }]]);
     const none = fakeRelay((fn) => ok(fn, { commissionPkh: null }));
-    expect(await swapTerms(none.af, "http://x/amm")).toEqual({ commissionPkh: null });
-    expect(parseSwapTerms({})).toEqual({ commissionPkh: null });
-    expect(parseSwapTerms({ commissionPkh: v.commissionPkh })).toEqual({ commissionPkh: v.commissionPkh });
+    expect(await swapTerms(none.af, "http://x/amm")).toEqual({ commissionPkh: null, minCommissionBps: 0 });
+    expect(parseSwapTerms({})).toEqual({ commissionPkh: null, minCommissionBps: 0 });
+    expect(parseSwapTerms({ commissionPkh: v.commissionPkh })).toEqual({ commissionPkh: v.commissionPkh, minCommissionBps: 0 });
     expect(() => parseSwapTerms({ commissionPkh: dagBytes([1, 2, 3]) })).toThrow(/20 bytes/);
+    // 0.16.0: the market's minimum commission (the record amm/market), absent 0.
+    expect(parseSwapTerms({ commissionPkh: v.commissionPkh, minCommissionBps: 25 })).toEqual({ commissionPkh: v.commissionPkh, minCommissionBps: 25 });
+    for (const bad of [-1, 1.5, 10_001, "1"]) expect(() => parseSwapTerms({ commissionPkh: null, minCommissionBps: bad })).toThrow(/minCommissionBps/);
     const missing = fakeRelay((fn) => ({ status: 404, body: { fn, error: { code: "unknown-fn", message: "amm.swap.terms is not provided" } } }));
     await expect(swapTerms(missing.af, "http://x/amm")).rejects.toThrow(/unknown-fn/);
   });

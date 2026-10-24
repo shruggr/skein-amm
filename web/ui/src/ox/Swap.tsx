@@ -9,6 +9,7 @@ import {
   useTokenPools,
   hasTerms,
   NO_TERMS_TEXT,
+  belowMinimumText,
   useValidatorTerms,
   useWalletSats,
   type HostedToken,
@@ -88,7 +89,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
 
   const sats = useWalletSats(connected);
   const mine = useMyTokens(connected);
-  const pools = useTokenPools(token.tokenId);
+  const pools = useTokenPools(token.tokenId, connected);
   const terms = useValidatorTerms();
   const mineToken = mine.data?.find((t) => t.tokenId === token.tokenId);
   // A sell spends the swap basket's outputs first, then what the wallet sends into it (0.12.0).
@@ -118,7 +119,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
       live = false;
       clearTimeout(t);
     };
-  }, [token.tokenId, side, amountIn, slippageBps, allowPartial, token.marginalPrice]);
+  }, [token.tokenId, side, amountIn, slippageBps, allowPartial, token.marginalPrice, connected]);
 
   function flip() {
     setSide(side === "buy" ? "sell" : "buy");
@@ -329,7 +330,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
             <>
               <p className="muted small">Enter an amount to see how the quote splits it across {token.sym}&apos;s pools.</p>
               <ul className="legs">
-                {(pools.data ?? []).map((p) => (
+                {(pools.data?.pools ?? []).map((p) => (
                   <li key={p.outpoint} className="leg">
                     <Id value={p.outpoint} kind="outpoint" label="pool" />
                     <span className="num leg-amt">
@@ -343,6 +344,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
               </ul>
             </>
           )}
+          {(pools.data?.hidden ?? 0) > 0 && <p className="muted small">{belowMinimumText(pools.data!.hidden)}</p>}
           {(() => {
             const fees = quote?.fees ?? (hasTerms(terms.data) ? terms.data.fees : undefined);
             if (fees)

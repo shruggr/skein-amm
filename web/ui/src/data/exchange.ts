@@ -14,7 +14,10 @@
  *   every `REFRESH_MS` (the beats live in the host's liveness, not in the
  *   log: no event stream carries them).
  * - **Swap** (`quoteSwap`, `executeSwap`): the matching engine's plan over
- *   this skein's listed pools whose validator is live (src/market/plan.ts),
+ *   this skein's listed pools whose validator is live (src/market/plan.ts)
+ *   and (0.16.0) whose commission is at or above this market's minimum
+ *   (`amm.swap.terms` `minCommissionBps`, the record root sets; `swapPools`
+ *   counts the ones it hides),
  *   each leg built, relayed and settled as before (src/market/swapAction.ts,
  *   swapFlow.ts; `amm.swap.submit` on `/call`). A tokens-in swap first
  *   tops up the active swap basket `amm-swap` with one module send
@@ -34,7 +37,9 @@
  *   registered topics; root's messages to `<app>/register`; the holders'
  *   requests (`GET <base>/requests`); the validator's terms (0.15.0:
  *   `amm.pool.terms`, set or cleared by root's message `{fn: "terms"}` to
- *   `<app>/validator`). `isRoot` is a stub (no grants read).
+ *   `<app>/validator`); the market's terms (0.16.0: `amm.swap.terms`'s
+ *   `minCommissionBps`, set or cleared by root's message `{fn: "market"}` to
+ *   `<app>/amm-p2p`). `isRoot` is a stub (no grants read).
  * - **The instance's identity** (0.15.0, `instanceIdentity`): the key its
  *   signed answers carry, the recipient of root's messages and a listing
  *   request (a market-only skein refuses `amm.pool.terms`, which named it
@@ -596,6 +601,51 @@ export async function tokenPools(tokenId: TokenId): Promise<PoolView[]> {
   }));
 }
 
+/**
+ * This market's minimum commission (0.16.0, bps): `amm.swap.terms`'s
+ * `minCommissionBps`, the record root sets (`amm/market`; unset, 0). Null
+ * when it cannot be read here: no wallet is connected (`amm.swap.terms` is a
+ * signed call), and then no pool is hidden.
+ */
+export async function marketMinimum(): Promise<number | null> {
+  if (!context.af) return null;
+  return (await swapTerms(context.af, context.base)).minCommissionBps;
+}
+
+/**
+ * The pools this market lists (0.16.0, David Case 2026-10-24): those whose
+ * commission is at or above `min` (null: unknown, every pool), and how many
+ * it hides. A listing preference of this market, not a rule: the relay
+ * refuses nothing by it.
+ */
+export function atMarketMinimum<T extends Pick<PoolState, "commissionBps">>(pools: T[], min: number | null): { listed: T[]; hidden: number } {
+  if (min === null || min <= 0) return { listed: pools, hidden: 0 };
+  const listed = pools.filter((p) => p.commissionBps >= BigInt(min));
+  return { listed, hidden: pools.length - listed.length };
+}
+
+/** "N pools below this market's minimum commission" (0.16.0). */
+export function belowMinimumText(n: number): string {
+  return `${n} ${n === 1 ? "pool" : "pools"} below this market's minimum commission`;
+}
+
+/** The pools the Swap page lists for a token (0.16.0): `tokenPools` at or above this market's minimum commission, and how many are hidden. */
+export async function swapPools(tokenId: TokenId): Promise<{ pools: PoolView[]; hidden: number }> {
+  const topic = `tm_color_${sdkTokenId(tokenId)}`;
+  const [pools, live, min] = await Promise.all([queryPools(context.af, context.base, tokenId), fetchLive(context.base, topic), marketMinimum()]);
+  const { listed, hidden } = atMarketMinimum(pools, min);
+  return {
+    pools: listed.map((p) => ({
+      outpoint: outpointText(p.outpoint),
+      tokenId,
+      sats: p.bsvReserve,
+      tokens: p.tokenReserve,
+      validator: { identityKey: p.validatorIdentityKey, live: validatorStatus(p.validatorIdentityKey, live).live },
+    })),
+    hidden,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Swap
 // ---------------------------------------------------------------------------
@@ -610,11 +660,13 @@ interface Planned {
 }
 const planned = new WeakMap<Quote, Planned>();
 
-/** A quote for one token: the matching engine's plan over this skein's listed pools whose validator is live. */
+/** A quote for one token: the matching engine's plan over this skein's listed pools whose validator is live and (0.16.0) whose commission is at or above this market's minimum. */
 export async function quoteSwap(req: QuoteRequest): Promise<Quote> {
   if (req.amountIn <= 0n) throw new Error("Enter an amount");
   const topic = `tm_color_${sdkTokenId(req.tokenId)}`;
-  const [pools, live, meta] = await Promise.all([queryPools(context.af, context.base, req.tokenId), fetchLive(context.base, topic), tokenMeta()]);
+  const [all, live, meta, min] = await Promise.all([queryPools(context.af, context.base, req.tokenId), fetchLive(context.base, topic), tokenMeta(), marketMinimum()]);
+  const { listed: pools, hidden } = atMarketMinimum(all, min);
+  if (pools.length === 0 && hidden > 0) throw new Error(`No pool to swap against: ${belowMinimumText(hidden)}`);
   const dec = meta.get(req.tokenId)?.dec ?? 0;
   const buy = req.side === "buy";
   const r = buildPlanRequest(
@@ -1126,6 +1178,28 @@ export async function clearValidatorTerms(): Promise<void> {
   emit();
 }
 
+/**
+ * Sets this market's minimum commission (0.16.0): root's message `{fn:
+ * "market", args: {minCommissionBps}}` to `<app>/amm-p2p` (amm-p2p writes
+ * the record `<app>/market`; the Swap page lists the pools at or above it).
+ * Refused here unless it is an integer 0 to 10 000.
+ */
+export async function setMarketMinimum(minCommissionBps: number): Promise<void> {
+  const { af } = needWallet();
+  if (!Number.isInteger(minCommissionBps) || minCommissionBps < 0 || minCommissionBps > 10_000) throw new Error("minCommissionBps: an integer, 0 to 10000 basis points");
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/amm-p2p`, { fn: "market", args: { minCommissionBps } });
+  emit();
+}
+
+/** Clears this market's minimum commission (0.16.0): root's `{fn: "market", args: null}` to `<app>/amm-p2p`; every pool listed. */
+export async function clearMarketMinimum(): Promise<void> {
+  const { af } = needWallet();
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/amm-p2p`, { fn: "market", args: null });
+  emit();
+}
+
 /** Holders' requests to list a token, newest first (`GET <base>/requests`: the ones not yet registered). */
 export async function listingRequests(): Promise<ListingRequest[] | null> {
   const [rs, meta] = await Promise.all([readRequests(context.base), tokenMeta()]);
@@ -1193,8 +1267,10 @@ export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabl
 export const useDiscoveryTokens = (enabled: boolean) => useData(discoveryTokens, [], enabled);
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
 export const useListingRequests = (enabled: boolean) => useData(listingRequests, [], enabled);
-export const useTokenPools = (tokenId: TokenId | undefined) =>
-  useData(() => (tokenId ? tokenPools(tokenId) : Promise.resolve([])), [tokenId]);
+export const useMarketMinimum = (enabled: boolean) => useData(marketMinimum, [], enabled);
+/** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
+export const useTokenPools = (tokenId: TokenId | undefined, connected: boolean) =>
+  useData(() => (tokenId ? swapPools(tokenId) : Promise.resolve({ pools: [], hidden: 0 })), [tokenId, connected]);
 
 /** Whether the session's key is root (`isRoot`), false while disconnected. */
 export function useIsRoot(session: Session): boolean {

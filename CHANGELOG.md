@@ -4,6 +4,44 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.16.0 (2026-10-24)
+
+Market terms are a runtime record root sets: a minimum commission the
+market lists by; the commission key derived, not configured
+(shruggr/skein-amm#3; David Case 2026-10-24: the market half of the
+validator's terms, one record for the whole skein for now, per-token
+overrides the release shape, not built).
+
+- amm-p2p: root's message `{fn: "market", args: {minCommissionBps}}` in
+  the box `amm/amm-p2p` sets the market record (an integer, 0 to 10 000;
+  any other shape refused `bad-args`, nothing written), `{fn: "market",
+  args: null}` clears it; kept as the root of the head `amm/market`
+  (src/market.zig: `{minCommissionBps}`, or `null` once cleared). Answered
+  to root `{fn: "market", request, replyTo, result: <the record> | null}`
+  in that box. Unset: 0. `roles.root` gains `market`.
+- amm-p2p: `amm.swap.terms` answers `{commissionPkh, minCommissionBps}`.
+  The commission pkh is hash160 of the instance's own key for the relay:
+  BRC-43 security level 1, protocol `amm commission`, key ID `relay`,
+  counterparty anyone, through the signer (`commissionKey`), as the
+  validator's keys are derived. The relay is otherwise unchanged: it
+  passes a commission-charging swap only when the commission pays that key
+  (`commission_missing`), and refuses nothing by the minimum (a listing
+  preference of this market, not a rule: David 2026-10-24, "Are you
+  putting in work to limit things you shouldn't be?").
+- `config.amm.commission` (and genesis `defaults.ammCommission`) is
+  removed from `etc/app.json`, the code and the docs; `etc/app.json` has
+  no `config.amm` now.
+- Pages: Swap lists, and quotes over, only the pools whose commission is
+  at or above `amm.swap.terms`'s `minCommissionBps`, and says "N pools
+  below this market's minimum commission" when it hides any (nothing when
+  none; with no wallet connected the minimum is not read and nothing is
+  hidden). Settings gains a root-only "Market terms" card beside
+  "Validator terms": the minimum, Set / Clear through the connected wallet
+  (root's BRC-104 message into `amm/amm-p2p`). www/ rebuilt; www/color
+  unchanged.
+- Tests: zig pool 10, amm-lookup 15, amm-validator 23, amm-p2p 21 (69);
+  vitest 152.
+
 ## 0.15.0 (2026-10-24)
 
 Validator terms are a runtime record root sets; no fee numbers in the

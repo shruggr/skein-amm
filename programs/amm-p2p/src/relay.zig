@@ -20,8 +20,8 @@
 //!            the LP fee, the validator fee and the commission (the pool's
 //!            CommissionBps of amountIn, in the input asset, to the call's
 //!            commissionPkh), each only when nonzero, then at most one change
-//!            output. The commission must pay this relay's pkh (config
-//!            `commission.pkh`) when one is set and the pool charges one.
+//!            output. The commission must pay this relay's pkh (0.16.0: its
+//!            own derived key, `commission_protocol`) when the pool charges one.
 //!
 //! **The record** (one per swap, keyed by `id` = sha256 of the swap's bytes,
 //! the validator's slot still empty), in the app's state map `swaps`:
@@ -92,6 +92,7 @@ const beef = w.beef;
 const brc162 = color.brc162;
 const pool = @import("pool");
 const terms_mod = @import("terms");
+pub const market = @import("market.zig");
 const eql = std.mem.eql;
 
 /// The app (its box, and the prefix of its heads) and the interface's functions.
@@ -164,18 +165,30 @@ pub const Kind = enum {
     }
 };
 
-/// The relay's commission (config `commission`): when `pkh` is set, a swap
-/// is relayed only if its commission output pays it (a pool whose
-/// CommissionBps is 0 has none, and passes). The page learns `pkh` from
-/// `amm.swap.terms` and names it as Swap's commissionPkh.
+/// The relay's commission: a swap is relayed only if its commission output pays `pkh` (a pool
+/// whose CommissionBps is 0 has none, and passes). The page learns `pkh` from `amm.swap.terms` and
+/// names it as Swap's commissionPkh. 0.16.0: `pkh` is no longer config (`config.amm.commission`,
+/// genesis `defaults.ammCommission`, gone): it is hash160 of this instance's own key for the relay,
+/// `commission_protocol` / `commission_key_id`, counterparty anyone (main.zig `commissionKey`);
+/// null only when the signer gives no key.
 pub const Commission = struct {
     pkh: ?[20]u8 = null,
 };
 
-/// amm.swap.terms `{}` → `{commissionPkh: bytes(20) | null}`.
-pub fn terms(a: Allocator, c: Commission) !Value {
+/// The relay's commission key (0.16.0, the agent's call, "David to review"): BRC-43 security
+/// level 1, protocol `amm commission`, key ID `relay`, counterparty `anyone`, the child of the
+/// instance's root identity key, as the validator's keys are (`amm pool`, level 1, anyone:
+/// src/pool.zig `validator_protocol`): anyone can derive the public key from the identity, only
+/// the instance can sign for it.
+pub const commission_protocol = .{ .level = 1, .name = "amm commission" };
+pub const commission_key_id = "relay";
+
+/// amm.swap.terms `{}` → `{commissionPkh: bytes(20) | null, minCommissionBps}` (0.16.0: the
+/// market record root sets, market.zig; unset, 0).
+pub fn terms(a: Allocator, c: Commission, m: market.Market) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "commissionPkh", .value = if (c.pkh) |p| .{ .bytes = try a.dupe(u8, &p) } else .null },
+        .{ .key = "minCommissionBps", .value = .{ .uint = m.min_commission_bps } },
     }) };
 }
 

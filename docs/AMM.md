@@ -120,6 +120,35 @@ nonce, the attestation in state, no input named by the page.
   gone, with no fallback). An LP posting here accepts the terms: the page
   has no fee inputs and reads them with `amm.pool.terms`. The three fees
   are the terms (no termsHash).
+- **The market's terms** (0.16.0, shruggr/skein-amm#3; David Case
+  2026-10-24: the market half of the validator's terms). One record for
+  the whole skein for now (per-token overrides keyed by token id are the
+  release shape, not built): root's message `{fn: "market", args:
+  {minCommissionBps}}` (an integer, 0 to 10 000) in the box `amm/amm-p2p`
+  (the relay's own box) sets it, `{fn: "market", args: null}` clears it,
+  gated by `roles: {root: [..., "market"]}`. amm-p2p keeps it as the root
+  of the head `amm/market` (the record `{minCommissionBps}`, or `null` once
+  cleared; programs/amm-p2p/src/market.zig) and answers root `{fn:
+  "market", request, replyTo, result}` (or `error: {code: "bad-args",
+  message}`, nothing written) in that box. Unset or cleared: a minimum of
+  0. `amm.swap.terms` answers it as `minCommissionBps` beside the
+  commission pkh, and the Swap page lists (and quotes over) only the pools
+  whose CommissionBps is at or above it, saying how many it hid ("N pools
+  below this market's minimum commission"). It is a listing preference of
+  this market, not a rule: anyone can swap against any pool through their
+  own skein or straight to the validator, so the relay refuses nothing by
+  it (David 2026-10-24: "Are you putting in work to limit things you
+  shouldn't be?").
+- **The commission key** (0.16.0). The relay's commission payout key is
+  the instance's own, derived, not configured: hash160 of its BRC-43 key
+  at security level 1, protocol `amm commission`, key ID `relay`,
+  counterparty `anyone` (relay.zig `commission_protocol`; derived as the
+  validator's keys are, `amm pool` / anyone), so anyone can compute it from
+  the instance's identity and only the instance signs for it.
+  `amm.swap.terms` answers it as `commissionPkh`; the page names it as
+  Swap's commissionPkh, and the relay passes a swap of a pool that charges
+  a commission only when that output pays it (`commission_missing`
+  otherwise, as before). `config.amm.commission` (to 0.15.0) is gone.
 - **The affirmation.** Before the LP's wallet builds the deploy, the page
   asks this skein's validator, `amm.pool.affirm {pool, satoshis}` (below,
   "Interfaces"): `pool` the pool output's locking script as the deploy will
@@ -378,7 +407,7 @@ box `amm` before 0.7.0), and the route `/call` (a signed request):
 
 | interface | functions | from |
 |---|---|---|
-| `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (root too) |
+| `amm.swap/1` | `submit` (writes), `status`, `terms` (`{commissionPkh, minCommissionBps}`; 0.16.0: the pkh derived, the minimum the record `amm/market`, 0 when unset) | anyone (root too) |
 | `amm.pool/1` | `terms` (0.9.0: `{validator, peerId?, lpFeeBps, validatorFeeBps, commissionBps}`, this skein's validator and its terms; 0.15.0: the record `amm/terms`, or the error "no validator here" when none is set), `affirm` (0.13.0: `{pool: bytes, satoshis: int}` → `{validatorPubKey: bytes, nonce: bytes, signature: bytes}`, or the refusal `<reason>[: <detail>]`; no writes; 0.11.0–0.12.x: `{pool, satoshis, keyInput}` → `{signature}`) | anyone |
 
 `amm.liquidity/1` is gone (0.9.0, with AddLiquidity); `amm.pool.submit` and
@@ -488,17 +517,19 @@ lookups `ls_color`, `ls_color_deploys` (both `color-lookup`) and
 topic served; gossip on (the default); no `market` or `validator` (0.8.1:
 both always on, at the defaults 40 000 / 30 000 ms; 0.6.0–0.6.1 set
 `market: {window: 40000}` and `validator: {every: 30000}`, 0.6.2–0.8.0 had
-root's switch); `config.amm` (`commission`; 0.9.0 to 0.14.2 also
-`ammValidator`, the validator's terms, and before 0.9.0 the bounds
-`minValidatorFeeBps`, `maxLpFeeBps`, `maxCommissionBps`: 0.15.0 moved the
-terms to the runtime record `amm/terms`, "The terms" above); `provides` the two `amm.*` interfaces (`amm.swap.submit` with
+root's switch); no `config.amm` (0.16.0: `commission`, the relay's
+commission pkh, is gone, the key derived, "The commission key" above; 0.9.0
+to 0.14.2 also `ammValidator`, the validator's terms, and before 0.9.0 the
+bounds `minValidatorFeeBps`, `maxLpFeeBps`, `maxCommissionBps`: 0.15.0
+moved the terms to the runtime record `amm/terms`, "The terms" above); `provides` the two `amm.*` interfaces (`amm.swap.submit` with
 `peerId: "string"` beside `validator`, 0.4.0; `amm.pool.terms`, 0.9.0;
 `amm.pool.affirm`, 0.11.0, in place of `amm.pool.submit` / `status`;
 0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`);
 `requires: ["chain/1"]`; no `start` / `stop` (0.6.0). No
 `config.overlay.terms` (skein-overlay 0.16.0 no longer reads it: the beat's
 `terms` is the record `amm/terms`); `roles.root` `register`,
-`registerLookup`, `deregisterLookup`, `rescind` and (0.15.0) `terms`.
+`registerLookup`, `deregisterLookup`, `rescind`, (0.15.0) `terms` and
+(0.16.0) `market`.
 
 ### Routes
 

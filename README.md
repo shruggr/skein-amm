@@ -3,8 +3,18 @@
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), as one
 [skein](https://github.com/shruggr/skein) overlay app, name `amm`. Its tree
 carries the overlay engine, the 1Color components, the AMM's own programs
-and its pages. Version **0.15.0** (2026-10-24, shruggr/skein-amm#2; David
-Case 2026-10-23: "The configs should not be published in the image. This
+and its pages. Version **0.16.0** (2026-10-24, shruggr/skein-amm#3; David
+Case 2026-10-24: the market half of the validator's terms): the market's
+terms are a runtime record root sets — `{fn: "market", args:
+{minCommissionBps}}` in the box `amm/amm-p2p` sets a minimum commission,
+`args: null` clears it, kept under the head `amm/market` (unset, 0);
+`amm.swap.terms` answers it and the Swap page lists only the pools at or
+above it ("N pools below this market's minimum commission"); a listing
+preference, not a rule: the relay refuses nothing by it. The relay's
+commission key is the instance's own, derived (BRC-43 level 1, `amm
+commission` / `relay`, counterparty anyone), not `config.amm.commission`
+(removed). Settings gains a root-only "Market terms" card. 0.15.0
+(2026-10-24, shruggr/skein-amm#2; David Case 2026-10-23: "The configs should not be published in the image. This
 will be a dynamic, competitive marketplace."): the validator's terms are a
 runtime record root sets — `{fn: "terms", args: {lpFeeBps,
 validatorFeeBps, commissionBps}}` in the box `amm/validator` sets them,
@@ -252,12 +262,24 @@ wildcard DNS, `<host>/@<handle>/amm`).
    the beat carries no `terms`. `config.amm.ammValidator` (0.9.0 to 0.14.2)
    is gone, with no fallback. The pages read them with `amm.pool.terms`
    and set them from Settings.
+   **The market's terms** (0.16.0, shruggr/skein-amm#3): root's message
+   `{fn: "market", args: {minCommissionBps}}` (an integer, 0 to 10 000) in
+   the box `amm/amm-p2p` sets this market's minimum commission, `{fn:
+   "market", args: null}` clears it (the role `root` gates `market`);
+   amm-p2p keeps it as the root of the head `amm/market` and answers root.
+   Unset, 0. `amm.swap.terms` answers it beside the commission pkh, and
+   the Swap page lists and quotes over only the pools whose commission is
+   at or above it. A listing preference of this market, not a rule: the
+   relay refuses nothing by it. The commission pkh is hash160 of the
+   instance's own key (BRC-43 level 1, protocol `amm commission`, key ID
+   `relay`, counterparty anyone), not config (`config.amm.commission`, to
+   0.15.0, is gone).
 6. **The pages** at `<base>/` (and at the origin's root, below), served
    from the app's own tree (`www/`): the Open Exchange — Landing (the
    hosted tokens, their prices from the beats), Swap, Liquidity (deploy a
    position at the terms; close one, `bsvFee` the miner fee left from the
    pool), Your tokens ("Add to this exchange": a listing request), Settings
-   (root: the validator's terms, 0.15.0; register and deregister a token,
+   (root: the validator's terms, 0.15.0; the market's terms, 0.16.0; register and deregister a token,
    the requests); the 1Color pages
    at `<base>/color/`. They read `<base>/listTopicManagers`,
    `<base>/color/tokens`, `<base>/.live/<topic>` (the beats),
@@ -350,7 +372,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.15.0 |
+| this app | 0.16.0 |
 | skein-overlay | v0.16.0 (ad2cc9d) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.11.3's; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.11.3 (08ebd3f; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.11.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

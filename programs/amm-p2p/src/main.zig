@@ -41,6 +41,9 @@
 //!   message {fn, args} in box `amm/amm-p2p`            this program's box (APPS.md §4): amm.swap.submit | status | terms,
 //!                                                     amm.pool.terms | affirm,
 //!                                                     answered to the sender in that box (a submit: when the relay settles)
+//!   message {fn: "market", args} in box `amm/amm-p2p`  root's market record (0.16.0, market.zig; `roles.root`
+//!                                                     gates it): {minCommissionBps} sets, null clears, the head
+//!                                                     `amm/market`; answered to root in that box
 //!   message {fn: "request", args: {tokenId}} in box `amm/requests`   a holder's listing request (0.9.0): recorded
 //!                                                     under the head `amm/requests` (reads.zig)
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay", id}   the relay (launched by a submit): a thread resting on
@@ -61,8 +64,9 @@
 //! "amm-app-state", swaps, pools}.
 //!
 //! Config: the installed app record's `config.amm` (`ammP2p`: the catch-up's `topics`, `peers`,
-//! `window`, `batch`, `replyTimeoutMs`, all optional; `commission`), else genesis
-//! `defaults.ammP2p` and `defaults.ammCommission`, JSON objects in strings; the topics
+//! `window`, `batch`, `replyTimeoutMs`, all optional), else genesis `defaults.ammP2p`, a JSON
+//! object in a string (0.16.0: no `commission` / `defaults.ammCommission`: the commission key is
+//! the instance's own, derived, `commissionKey`); the topics
 //! (`ammP2p.topics`, else every `tm_color_<txid>_0` the overlay serves, declared or registered with the
 //! engine, as the engine reads its configuration: skein-overlay `engine_vm.configured`); the
 //! functions' declarations: the app record's `provides`, else genesis `defaults.ammProvides`
@@ -164,25 +168,6 @@ fn writeJson(jw: *std.json.Stringify, v: Value) !void {
         .null => try jw.write(null),
         else => return error.BadConfig,
     }
-}
-
-/// The relay's commission: `{pkh?: <40 hex> | null}`.
-fn commissionConfig(a: Allocator, in: Value) !relay.Commission {
-    var c: relay.Commission = .{};
-    const text = (try configText(a, in, "commission", "ammCommission")) orelse return c;
-    const j = std.json.parseFromSliceLeaky(std.json.Value, a, text, .{}) catch return error.BadConfig;
-    if (j != .object) return error.BadConfig;
-    if (j.object.get("pkh")) |v| switch (v) {
-        .null => {},
-        .string => |h| {
-            var pkh: [20]u8 = undefined;
-            if (h.len != 40) return error.BadConfig;
-            _ = std.fmt.hexToBytes(&pkh, h) catch return error.BadConfig;
-            c.pkh = pkh;
-        },
-        else => return error.BadConfig,
-    };
-    return c;
 }
 
 fn config(a: Allocator, in: Value) !Config {
@@ -400,6 +385,8 @@ fn step(a: Allocator, in: Value) !void {
         }
         if (args.getCid("body")) |bc| {
             const body = try s.getValue(a, bc);
+            // Root's market record (0.16.0; `roles.root` gates `market`).
+            if (eql(u8, body.getText("fn") orelse "", relay.market.fn_market)) return marketStep(a, args, body);
             if (body.get("fn") != null) return appMessage(a, in, args, body);
         }
     }
@@ -855,10 +842,56 @@ fn poolTermsFn(c: *app.Call) anyerror!scbor.Value {
     return toSdk(a, answer);
 }
 
-/// amm.swap.terms {} → {commissionPkh: bytes(20) | null}: what the page names
-/// as Swap's commissionPkh before it builds the swap.
+/// The relay's commission key (0.16.0, the agent's call, "David to review"): hash160 of this
+/// instance's own key for the relay, through the signer: BRC-43 level 1, protocol `amm
+/// commission`, key ID `relay`, counterparty anyone, forSelf (relay.zig `commission_protocol`; as
+/// the validator's keys are derived, amm-validator oracle.zig). No config (`config.amm.commission`,
+/// to 0.15.0, is gone).
+fn commissionKey(a: Allocator) !relay.Commission {
+    const pk = try wire.publicKeyResult(try walletCall(a, try wire.getPublicKeyFrameFor(a, relay.commission_protocol.level, relay.commission_protocol.name, relay.commission_key_id, .anyone, true)));
+    return .{ .pkh = w.bsvz.crypto.hash.hash160(&pk).bytes };
+}
+
+/// The market record now (0.16.0): the root of the head `amm/market` (market.zig), or the default
+/// (a minimum of 0) when none is set or it was cleared.
+fn marketNow(a: Allocator) !relay.market.Market {
+    const rc = (try vm.head(a, try relay.market.headName(a, relay.app_name))) orelse return .{};
+    return relay.market.fromRecord(try vm.store().getValue(a, rc));
+}
+
+/// amm.swap.terms {} → {commissionPkh: bytes(20) | null, minCommissionBps}: what the page names as
+/// Swap's commissionPkh before it builds the swap, and (0.16.0) this market's minimum commission,
+/// the pools the Swap page lists.
 fn termsFn(c: *app.Call) anyerror!scbor.Value {
-    return toSdk(c.a, relay.terms(c.a, commissionConfig(c.a, ctx.in) catch |e| return failure(c.a, e)) catch |e| return failure(c.a, e));
+    const a = c.a;
+    const com = commissionKey(a) catch |e| return failure(a, e);
+    const m = marketNow(a) catch |e| return failure(a, e);
+    return toSdk(a, relay.terms(a, com, m) catch |e| return failure(a, e));
+}
+
+/// Root's `{fn: "market", args}` in this program's box (0.16.0; the role `root` gates it, the
+/// kernel's gate, before the step; market.zig): set (`args` `{minCommissionBps}`) or clear (`args:
+/// null`) the record under `amm/market`, and answer `{fn: "market", request, replyTo, result: <the
+/// record> | null}` — or `error: {code: "bad-args", message}`, nothing written — to the sender in
+/// this box. The relay reads nothing of it: a listing preference, not a rule.
+fn marketStep(a: Allocator, args: Value, body: Value) !void {
+    const s = vm.store();
+    const message = args.getCid("message") orelse return error.BadInput;
+    const func = relay.market.fn_market;
+    const rec: ?Value = switch (relay.market.parseArgs(body.get("args"))) {
+        .bad => null,
+        .set => |m| try relay.market.record(a, m),
+        .clear => .null,
+    };
+    const answer = if (rec) |r| blk: {
+        try vm.advance(try relay.market.headName(a, relay.app_name), try s.putValue(a, r));
+        break :blk try relay.answerMessage(a, func, message, r);
+    } else try relay.errorMessage(a, func, message, "bad-args", relay.market.parseArgs(body.get("args")).bad);
+    const sent = try answerSender(a, args.getBytes("sender"), answer);
+    _ = try vm.finish(a, s, try resultRecord(a, func, &.{
+        .{ .key = "answer", .value = answer },
+        .{ .key = "sent", .value = .{ .boolean = sent } },
+    }));
 }
 
 /// amm.swap.status {id} → the record (or the error `not_found`).
@@ -915,7 +948,7 @@ fn submit(c: *app.Call, kind: relay.Kind) !scbor.Value {
     const env: relay.Env = .{
         .book = &book,
         .now = in.getUint("now") orelse in.getUint("at") orelse 0,
-        .commission = try commissionConfig(a, in),
+        .commission = try commissionKey(a),
         .request = ctx.request,
         .ctx = &signer_dummy,
         .self_peer = selfPeerText(a, in),

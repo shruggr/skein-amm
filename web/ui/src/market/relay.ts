@@ -4,15 +4,19 @@
  * the pool's validator, so the browser needs no libp2p. Two functions on the
  * AMM app's box, hosted by programs/amm-p2p:
  *
- *   amm.swap.terms   (reads)   {} → {commissionPkh: bytes(20) | null}
+ *   amm.swap.terms   (reads)   {} → {commissionPkh: bytes(20) | null, minCommissionBps}
  *   amm.swap.submit  (writes)  {funding, swap, pool, validator, peerId, expires} → the record
  *   amm.swap.status  (reads)   {id} → the record
  *
  *   commissionPkh  the address the relay takes the pool's commission at
- *              (Swap's `commissionPkh`); null when the instance has none
- *              configured, in which case a pool with a nonzero
- *              CommissionBps pays the commission to the taker's own key
+ *              (Swap's `commissionPkh`; 0.16.0: hash160 of the instance's
+ *              own derived key, no config); null when the instance names
+ *              none, in which case a pool with a nonzero CommissionBps pays
+ *              the commission to the taker's own key
  *              (src/market/swapAction.ts, "the commission")
+ *   minCommissionBps  this market's minimum commission (0.16.0: the record
+ *              root sets, `amm/market`; absent or unset, 0): a listing
+ *              preference, the pools the Swap page lists, not a rule
  *
  *   funding    bytes: the funding transaction as the wallet's AtomicBEEF (its
  *              ancestry with it: the validator's overlay verifies the unproven
@@ -51,9 +55,10 @@ export const SWAP_SUBMIT_FN = "amm.swap.submit";
 export const SWAP_STATUS_FN = "amm.swap.status";
 export const SWAP_TERMS_FN = "amm.swap.terms";
 
-/** The relay's terms: where it takes the commission (hash160 hex), or null when it names none. */
+/** The relay's terms: where it takes the commission (hash160 hex), or null when it names none; this market's minimum commission (bps, 0 when unset). */
 export interface SwapTerms {
   commissionPkh: string | null;
+  minCommissionBps: number;
 }
 
 /** What the relay needs of `AuthFetch` (and what the tests fake). */
@@ -204,14 +209,16 @@ export function parseSwapRecord(x: unknown): SwapRecord {
   }
 }
 
-/** `amm.swap.terms`'s answer: `commissionPkh` as DAG-JSON bytes (or hex, or a byte array) of 20 bytes, or null / absent. */
+/** `amm.swap.terms`'s answer: `commissionPkh` as DAG-JSON bytes (or hex, or a byte array) of 20 bytes, or null / absent; `minCommissionBps` an integer 0 to 10 000, absent 0 (0.16.0). */
 export function parseSwapTerms(x: unknown): SwapTerms {
   const r = x as Record<string, unknown> | null;
   if (!r || typeof r !== "object") throw new Error(`relay: not swap terms: ${JSON.stringify(x)?.slice(0, 200)}`);
-  if (r.commissionPkh === null || r.commissionPkh === undefined) return { commissionPkh: null };
+  const m = r.minCommissionBps ?? 0;
+  if (typeof m !== "number" || !Number.isInteger(m) || m < 0 || m > 10_000) throw new Error("relay: minCommissionBps is not an integer, 0 to 10000");
+  if (r.commissionPkh === null || r.commissionPkh === undefined) return { commissionPkh: null, minCommissionBps: m };
   const b = readBytes(r.commissionPkh);
   if (!b || b.length !== 20) throw new Error("relay: commissionPkh is not 20 bytes");
-  return { commissionPkh: Utils.toHex(b) };
+  return { commissionPkh: Utils.toHex(b), minCommissionBps: m };
 }
 
 export async function swapTerms(af: AuthFetchLike, base: string): Promise<SwapTerms> {

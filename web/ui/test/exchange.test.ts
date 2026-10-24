@@ -36,6 +36,12 @@ import {
   requestListing,
   setExchangeContext,
   subscribePrices,
+  swapPools,
+  setMarketMinimum,
+  clearMarketMinimum,
+  marketMinimum,
+  atMarketMinimum,
+  belowMinimumText,
   tokenPools,
   topicOf,
   validatorTerms,
@@ -85,6 +91,8 @@ interface Instance {
   calls: { fn: string; args: unknown }[];
   /** amm.pool.terms's answer; null: no terms set (0.15.0: "no validator here"). */
   terms: Record<string, unknown> | null;
+  /** amm.swap.terms's minCommissionBps (0.16.0: the market record; unset 0). */
+  minCommissionBps: number;
 }
 
 function instance(): Instance {
@@ -111,6 +119,7 @@ function instance(): Instance {
     color: {},
     sent: [],
     calls: [],
+    minCommissionBps: 0,
     terms: { validator: { "/": { bytes: Utils.toBase64(Utils.toArray(SKEIN, "hex")).replace(/=+$/, "") } }, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 0 },
   };
 }
@@ -142,7 +151,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     const b = JSON.parse(String(init!.body)) as { fn: string; args: unknown };
     inst.calls.push(b);
     if (b.fn === "amm.pool.terms") return inst.terms ? signed({ fn: b.fn, result: inst.terms }) : signed({ fn: b.fn, error: { code: "failed", message: "no validator here" } }, 500);
-    if (b.fn === "amm.swap.terms") return signed({ fn: b.fn, result: { commissionPkh: null } });
+    if (b.fn === "amm.swap.terms") return signed({ fn: b.fn, result: { commissionPkh: null, minCommissionBps: inst.minCommissionBps } });
   }
   if (u.pathname === "/sendMessage") {
     inst.sent.push({ url, body: decode(init!.body as Uint8Array) as Record<string, unknown> });
@@ -340,6 +349,51 @@ describe("exchange.ts, wired", () => {
     inst.spends[`${pd}.0`] = { outpoint: `${pd}.0`, hops: 2, closed: true };
     expect(await myPositions()).toEqual([]);
     await expect(closePosition({ outpoint: `${swap1.id("hex")}.0`, bsvFee: 0n })).rejects.toThrow(/No such position/);
+  });
+
+  it("market terms (0.16.0): amm.swap.terms's minCommissionBps; swapPools lists the pools at or above it and counts the rest; quoteSwap plans over the listed ones only; no wallet, no minimum known, nothing hidden", async () => {
+    // The fixture pool charges 10 bps.
+    expect(await marketMinimum()).toBeNull();
+    inst.minCommissionBps = 11;
+    expect(await swapPools(TOKEN)).toMatchObject({ pools: [{ outpoint: `${poolDeploy.id("hex")}.0` }], hidden: 0 });
+    connect();
+    expect(await marketMinimum()).toBe(11);
+    expect(await swapPools(TOKEN)).toEqual({ pools: [], hidden: 1 });
+    await expect(quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, allowPartial: false })).rejects.toThrow("No pool to swap against: 1 pool below this market's minimum commission");
+    inst.minCommissionBps = 10;
+    const at = await swapPools(TOKEN);
+    expect(at.hidden).toBe(0);
+    expect(at.pools).toEqual(await tokenPools(TOKEN));
+    expect((await quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, allowPartial: false })).legs).toHaveLength(1);
+    // The filter itself: at or above; 0 or unknown hides nothing.
+    const ps = [{ commissionBps: 0n }, { commissionBps: 25n }, { commissionBps: 1n }];
+    expect(atMarketMinimum(ps, 1)).toEqual({ listed: [ps[1], ps[2]], hidden: 1 });
+    expect(atMarketMinimum(ps, 25)).toEqual({ listed: [ps[1]], hidden: 2 });
+    expect(atMarketMinimum(ps, 0)).toEqual({ listed: ps, hidden: 0 });
+    expect(atMarketMinimum(ps, null)).toEqual({ listed: ps, hidden: 0 });
+    expect(belowMinimumText(2)).toBe("2 pools below this market's minimum commission");
+  });
+
+  it("setMarketMinimum / clearMarketMinimum (0.16.0): root's {fn: market} to <app>/amm-p2p, the skein's identity the recipient; a bad minimum refused before anything is sent", async () => {
+    await expect(setMarketMinimum(1)).rejects.toThrow(/Connect a wallet/);
+    connect();
+    let changed = 0;
+    const off = onDataChange(() => changed++);
+    await setMarketMinimum(1);
+    await clearMarketMinimum();
+    off();
+    expect(changed).toBe(2);
+    const msgs = inst.sent.map((s) => s.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array });
+    expect(msgs.map((m) => [Utils.toHex(Array.from(m.recipient)), m.messageBox])).toEqual([
+      [SKEIN, "amm/amm-p2p"],
+      [SKEIN, "amm/amm-p2p"],
+    ]);
+    expect(msgs.map((m) => decode(m.body))).toEqual([
+      { fn: "market", args: { minCommissionBps: 1 } },
+      { fn: "market", args: null },
+    ]);
+    for (const bad of [1.5, -1, 10_001]) await expect(setMarketMinimum(bad)).rejects.toThrow(/0 to 10000/);
+    expect(inst.sent).toHaveLength(2);
   });
 
   it("validatorTerms: amm.pool.terms on /call — this skein's validator, its fees (read-only)", async () => {
