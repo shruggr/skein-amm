@@ -36,6 +36,8 @@ const Mods = struct {
     overlay_sk: *std.Build.Module,
     color: *std.Build.Module,
     pool: *std.Build.Module,
+    /// The validator's terms record (0.15.0, src/terms.zig, over the pool library's Terms).
+    terms: *std.Build.Module,
     /// skein-overlay's engine sources (src/state.zig, src/submit.zig, src/engine_vm.zig, …), which
     /// it does not export as modules: the validator submits through the engine's own
     /// `submit.route` and reads its state, as amm-poc did with skein-overlay 0.2.0.
@@ -68,6 +70,18 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
             .{ .name = "sk", .module = ov.module("sk") },
         },
     });
+    const pool_mod = b.createModule(.{
+        .root_source_file = b.path("src/pool.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "1color", .module = color } },
+    });
+    const terms_mod = b.createModule(.{
+        .root_source_file = b.path("src/terms.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "pool", .module = pool_mod } },
+    });
     return .{
         .chain = chain,
         .wallet = sdk.module("wallet"),
@@ -81,12 +95,8 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .lookup = ov.module("lookup"),
         .overlay_sk = ov.module("sk"),
         .color = color,
-        .pool = b.createModule(.{
-            .root_source_file = b.path("src/pool.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "1color", .module = color } },
-        }),
+        .pool = pool_mod,
+        .terms = terms_mod,
         .engine = engine,
     };
 }
@@ -97,6 +107,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "chain", .module = m.chain },
         .{ .name = "1color", .module = m.color },
         .{ .name = "pool", .module = m.pool },
+        .{ .name = "terms", .module = m.terms },
     };
     const more: []const std.Build.Module.Import = if (std.mem.eql(u8, program, "amm-lookup")) &.{
         .{ .name = "lookup", .module = m.lookup },

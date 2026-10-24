@@ -12,8 +12,13 @@ import { tokenP2pkhScript } from "../src/lp/poolDeploy";
 import { decode, encode } from "cbor2";
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import {
+  NO_TERMS_TEXT,
+  clearValidatorTerms,
   closePosition,
   connectAction,
+  hasTerms,
+  instanceIdentity,
+  setValidatorTerms,
   deployPosition,
   deregisterToken,
   discoveryTokens,
@@ -78,7 +83,8 @@ interface Instance {
   color: Record<string, unknown>;
   sent: { url: string; body: Record<string, unknown> }[];
   calls: { fn: string; args: unknown }[];
-  terms: Record<string, unknown>;
+  /** amm.pool.terms's answer; null: no terms set (0.15.0: "no validator here"). */
+  terms: Record<string, unknown> | null;
 }
 
 function instance(): Instance {
@@ -111,6 +117,9 @@ function instance(): Instance {
 
 let inst: Instance;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+/** A signed answer of the instance: BRC-104's header names the key it is signed by. */
+const signed = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "x-bsv-auth-identity-key": SKEIN } });
 
 async function route(url: string, init?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<Response> {
   const u = new URL(url);
@@ -132,8 +141,8 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   if (path === "/call") {
     const b = JSON.parse(String(init!.body)) as { fn: string; args: unknown };
     inst.calls.push(b);
-    if (b.fn === "amm.pool.terms") return json({ fn: b.fn, result: inst.terms });
-    if (b.fn === "amm.swap.terms") return json({ fn: b.fn, result: { commissionPkh: null } });
+    if (b.fn === "amm.pool.terms") return inst.terms ? signed({ fn: b.fn, result: inst.terms }) : signed({ fn: b.fn, error: { code: "failed", message: "no validator here" } }, 500);
+    if (b.fn === "amm.swap.terms") return signed({ fn: b.fn, result: { commissionPkh: null } });
   }
   if (u.pathname === "/sendMessage") {
     inst.sent.push({ url, body: decode(init!.body as Uint8Array) as Record<string, unknown> });
@@ -339,6 +348,49 @@ describe("exchange.ts, wired", () => {
     expect(inst.calls).toEqual([{ fn: "amm.pool.terms", args: {} }]);
   });
 
+  it("validatorTerms (0.15.0): none set — amm.pool.terms answers \"no validator here\" — is {none: true}, which the pages show as the no-terms text", async () => {
+    connect();
+    inst.terms = null;
+    const t = await validatorTerms();
+    expect(t).toEqual({ none: true });
+    expect(hasTerms(t)).toBe(false);
+    expect(NO_TERMS_TEXT).toBe("This exchange validates nothing: no terms are set.");
+    // Another failure is still an error.
+    inst.terms = { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 0 };
+    await expect(validatorTerms()).rejects.toThrow(/no validator identity/);
+  });
+
+  it("instanceIdentity (0.15.0): the key the instance's signed answer carries, read off amm.swap.terms (every skein answers it, terms or none)", async () => {
+    await expect(instanceIdentity()).rejects.toThrow(/Connect a wallet/);
+    connect();
+    inst.terms = null;
+    expect(await instanceIdentity()).toBe(SKEIN);
+    expect(inst.calls).toEqual([{ fn: "amm.swap.terms", args: {} }]);
+  });
+
+  it("setValidatorTerms / clearValidatorTerms (0.15.0): root's {fn: terms} to <app>/validator, the skein's identity the recipient; bad fees refused before anything is sent", async () => {
+    connect();
+    inst.terms = null; // a market only: setting the terms still reaches it
+    let changed = 0;
+    const off = onDataChange(() => changed++);
+    await setValidatorTerms({ lpBps: 30, validatorBps: 5, commissionBps: 25 });
+    await clearValidatorTerms();
+    off();
+    expect(changed).toBe(2);
+    const msgs = inst.sent.map((s) => s.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array });
+    expect(msgs.map((m) => [Utils.toHex(Array.from(m.recipient)), m.messageBox])).toEqual([
+      [SKEIN, "amm/validator"],
+      [SKEIN, "amm/validator"],
+    ]);
+    expect(msgs.map((m) => decode(m.body))).toEqual([
+      { fn: "terms", args: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } },
+      { fn: "terms", args: null },
+    ]);
+    for (const bad of [{ lpBps: 30.5, validatorBps: 5, commissionBps: 0 }, { lpBps: -1, validatorBps: 5, commissionBps: 0 }, { lpBps: 30, validatorBps: 10_001, commissionBps: 0 }])
+      await expect(setValidatorTerms(bad)).rejects.toThrow(/0 to 10000/);
+    expect(inst.sent).toHaveLength(2);
+  });
+
   it("deployPosition (0.12.0): from the module's held outputs; refused without the token, or short of the deposit (no claim's unit any more)", async () => {
     await expect(deployPosition({ tokenId: TOKEN, tokens: 1n, sats: 1n })).rejects.toThrow(/Connect a wallet/);
     const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
@@ -383,8 +435,9 @@ describe("exchange.ts, wired", () => {
     expect(decode(msg.body)).toEqual({ fn: "request", args: { tokenId: OTHER } });
   });
 
-  it("registerToken / deregisterToken: root's messages to <app>/register — the topic, its lookup and ls_amm (so the prices beat); then the lookup and the topic", async () => {
+  it("registerToken / deregisterToken: root's messages to <app>/register — the topic, its lookup and ls_amm (so the prices beat); then the lookup and the topic; on a market only too (no terms: 0.15.0)", async () => {
     connect();
+    inst.terms = null;
     await registerToken(OTHER);
     await deregisterToken(OTHER);
     const bodies = inst.sent.map((s) => {

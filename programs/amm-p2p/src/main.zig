@@ -78,6 +78,7 @@ const schedule = @import("schedule.zig");
 const proofs = @import("proofs.zig");
 const views = @import("views.zig");
 const relay = @import("relay.zig");
+const terms = @import("terms");
 const reads = @import("reads.zig");
 const app = @import("app");
 const sk = @import("sk");
@@ -833,28 +834,25 @@ fn poolAffirm(c: *app.Call) !scbor.Value {
     };
 }
 
-/// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"): this
-/// instance's `config.amm.ammValidator` `{lpFeeBps, validatorFeeBps, commissionBps}` (amm-validator
-/// reads the same; the defaults 30, 5, 0), with this instance's identity and peer ID (the
-/// validator a pool here names: `amm.pool.affirm` asks it, in-VM).
-const ValidatorTerms = struct { lpFeeBps: i64 = 30, validatorFeeBps: i64 = 5, commissionBps: i64 = 0 };
-
-fn validatorTerms(a: Allocator, in: Value) !ValidatorTerms {
-    const text = (try configText(a, in, "ammValidator", "ammValidator")) orelse return .{};
-    return std.json.parseFromSliceLeaky(ValidatorTerms, a, text, .{ .ignore_unknown_fields = true }) catch error.BadConfig;
+/// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"; 0.15.0, David
+/// 2026-10-23: a runtime record root sets, no fee numbers in the image): the record of the head
+/// `amm/terms` `{lpFeeBps, validatorFeeBps, commissionBps}` (src/terms.zig; amm-validator writes it
+/// on root's `terms` and reads the same), or null — none set: a market only. No fallback
+/// (`config.amm.ammValidator`, 0.9.0 to 0.14.2, is gone).
+fn validatorTerms(a: Allocator) !?terms.Terms {
+    const rc = (try vm.head(a, try terms.headName(a, relay.app_name))) orelse return null;
+    return terms.fromRecord(try vm.store().getValue(a, rc));
 }
 
-/// amm.pool.terms {} → {validator: <identity, bytes 33>, peerId?: text, lpFeeBps, validatorFeeBps, commissionBps}.
+/// amm.pool.terms {} → {validator: <identity, bytes 33>, peerId?: text, lpFeeBps, validatorFeeBps,
+/// commissionBps}: the terms with this instance's identity and peer ID (the validator a pool here
+/// names: `amm.pool.affirm` asks it, in-VM); none set, the error "no validator here".
 fn poolTermsFn(c: *app.Call) anyerror!scbor.Value {
     const a = c.a;
-    const t = validatorTerms(a, ctx.in) catch |e| return failure(a, e);
-    var m = scbor.MapBuilder.init(a);
-    if (ctx.in.get("self")) |me| if (me.getBytes("identity")) |k| try m.put("validator", .{ .bytes = k });
-    if (selfPeerText(a, ctx.in)) |p| try m.put("peerId", scbor.string(p));
-    try m.put("lpFeeBps", scbor.int(t.lpFeeBps));
-    try m.put("validatorFeeBps", scbor.int(t.validatorFeeBps));
-    try m.put("commissionBps", scbor.int(t.commissionBps));
-    return m.value();
+    const t = validatorTerms(a) catch |e| return failure(a, e);
+    const identity: ?[]const u8 = if (ctx.in.get("self")) |me| me.getBytes("identity") else null;
+    const answer = (try relay.poolTerms(a, identity, selfPeerText(a, ctx.in), t)) orelse return sk.report(terms.no_validator);
+    return toSdk(a, answer);
 }
 
 /// amm.swap.terms {} → {commissionPkh: bytes(20) | null}: what the page names

@@ -7,6 +7,8 @@ import {
   quoteSwap,
   useMyTokens,
   useTokenPools,
+  hasTerms,
+  NO_TERMS_TEXT,
   useValidatorTerms,
   useWalletSats,
   type HostedToken,
@@ -341,11 +343,16 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
               </ul>
             </>
           )}
-          {(quote?.fees ?? terms.data?.fees) && (
-            <p className="muted small">
-              Fees per leg: LP {(quote?.fees ?? terms.data!.fees).lpBps} · validator {(quote?.fees ?? terms.data!.fees).validatorBps} bps, taken from the amount in.
-            </p>
-          )}
+          {(() => {
+            const fees = quote?.fees ?? (hasTerms(terms.data) ? terms.data.fees : undefined);
+            if (fees)
+              return (
+                <p className="muted small">
+                  Fees per leg: LP {fees.lpBps} · validator {fees.validatorBps} bps, taken from the amount in.
+                </p>
+              );
+            return terms.data && !hasTerms(terms.data) ? <p className="muted small">{NO_TERMS_TEXT}</p> : null;
+          })()}
         </section>
       </div>
     </>

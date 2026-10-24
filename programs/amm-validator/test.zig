@@ -1229,12 +1229,12 @@ test "affirm (0.13.0) refused: fees not the terms, another validator's pool, a s
 
     // The terms: each fee exactly.
     var cfg = f.cfg;
-    cfg.terms.lp_fee_bps += 1;
+    cfg.terms.?.lp_fee_bps += 1;
     const r1 = try validator.affirm(a, .{ .pool = pr.script, .satoshis = pr.satoshis }, cfg, f.oracle.oracle());
     try expectRefused(r1, .fees_unacceptable);
     try testing.expect(std.mem.startsWith(u8, r1.refused.detail.?, "lpFeeBps"));
     cfg = f.cfg;
-    cfg.terms.commission_bps = 0;
+    cfg.terms.?.commission_bps = 0;
     try expectRefused(try validator.affirm(a, .{ .pool = pr.script, .satoshis = pr.satoshis }, cfg, f.oracle.oracle()), .fees_unacceptable);
     // Another validator's pool (our identity differs).
     cfg = f.cfg;
@@ -1823,4 +1823,90 @@ test "unproven parents of a request whose BEEF is out of order (skein-sdk 0.11.1
     try testing.expectEqual(@as(usize, 2), pb.entries.len);
     try testing.expect(w.beef.parentsFirst(pb));
     try testing.expectEqualSlices(u8, &w.beef.txidOf(rb), &pb.atomic.?);
+}
+
+test "terms (0.15.0, David 2026-10-23): a runtime record root sets — root's fn terms gated by roles.root, no config.amm.ammValidator; set, clear, refused shapes; the record round trip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const terms = @import("terms");
+
+    // The manifest: `terms` is root's (the kernel's gate: a non-root sender is refused before the
+    // step), the box `validator` routes to amm-validator, and no fee numbers ship in it.
+    const m = try std.json.parseFromSliceLeaky(std.json.Value, a, @import("app_manifest").json, .{});
+    const root_fns = m.object.get("roles").?.object.get("root").?.array.items;
+    const gated = for (root_fns) |f| {
+        if (std.mem.eql(u8, f.string, terms.fn_terms)) break true;
+    } else false;
+    try testing.expect(gated);
+    const routed = for (m.object.get("routes").?.array.items) |r| {
+        if (std.mem.eql(u8, r.object.get("address").?.string, "validator") and std.mem.eql(u8, r.object.get("handler").?.string, "amm-validator")) break true;
+    } else false;
+    try testing.expect(routed);
+    try testing.expect(m.object.get("config").?.object.get("amm").?.object.get("ammValidator") == null);
+
+    // The head.
+    try testing.expectEqualStrings("amm/terms", try terms.headName(a, "amm"));
+
+    // Set: the three fees, integers 0 to 10 000.
+    const set: Value = .{ .map = &.{
+        .{ .key = "lpFeeBps", .value = .{ .uint = 30 } },
+        .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } },
+        .{ .key = "commissionBps", .value = .{ .uint = 25 } },
+    } };
+    const p = terms.parseArgs(set);
+    try testing.expect(p == .set);
+    try testing.expectEqual(@as(i64, 30), p.set.lp_fee_bps);
+    try testing.expectEqual(@as(i64, 5), p.set.validator_fee_bps);
+    try testing.expectEqual(@as(i64, 25), p.set.commission_bps);
+    // Clear: args null, or none.
+    try testing.expect(terms.parseArgs(.null) == .clear);
+    try testing.expect(terms.parseArgs(null) == .clear);
+    // Refused: a fee missing, a key not a fee, a fee over 10 000, negative, not an integer, not a map.
+    const bads = [_]Value{
+        .{ .map = &.{ .{ .key = "lpFeeBps", .value = .{ .uint = 30 } }, .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } } } },
+        .{ .map = &.{ .{ .key = "lpFeeBps", .value = .{ .uint = 30 } }, .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } }, .{ .key = "commissionBps", .value = .{ .uint = 0 } }, .{ .key = "x", .value = .{ .uint = 1 } } } },
+        .{ .map = &.{ .{ .key = "lpFeeBps", .value = .{ .uint = 10_001 } }, .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } }, .{ .key = "commissionBps", .value = .{ .uint = 0 } } } },
+        .{ .map = &.{ .{ .key = "lpFeeBps", .value = .{ .nint = 0 } }, .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } }, .{ .key = "commissionBps", .value = .{ .uint = 0 } } } },
+        .{ .map = &.{ .{ .key = "lpFeeBps", .value = .{ .text = "30" } }, .{ .key = "validatorFeeBps", .value = .{ .uint = 5 } }, .{ .key = "commissionBps", .value = .{ .uint = 0 } } } },
+        .{ .text = "30/5/0" },
+    };
+    for (bads) |b| try testing.expect(terms.parseArgs(b) == .bad);
+
+    // The record: what was set, read back; the cleared record (null) holds none.
+    const rec = try terms.record(a, p.set);
+    try testing.expectEqualSlices(u8, try cbor.encode(a, set), try cbor.encode(a, rec));
+    try testing.expectEqual(p.set, terms.fromRecord(rec).?);
+    try testing.expect(terms.fromRecord(.null) == null);
+}
+
+test "no terms (0.15.0): a market only — a swap and an affirm refused not_validating, \"no terms: this skein validates nothing\", before anything is checked or signed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const terms = @import("terms");
+    const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy" });
+    const req = try request(a, f.raw("swap_bsv_in"), 0);
+    const op: Outpoint = .{ .txid = txidOf(f.raw("pool_deploy")), .vout = 0 };
+    // Set: signed (the fixtures' terms).
+    try testing.expect((try f.spend(.swap, req, op)) == .ok);
+    const calls = f.oracle.calls;
+
+    // Unset: refused, the oracle not asked.
+    f.cfg.terms = null;
+    const r = try f.spend(.swap, req, op);
+    try expectRefused(r, .not_validating);
+    try testing.expectEqualStrings(terms.no_terms, r.refused.detail.?);
+    const body = try messages.replyValue(a, r);
+    try testing.expectEqualStrings("not_validating", body.getText("reason").?);
+    try testing.expectEqualStrings("no terms: this skein validates nothing", body.getText("detail").?);
+    try testing.expectEqual(calls, f.oracle.calls);
+
+    const g = try Fx.init(a, &.{});
+    const pr = try g.proposed();
+    g.cfg.terms = null;
+    const ra = try g.affirm(pr.script, pr.satoshis);
+    try expectRefused(ra, .not_validating);
+    try testing.expectEqualStrings(terms.no_terms, ra.refused.detail.?);
+    try testing.expectEqual(@as(usize, 0), g.oracle.calls);
 }

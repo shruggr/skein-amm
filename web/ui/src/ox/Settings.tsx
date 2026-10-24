@@ -1,14 +1,20 @@
 /**
  * Settings, root only: register a token picked from discovery (topic and
  * lookup names derived, never typed), the registered list with Deregister,
- * and holders' requests to list. Every skein is market and validator from
- * install and discovery is always on: no toggles.
+ * and holders' requests to list; and (0.15.0) the validator's terms: shown,
+ * set or cleared by root's message to `<app>/validator`. Discovery is
+ * always on: no toggles.
  */
 import { useState } from "react";
 import { Id } from "../components/Id";
 import { shortTokenId } from "../lib/tokenId";
 import {
+  NO_TERMS_TEXT,
+  clearValidatorTerms,
   deregisterToken,
+  hasTerms,
+  setValidatorTerms,
+  useValidatorTerms,
   lookupOf,
   registerToken,
   topicOf,
@@ -104,6 +110,97 @@ function Register() {
   );
 }
 
+/** A fee field's text as basis points (an integer 0 to 10 000), or null. */
+function bps(text: string): number | null {
+  if (!/^\d+$/.test(text.trim())) return null;
+  const n = Number(text.trim());
+  return n <= 10_000 ? n : null;
+}
+
+/** Validator terms (0.15.0, root only): the record amm.pool.terms answers; set or clear it. */
+function ValidatorTermsCard() {
+  const terms = useValidatorTerms();
+  const [lp, setLp] = useState("");
+  const [val, setVal] = useState("");
+  const [com, setCom] = useState("");
+  const [error, busy, run] = useAct();
+  const [done, setDone] = useState<string | null>(null);
+  const t = terms.data;
+  const lpN = bps(lp);
+  const valN = bps(val);
+  const comN = bps(com);
+  const ready = lpN !== null && valN !== null && comN !== null;
+
+  return (
+    <form
+      className="panel stack-sm"
+      aria-labelledby="terms-h"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready) return;
+        setDone(null);
+        run(async () => {
+          await setValidatorTerms({ lpBps: lpN, validatorBps: valN, commissionBps: comN });
+          setDone("The terms are sent. They apply once this skein has taken the message.");
+          terms.reload();
+        });
+      }}
+    >
+      <h2 id="terms-h" className="h2">
+        Validator terms
+      </h2>
+      {t === null ? (
+        <p className="muted">{terms.error ? `Could not read the terms: ${terms.error}` : "Reading the terms…"}</p>
+      ) : hasTerms(t) ? (
+        <p className="fg2">
+          LP {t.fees.lpBps} · validator {t.fees.validatorBps} · commission {t.fees.commissionBps} bps. This exchange affirms pools and signs swaps at these terms.
+        </p>
+      ) : (
+        <p className="fg2">{NO_TERMS_TEXT}</p>
+      )}
+      <div className="row row-wrap">
+        <div className="field">
+          <label htmlFor="terms-lp">LP fee (bps)</label>
+          <input id="terms-lp" inputMode="numeric" value={lp} onChange={(e) => setLp(e.target.value)} aria-invalid={(lp !== "" && lpN === null) || undefined} />
+        </div>
+        <div className="field">
+          <label htmlFor="terms-val">Validator fee (bps)</label>
+          <input id="terms-val" inputMode="numeric" value={val} onChange={(e) => setVal(e.target.value)} aria-invalid={(val !== "" && valN === null) || undefined} />
+        </div>
+        <div className="field">
+          <label htmlFor="terms-com">Commission (bps)</label>
+          <input id="terms-com" inputMode="numeric" value={com} onChange={(e) => setCom(e.target.value)} aria-invalid={(com !== "" && comN === null) || undefined} />
+        </div>
+      </div>
+      <div className="row row-wrap">
+        <button type="submit" className="btn btn-primary" disabled={busy || !ready}>
+          {busy ? "Sending…" : "Set terms"}
+        </button>
+        {hasTerms(t) && (
+          <button
+            type="button"
+            className="btn btn-outline"
+            disabled={busy}
+            onClick={() => {
+              setDone(null);
+              run(async () => {
+                await clearValidatorTerms();
+                setDone("Clearing is sent. Once taken, this exchange validates nothing.");
+                terms.reload();
+              });
+            }}
+          >
+            Clear terms
+          </button>
+        )}
+      </div>
+      <span className="help">Each fee is an integer from 0 to 10000 basis points. A new pool here must carry these fees exactly.</span>
+      {error && <Notice kind="bad">Could not send: {error}</Notice>}
+      {done && <Notice kind="ok">{done}</Notice>}
+    </form>
+  );
+}
+
 function RegisteredRow({ t }: { t: RegisteredToken }) {
   const [confirm, setConfirm] = useState(false);
   const [error, busy, run] = useAct();
@@ -183,6 +280,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
         </section>
       ) : (
         <>
+          <ValidatorTermsCard />
           <Register />
           <section className="panel stack-sm" aria-labelledby="regd-h">
             <h2 id="regd-h" className="h2">

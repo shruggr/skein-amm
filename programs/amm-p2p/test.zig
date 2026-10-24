@@ -1139,9 +1139,10 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
     try testing.expect(m.get("dispatch") == null and m.get("reads") == null);
     const gated = m.get("roles").?.get("root").?.array;
     // register, registerLookup, deregisterLookup (skein-overlay 0.11.0); no market / validator
-    // (0.8.1, skein-overlay 0.12.0: always both, no switch); rescind, the validator's (0.13.0; 0.11.0's close).
-    try testing.expectEqual(@as(usize, 4), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    // (0.8.1, skein-overlay 0.12.0: always both, no switch); rescind, the validator's (0.13.0; 0.11.0's close);
+    // terms, the validator's (0.15.0: the runtime record).
+    try testing.expectEqual(@as(usize, 5), gated.len);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind", "terms" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
     try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
@@ -1272,4 +1273,29 @@ test "spends (0.9.0): the chain state of an outpoint — a pool followed from th
     const q = reads.queryOutpoint("outpoint=" ++ "ab" ** 32 ++ ".4").?;
     try testing.expectEqual(@as(u32, 4), q.vout);
     try testing.expect(reads.queryOutpoint("x=1") == null);
+}
+
+test "amm.pool.terms (0.15.0): the record root set, with this validator's identity and peer; none set, no answer (\"no validator here\"); no fee numbers in the manifest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const terms = @import("terms");
+    const id: [33]u8 = .{2} ++ .{0x11} ** 32;
+    const rec = try terms.record(a, .{ .lp_fee_bps = 30, .validator_fee_bps = 5, .commission_bps = 25 });
+    const ans = (try relay.poolTerms(a, &id, PEER_ID_OF_G, terms.fromRecord(rec))).?;
+    try testing.expectEqualSlices(u8, &id, ans.getBytes("validator").?);
+    try testing.expectEqualStrings(PEER_ID_OF_G, ans.getText("peerId").?);
+    try testing.expectEqual(@as(u64, 30), ans.getUint("lpFeeBps").?);
+    try testing.expectEqual(@as(u64, 5), ans.getUint("validatorFeeBps").?);
+    try testing.expectEqual(@as(u64, 25), ans.getUint("commissionBps").?);
+    // No peer known: no peerId.
+    try testing.expect((try relay.poolTerms(a, &id, null, terms.fromRecord(rec))).?.get("peerId") == null);
+    // Unset (no head) or cleared (the record null): no answer; main.zig reports "no validator here".
+    try testing.expect((try relay.poolTerms(a, &id, PEER_ID_OF_G, null)) == null);
+    try testing.expect((try relay.poolTerms(a, &id, PEER_ID_OF_G, terms.fromRecord(.null))) == null);
+    try testing.expectEqualStrings("no validator here", terms.no_validator);
+    // The manifest ships no terms: config.amm has no ammValidator; amm.pool.terms is still declared.
+    const m = try dagjson.decode(a, manifest_json);
+    try testing.expect(m.get("config").?.get("amm").?.get("ammValidator") == null);
+    try testing.expect((try app.declOf(a, m, relay.fn_pool_terms)) != null);
 }

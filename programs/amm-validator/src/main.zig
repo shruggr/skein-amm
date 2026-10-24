@@ -52,9 +52,16 @@
 //! for any registered token." (0.3.2–0.5.0: amm-p2p's validated set,
 //! `validate` / `unvalidate` in box `amm/validate`; gone.)
 //!
-//! Config: the app record's `config.amm.ammValidator` (`{lpFeeBps, validatorFeeBps,
-//! commissionBps}`, the terms, 0.9.0), else genesis `defaults.ammValidator` (the
-//! same as JSON text); the overlay's own configuration as the engine reads it
+//! The terms (0.15.0, David Case 2026-10-23: "The configs should not be published in the image.
+//! This will be a dynamic, competitive marketplace."): root's message `{fn: "terms", args:
+//! {lpFeeBps, validatorFeeBps, commissionBps}}` in the box `amm/validator` sets them, `{fn: "terms",
+//! args: null}` clears them (the role `root` gates `terms`); the record is the head `<app>/terms`
+//! (src/terms.zig), and the step sends the instance itself `{fn: "rebeat"}` in box `<app>` so the
+//! engine re-declares every topic's beacon with them (skein-overlay 0.16.0). Set: a validator;
+//! unset: a market only — an affirm and a swap are refused `not_validating`, "no terms: this skein
+//! validates nothing" (`config.amm.ammValidator`, 0.9.0 to 0.14.2, is gone; no fallback).
+//!
+//! Config: the overlay's own configuration as the engine reads it
 //! from the app record (skein-overlay `engine_vm.configured`: the served
 //! topics, the ones registered with the engine (`<app>/topics`) among them, the app's roles,
 //! `app`; the submission goes to the box `<app>/submit`).
@@ -70,6 +77,7 @@ const view_mod = @import("view.zig");
 const launch = @import("launch.zig");
 const rescind = @import("rescind.zig");
 const Oracle = @import("oracle.zig").Oracle;
+const terms = @import("terms");
 
 const cbor = w.cbor;
 const Value = cbor.Value;
@@ -87,32 +95,12 @@ fn oracleCall(_: *anyopaque, a: std.mem.Allocator, frame: []const u8) anyerror![
     return res;
 }
 
-/// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"): `{lpFeeBps,
-/// validatorFeeBps, commissionBps}`, each a pool's fee exactly; the defaults 30, 5 and 0.
-const Settings = struct {
-    lpFeeBps: i64 = 30,
-    validatorFeeBps: i64 = 5,
-    commissionBps: i64 = 0,
-
-    fn terms(self: Settings) validator.Terms {
-        return .{ .lp_fee_bps = self.lpFeeBps, .validator_fee_bps = self.validatorFeeBps, .commission_bps = self.commissionBps };
-    }
-};
-
-/// The validator's terms: the app record's `config.amm.ammValidator`, else genesis
-/// `defaults.ammValidator` (JSON text), else the defaults.
-fn settings(a: std.mem.Allocator, in: Value) !Settings {
-    const text: []const u8 = blk: {
-        const app = in.getText("app") orelse "";
-        if (app.len > 0) if (try vm.head(a, try std.fmt.allocPrint(a, "{s}/app", .{app}))) |rc| {
-            const rec = try vm.store().getValue(a, rc);
-            if (std.mem.eql(u8, rec.getText("kind") orelse "", "app")) if (rec.get("config")) |cf| if (cf.get("amm")) |amm| if (amm.get("ammValidator")) |v|
-                break :blk try ov.config.json(a, v);
-        };
-        const d = in.get("defaults") orelse return .{};
-        break :blk d.getText("ammValidator") orelse return .{};
-    };
-    return std.json.parseFromSliceLeaky(Settings, a, text, .{ .ignore_unknown_fields = true }) catch error.BadConfig;
+/// The validator's terms now (0.15.0, David Case 2026-10-23: a runtime record root sets; no fee
+/// numbers in the image): the record of the head `<app>/terms` (src/terms.zig), or null — no head,
+/// the record `null` (cleared): a market only, nothing affirmed or signed. No fallback.
+fn termsNow(a: std.mem.Allocator, in: Value) !?validator.Terms {
+    const rc = (try vm.head(a, try terms.headName(a, ov.calls.appOf(in)))) orelse return null;
+    return terms.fromRecord(try vm.store().getValue(a, rc));
 }
 
 /// The topics this instance signs for (0.6.0, shruggr/skein#120; 0.8.1, David 2026-10-09: every
@@ -142,9 +130,13 @@ fn identityOf(a: std.mem.Allocator, in: Value, oracle: Oracle) ![33]u8 {
 
 fn run(a: std.mem.Allocator) anyerror!void {
     const raw_in = try vm.input(a);
-    // A step: root's message in the box `<app>/validator` (the Rescind, 0.13.0), and its thread's
-    // later steps (the wallet threads it launched at rest, the engine's answer).
-    if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) return rescindStep(a, raw_in);
+    // A step: root's message in the box `<app>/validator` — the terms (0.15.0), answered at once,
+    // or the Rescind (0.13.0) — and the Rescind thread's later steps (the wallet threads it
+    // launched at rest, the engine's answer).
+    if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) {
+        if (try isTermsMessage(a, raw_in)) return termsStep(a, raw_in);
+        return rescindStep(a, raw_in);
+    }
     const op = validator.Op.parse(raw_in.getText("fn") orelse "") orelse return error.UnknownFunction;
     const arg = try vm.callArg(a, raw_in);
     // The configuration as the engine reads it: the app this program was installed in (the
@@ -197,10 +189,9 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
     // to rest.
     if (arg.get("resolved") != null) return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
 
-    const s = try settings(a, in);
     const now: i64 = if (in.getUint("now")) |n| @intCast(n) else 0;
     const served = try messages.respond(a, op, body, .{
-        .config = .{ .identity = identity, .terms = s.terms(), .now_ms = now, .validated = try validatedSet(a, in) },
+        .config = .{ .identity = identity, .terms = try termsNow(a, in), .now_ms = now, .validated = try validatedSet(a, in) },
         .view = ovv.view(),
         .oracle = oracle,
         .st = st,
@@ -226,6 +217,61 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
             return answerWait(a);
         },
     }
+}
+
+// ---------------------------------------------------------------- the terms (0.15.0)
+
+/// Whether the step is root's message `{fn: "terms", …}` (its first step: no reply, nothing resolved).
+fn isTermsMessage(a: std.mem.Allocator, raw_in: Value) !bool {
+    if (raw_in.get("reply") != null or raw_in.get("resolved") != null) return false;
+    const args = raw_in.get("args") orelse return false;
+    const bc = args.getCid("body") orelse return false;
+    return std.mem.eql(u8, (try vm.store().getValue(a, bc)).getText("fn") orelse "", terms.fn_terms);
+}
+
+/// Root's `{fn: "terms", args}` (the role `root` gates it; src/terms.zig): set (`args` the three
+/// fees) or clear (`args: null`) the record under `<app>/terms`, tell the engine (`{fn: "rebeat"}`
+/// to the instance itself in box `<app>`: it re-declares every topic's beacon with the terms, or
+/// none), and answer `{fn: "terms", request, result: <the terms> | null}` — or `error: {code:
+/// "bad-args", message}`, nothing written — to the sender in the box it wrote to.
+fn termsStep(a: std.mem.Allocator, raw_in: Value) !void {
+    const args = raw_in.get("args") orelse return error.BadInput;
+    const in = try ov.engine_vm.configured(a, raw_in, null);
+    const s = vm.store();
+    const body = try s.getValue(a, args.getCid("body") orelse return error.BadInput);
+    const rec: Value = switch (terms.parseArgs(body.get("args"))) {
+        .bad => |why| return rootAnswer(a, args, terms.fn_terms, "error", .{ .map = try a.dupe(cbor.Entry, &.{
+            .{ .key = "code", .value = .{ .text = "bad-args" } },
+            .{ .key = "message", .value = .{ .text = why } },
+        }) }, "amm-terms"),
+        .set => |t| try terms.record(a, t),
+        .clear => .null,
+    };
+    const app = ov.calls.appOf(in);
+    const rc = try s.putValue(a, rec);
+    try vm.advance(try terms.headName(a, app), rc);
+    const oracle: Oracle = .{ .ptr = &oracle_dummy, .callFn = oracleCall };
+    const identity = try identityOf(a, in, oracle);
+    _ = try vm.send(a, &identity, app, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "fn", .value = .{ .text = "rebeat" } }}) });
+    return rootAnswer(a, args, terms.fn_terms, "result", rec, "amm-terms");
+}
+
+/// Answer root's message: `{fn, request: <the message>, <field>: v}` to its sender, in the box it
+/// wrote to; then the thread ends, its result record `{kind, stage: "answered", answer}`.
+fn rootAnswer(a: std.mem.Allocator, args: Value, func: []const u8, field: []const u8, v: Value, kind: []const u8) !void {
+    const answer: Value = .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "fn", .value = .{ .text = func } },
+        .{ .key = "request", .value = if (args.getCid("message")) |m| .{ .cid = m } else .null },
+        .{ .key = field, .value = v },
+    }) };
+    if (args.getBytes("sender")) |sender| if (args.getText("box")) |box| {
+        _ = vm.send(a, sender, box, answer) catch |e| std.log.err("{s}: the answer is not sent: {s}", .{ func, @errorName(e) });
+    };
+    _ = try vm.finish(a, vm.store(), .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "kind", .value = .{ .text = kind } },
+        .{ .key = "stage", .value = .{ .text = "answered" } },
+        .{ .key = "answer", .value = answer },
+    }) });
 }
 
 // ---------------------------------------------------------------- the Rescind (0.13.0)

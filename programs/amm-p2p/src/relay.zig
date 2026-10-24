@@ -91,6 +91,7 @@ const Transaction = w.bsvz.transaction.Transaction;
 const beef = w.beef;
 const brc162 = color.brc162;
 const pool = @import("pool");
+const terms_mod = @import("terms");
 const eql = std.mem.eql;
 
 /// The app (its box, and the prefix of its heads) and the interface's functions.
@@ -176,6 +177,22 @@ pub fn terms(a: Allocator, c: Commission) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "commissionPkh", .value = if (c.pkh) |p| .{ .bytes = try a.dupe(u8, &p) } else .null },
     }) };
+}
+
+/// amm.pool.terms's answer (0.9.0; 0.15.0: the record root sets, src/terms.zig): `{validator?:
+/// <identity, bytes 33>, peerId?: text, lpFeeBps, validatorFeeBps, commissionBps}`; null when no
+/// terms are set (a market only: the caller answers the error "no validator here").
+pub fn poolTerms(a: Allocator, identity: ?[]const u8, peer: ?[]const u8, t: ?terms_mod.Terms) !?Value {
+    const tt = t orelse return null;
+    var es: std.ArrayList(cbor.Entry) = .empty;
+    if (identity) |k| try es.append(a, .{ .key = "validator", .value = .{ .bytes = k } });
+    if (peer) |p| try es.append(a, .{ .key = "peerId", .value = .{ .text = p } });
+    try es.appendSlice(a, &.{
+        .{ .key = "lpFeeBps", .value = .{ .uint = @intCast(tt.lp_fee_bps) } },
+        .{ .key = "validatorFeeBps", .value = .{ .uint = @intCast(tt.validator_fee_bps) } },
+        .{ .key = "commissionBps", .value = .{ .uint = @intCast(tt.commission_bps) } },
+    });
+    return .{ .map = es.items };
 }
 
 // ---------------------------------------------------------------- the pair

@@ -12,6 +12,8 @@ import {
   recoverPosition,
   useMyPositions,
   useMyTokens,
+  hasTerms,
+  NO_TERMS_TEXT,
   useValidatorTerms,
   type HostedToken,
   type Position,
@@ -226,7 +228,9 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
         )}
       </p>
       <div className="terms">
-        {terms.data ? (
+        {terms.data && !hasTerms(terms.data) ? (
+          <span className="muted">{NO_TERMS_TEXT}</span>
+        ) : hasTerms(terms.data) ? (
           <>
             <span>
               <strong>Validator:</strong> {terms.data.isThisExchange ? "this exchange's" : "another skein's"},{" "}
@@ -250,7 +254,7 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
       )}
       {done?.warnings && <Notice kind="bad">The deploy is broadcast, but: {done.warnings.join("; ")}</Notice>}
       <div className="actions">
-        <button type="submit" className="btn btn-primary" disabled={busy || !token || !tokens || !sats || tokensBad || satsBad}>
+        <button type="submit" className="btn btn-primary" disabled={busy || !token || !tokens || !sats || tokensBad || satsBad || !hasTerms(terms.data)}>
           {busy ? "Deploying…" : "Deploy"}
         </button>
         <span className="muted small">Your wallet funds it.</span>

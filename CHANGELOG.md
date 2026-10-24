@@ -4,6 +4,53 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.15.0 (2026-10-24)
+
+Validator terms are a runtime record root sets; no fee numbers in the
+image (shruggr/skein-amm#2; David Case 2026-10-23: "The configs should not
+be published in the image. This will be a dynamic, competitive
+marketplace."). Terms set: this skein is a validator; unset: a market
+only.
+
+- amm-validator: root's message `{fn: "terms", args: {lpFeeBps,
+  validatorFeeBps, commissionBps}}` in the box `amm/validator` sets the
+  terms (each an integer, 0 to 10 000; any other shape refused
+  `bad-args`, nothing written), `{fn: "terms", args: null}` clears them;
+  kept as the root of the head `amm/terms` (src/terms.zig: the record
+  `{lpFeeBps, validatorFeeBps, commissionBps}`, or `null` once cleared:
+  the kernel has no head delete). The step answers root `{fn: "terms",
+  request, result: <the record> | null}` in the box it wrote to and sends
+  the instance itself `{fn: "rebeat"}` in box `amm`, so the engine
+  re-declares every topic's beat with the new terms. `affirm` and the swap
+  signing read the record: none set, both refused `not_validating`, "no
+  terms: this skein validates nothing", before anything is checked or
+  signed. Root's `rescind` is unchanged (it does not need terms).
+- amm-p2p: `amm.pool.terms` answers the record with this validator's
+  identity and peer ID, or the error "no validator here" when none is set.
+  `amm.swap.terms` (the relay's commission pkh) is unchanged.
+- `config.amm.ammValidator` is removed from `etc/app.json`, the code (no
+  fallback to genesis `defaults.ammValidator` or to 30/5/0) and the docs.
+  `roles.root` gains `terms`.
+- Engine: skein-overlay v0.15.1 → v0.16.0 (shruggr/skein-overlay#7: the
+  beat's `terms` from the head `amm/terms`, not `config.overlay.terms`;
+  `rebeat`); `bin/overlay.wasm` is the tag's (sha256 bb2f16fe…0022).
+  skein-1color v0.11.2 → v0.11.3 (the same engine pin; `bin/color-*.wasm`
+  the same bytes; `scripts/color-pages.sh` pins the v0.11.3 tarball, sha256
+  9b706994…0372, `www/color/` unchanged).
+- Pages: Settings gains a root-only "Validator terms" card — the terms
+  `amm.pool.terms` answers, "This exchange validates nothing: no terms are
+  set." when none, and Set / Clear through the connected wallet (root's
+  BRC-104 message into `amm/validator`). Liquidity's deploy shows that
+  sentence in place of the terms and disables Deploy; Swap shows it in
+  place of the fee line when there is no quote. The recipient of root's
+  messages and of a listing request is now the key the instance's signed
+  answer carries (`x-bsv-auth-identity-key`, off `amm.swap.terms`, as the
+  1Color tokens page reads it), since a market only refuses
+  `amm.pool.terms`. The unused `DEFAULT_LP_FEE_BPS` /
+  `DEFAULT_VALIDATOR_FEE_BPS` and the pages' 30/5/0 fallbacks are gone.
+- Tests: zig pool 10, amm-lookup 15, amm-validator 23, amm-p2p 19; vitest
+  150.
+
 ## 0.14.2 (2026-10-23)
 
 Engine 0.15.1: pending-parent pause (shruggr/skein-overlay#6). A

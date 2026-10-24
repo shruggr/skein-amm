@@ -68,6 +68,7 @@ const beef = w.beef;
 const brc162 = color.brc162;
 const bsv21 = color.bsv21;
 const pool = @import("pool");
+const terms_mod = @import("terms");
 const token = color.token;
 const Transaction = bsvz.transaction.Transaction;
 const View = view_mod.View;
@@ -98,16 +99,18 @@ pub const Op = enum {
     }
 };
 
-/// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"): skein-wide
-/// config (`config.amm.ammValidator`, main.zig `settings`), the fees every pool it hosts carries.
-/// An LP posting here accepts them; a pool whose fees differ is not affirmed (0.11.0).
+/// The validator's terms (0.9.0, David Case 2026-10-09: "Fees are the validator's"; 0.15.0, David
+/// 2026-10-23: a runtime record root sets, src/terms.zig, main.zig `termsNow`), the fees every
+/// pool it hosts carries. An LP posting here accepts them; a pool whose fees differ is not affirmed
+/// (0.11.0). None set: a market only, nothing affirmed or signed (`noTerms`).
 pub const Terms = pool.Terms;
 
 pub const Config = struct {
     /// This instance's root identity key: pools naming it are ours.
     identity: [33]u8,
-    /// The terms a pool must carry exactly to be affirmed (0.9.0; 0.11.0).
-    terms: Terms = .{},
+    /// The terms a pool must carry exactly to be affirmed (0.9.0; 0.11.0); null (0.15.0): none set,
+    /// this skein validates nothing — an affirm and a swap are refused before anything is checked.
+    terms: ?Terms = null,
     now_ms: i64 = 0,
     /// The topics this instance validates: the engine's registered set (the head
     /// `<app>/topics`; main.zig `validatedSet`). A swap or an affirm for a token whose topic is not
@@ -120,6 +123,11 @@ pub const Config = struct {
 pub fn validating(cfg: Config, topic: []const u8) bool {
     for (cfg.validated) |t| if (std.mem.eql(u8, t, topic)) return true;
     return false;
+}
+
+/// The refusal when no terms are set (0.15.0): `not_validating`, "no terms: this skein validates nothing".
+pub fn noTerms() Reply {
+    return refuse(.not_validating, terms_mod.no_terms);
 }
 
 fn notValidating(a: std.mem.Allocator, topic: []const u8) !Reply {
@@ -169,7 +177,8 @@ pub const Reason = enum {
     wrong_validator_key,
     /// A Swap's outputs are not the contract's: detail which.
     bad_outputs,
-    /// The pool's token topic is not one this instance validates (`Config.validated`; 0.6.0: registered, with `config.overlay.validator` set): detail the topic.
+    /// The pool's token topic is not one this instance validates (`Config.validated`; 0.6.0: registered, with `config.overlay.validator` set): detail the topic;
+    /// or (0.15.0) no terms are set, so it validates nothing (`noTerms`).
     not_validating,
     /// The pool was rescinded (0.13.0): its ValidatorPubKey is cleared; nothing signs for it.
     rescinded,
@@ -428,6 +437,7 @@ pub const SpendRequest = struct {
 /// `submit.route`.
 pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: View, oracle: Oracle) !Reply {
     const method = op.method() orelse return refuse(.bad_request, "affirm is not a spend");
+    if (cfg.terms == null) return noTerms(); // 0.15.0: a market only signs nothing
     // 1. The transaction, and the pool input.
     const sub = subjectOf(a, req.tx) orelse return refuse(.bad_transaction, null);
     const tx = sub.tx;
@@ -669,6 +679,7 @@ pub const AffirmRequest = struct {
 /// signature}`; the page finalizes the pool's state with them. Nothing is submitted or recorded:
 /// the deploy is the LP's wallet's, submitted to the token topic like any token transaction.
 pub fn affirm(a: std.mem.Allocator, req: AffirmRequest, cfg: Config, oracle: Oracle) !Reply {
+    const t = cfg.terms orelse return noTerms(); // 0.15.0: a market only affirms nothing
     const tok = brc162.decode(req.pool) orelse return refuse(.not_a_pool, null);
     if (tok.role != .value) return refuse(.not_a_pool, null);
     if (tok.payload != null) return refuse(.bad_request, "the pool script carries a payload");
@@ -680,7 +691,6 @@ pub fn affirm(a: std.mem.Allocator, req: AffirmRequest, cfg: Config, oracle: Ora
     if (!validating(cfg, topic)) return notValidating(a, topic);
 
     // Our terms, exactly (0.9.0: the validator's fees; the LP accepts them).
-    const t = cfg.terms;
     if (p.lp_fee_bps != t.lp_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "lpFeeBps: the terms are {d}", .{t.lp_fee_bps}));
     if (p.validator_fee_bps != t.validator_fee_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "validatorFeeBps: the terms are {d}", .{t.validator_fee_bps}));
     if (p.commission_bps != t.commission_bps) return refuse(.fees_unacceptable, try std.fmt.allocPrint(a, "commissionBps: the terms are {d}", .{t.commission_bps}));

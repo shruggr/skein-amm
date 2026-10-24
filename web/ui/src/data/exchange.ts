@@ -32,7 +32,13 @@
  *   `<app>/requests`.
  * - **Settings** (root): the token list (`/color/tokens`) and the
  *   registered topics; root's messages to `<app>/register`; the holders'
- *   requests (`GET <base>/requests`). `isRoot` is a stub (no grants read).
+ *   requests (`GET <base>/requests`); the validator's terms (0.15.0:
+ *   `amm.pool.terms`, set or cleared by root's message `{fn: "terms"}` to
+ *   `<app>/validator`). `isRoot` is a stub (no grants read).
+ * - **The instance's identity** (0.15.0, `instanceIdentity`): the key its
+ *   signed answers carry, the recipient of root's messages and a listing
+ *   request (a market-only skein refuses `amm.pool.terms`, which named it
+ *   before).
  *
  * Ids (David, 2026-10-09): every token id is the BRC-207 assetId
  * `<txid>_<vout>`, `_0` included for a 1Color token (src/lib/tokenId.ts);
@@ -54,7 +60,7 @@ import { readBeats, readRequests, readSpend, readTokenList, sendMessage, type Be
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
-import { callApp, readBytes, swapTerms, type AuthFetchLike } from "../market/relay";
+import { RelayError, SWAP_TERMS_FN, callApp, callUrl, readBytes, swapTerms, type AuthFetchLike } from "../market/relay";
 import { pendingSwapPayouts, prepareSwap, selectExactTokenInputs, type TokenInput } from "../market/swapAction";
 import { moveBack, sendToSwapBasket, swapHoldingBeef, swapHoldings, swapTotals } from "../market/activeSwap";
 import { relaySwap, type SwapOutcome } from "../market/swapFlow";
@@ -185,6 +191,24 @@ export interface Fees {
   validatorBps: number;
   /** The relay's commission (the pool's CommissionBps); 0: none. */
   commissionBps: number;
+}
+
+/**
+ * `amm.pool.terms`'s refusal when no terms are set (0.15.0, David Case
+ * 2026-10-23: terms are a runtime record root sets; unset, a market only).
+ */
+export const NO_VALIDATOR = "no validator here";
+/** What the pages show in place of the terms when none are set. */
+export const NO_TERMS_TEXT = "This exchange validates nothing: no terms are set.";
+
+/** No terms are set on this skein (`amm.pool.terms` answered "no validator here"): a market only. */
+export interface NoTerms {
+  none: true;
+}
+
+/** Whether `t` is a validator's terms (not "none set"). */
+export function hasTerms(t: ValidatorTerms | NoTerms | null | undefined): t is ValidatorTerms {
+  return !!t && !("none" in t);
 }
 
 /** The validator a new position is deployed with, and its fees (read-only on the page). */
@@ -796,7 +820,14 @@ interface RawTerms {
   fees: Fees;
 }
 
-/** `amm.pool.terms`: this skein's validator, its peer ID and its terms. */
+/** A fee `amm.pool.terms` answered (0.15.0: no defaults; the record carries all three). */
+function fee(x: unknown, name: string): number {
+  const n = Number(x);
+  if (x === undefined || x === null || !Number.isInteger(n)) throw new Error(`amm.pool.terms: no ${name}`);
+  return n;
+}
+
+/** `amm.pool.terms`: this skein's validator, its peer ID and its terms (an error "no validator here" when none are set). */
 async function rawTerms(): Promise<RawTerms> {
   const { af } = needWallet();
   const t = (await callApp(af, context.base, "amm.pool.terms", {})) as Record<string, unknown>;
@@ -806,14 +837,43 @@ async function rawTerms(): Promise<RawTerms> {
   return {
     validator: hex,
     ...(typeof t.peerId === "string" ? { peerId: t.peerId } : {}),
-    fees: { lpBps: Number(t.lpFeeBps ?? 30), validatorBps: Number(t.validatorFeeBps ?? 5), commissionBps: Number(t.commissionBps ?? 0) },
+    fees: { lpBps: fee(t.lpFeeBps, "lpFeeBps"), validatorBps: fee(t.validatorFeeBps, "validatorFeeBps"), commissionBps: fee(t.commissionBps, "commissionBps") },
   };
 }
 
-/** The validator a new position is deployed with (this skein), and its fees (read-only: the LP accepts them). */
-export async function validatorTerms(): Promise<ValidatorTerms> {
-  const t = await rawTerms();
+/**
+ * The validator a new position is deployed with (this skein), and its fees (read-only: the LP
+ * accepts them); `{none: true}` when no terms are set (0.15.0: `amm.pool.terms` answers "no
+ * validator here").
+ */
+export async function validatorTerms(): Promise<ValidatorTerms | NoTerms> {
+  let t: RawTerms;
+  try {
+    t = await rawTerms();
+  } catch (e) {
+    if (e instanceof RelayError && e.message.endsWith(NO_VALIDATOR)) return { none: true };
+    throw e;
+  }
   return { validator: { identityKey: t.validator, live: Boolean(t.peerId) }, isThisExchange: true, fees: t.fees };
+}
+
+/**
+ * The instance's identity (hex, 0.15.0): the key its signed answers carry
+ * (`x-bsv-auth-identity-key`), as skein-1color's tokens page reads it
+ * (web/src/tokens/instance.ts `identity`), off a signed `amm.swap.terms`,
+ * which every skein answers, validator or market only. The recipient of
+ * root's messages and of a listing request.
+ */
+export async function instanceIdentity(): Promise<string> {
+  const { af } = needWallet();
+  const res = await af.fetch(callUrl(context.base), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fn: SWAP_TERMS_FN, args: {} }),
+  });
+  const key = (res.headers.get("x-bsv-auth-identity-key") ?? "").toLowerCase();
+  if (!/^[0-9a-f]{66}$/.test(key)) throw new Error("the skein's answer carries no identity key (x-bsv-auth-identity-key)");
+  return key;
 }
 
 /**
@@ -966,8 +1026,8 @@ export async function moveBackTokens(tokenId: TokenId): Promise<{ txid: string; 
 /** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the box `<app>/requests` (anyone may send; recorded for root). */
 export async function requestListing(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
-  const t = await rawTerms();
-  await sendMessage(af, context.base, t.validator, `${app()}/requests`, { fn: "request", args: { tokenId: sdkTokenId(tokenId) } });
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/requests`, { fn: "request", args: { tokenId: sdkTokenId(tokenId) } });
   emit();
 }
 
@@ -1018,7 +1078,7 @@ export const AMM_LOOKUP = "ls_amm";
  */
 export async function registerToken(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
-  const me = (await rawTerms()).validator;
+  const me = await instanceIdentity();
   const box = `${app()}/register`;
   const topic = topicOf(tokenId);
   await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "color-topic" } });
@@ -1030,10 +1090,39 @@ export async function registerToken(tokenId: TokenId): Promise<void> {
 /** Deregisters a token: its lookup, then its topic (root's messages to `<app>/register`). */
 export async function deregisterToken(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
-  const me = (await rawTerms()).validator;
+  const me = await instanceIdentity();
   const box = `${app()}/register`;
   await sendMessage(af, context.base, me, box, { fn: "deregisterLookup", args: { service: lookupOf(tokenId) } });
   await sendMessage(af, context.base, me, box, { fn: "deregister", args: { topic: topicOf(tokenId) } });
+  emit();
+}
+
+/** The three fees root sets (basis points, integers 0 to 10 000). */
+export interface TermsInput {
+  lpBps: number;
+  validatorBps: number;
+  commissionBps: number;
+}
+
+/**
+ * Sets this skein's validator terms (0.15.0): root's message `{fn: "terms",
+ * args: {lpFeeBps, validatorFeeBps, commissionBps}}` to `<app>/validator`
+ * (amm-validator writes the record `<app>/terms`; the engine re-declares the
+ * beats with it). Refused here unless each fee is an integer 0 to 10 000.
+ */
+export async function setValidatorTerms(t: TermsInput): Promise<void> {
+  const { af } = needWallet();
+  for (const [k, v] of Object.entries(t)) if (!Number.isInteger(v) || v < 0 || v > 10_000) throw new Error(`${k}: an integer, 0 to 10000 basis points`);
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/validator`, { fn: "terms", args: { lpFeeBps: t.lpBps, validatorFeeBps: t.validatorBps, commissionBps: t.commissionBps } });
+  emit();
+}
+
+/** Clears this skein's validator terms (0.15.0): root's `{fn: "terms", args: null}` to `<app>/validator`; a market only. */
+export async function clearValidatorTerms(): Promise<void> {
+  const { af } = needWallet();
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/validator`, { fn: "terms", args: null });
   emit();
 }
 

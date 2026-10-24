@@ -345,7 +345,7 @@ pub fn firstValidatorKey(a: std.mem.Allocator, identity: [33]u8, nonce: [32]u8) 
 /// lists a deploy's pool only when it is `affirmed`; a Swap's continuation when the pool it
 /// spends was listed and its key is `nextKeyOf` it.
 ///
-/// The terms, as the validator holds them (`config.amm.ammValidator`) and a pool carries them.
+/// The terms, as the validator holds them (0.15.0: the record `amm/terms` root sets, src/terms.zig) and a pool carries them.
 pub const Terms = struct {
     lp_fee_bps: i64 = 30,
     validator_fee_bps: i64 = 5,

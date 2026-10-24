@@ -60,9 +60,6 @@ export const LP_KEY_PREFIX = "amm-lp-";
 /** The LP key's protocol: BRC-29 (see the module comment). */
 export const LP_KEY_PROTOCOL: WalletProtocol = BRC29_PROTOCOL;
 const LP_DERIVATION_PREFIX = Utils.toBase64(Utils.toArray("amm-lp", "utf8"));
-/** The validator's default terms (amm-validator's, `config.amm.ammValidator`); a deploy takes the skein's own from `amm.pool.terms`. */
-export const DEFAULT_LP_FEE_BPS = 30n;
-export const DEFAULT_VALIDATOR_FEE_BPS = 5n;
 /** `amm.pool.affirm` (amm-p2p, 0.11.0; 0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`). */
 export const POOL_AFFIRM_FN = "amm.pool.affirm";
 

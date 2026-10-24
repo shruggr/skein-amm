@@ -10,7 +10,7 @@ topic per token, registered by root at runtime.
 
 | role | source | what it does |
 |---|---|---|
-| `overlay` | skein-overlay 0.15.1 (`bin/overlay.wasm`, copied) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
+| `overlay` | skein-overlay 0.16.0 (`bin/overlay.wasm`, copied; 0.16.0: the beat's `terms` from the head `amm/terms`) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
 | `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
@@ -99,11 +99,27 @@ David Case, 2026-10-09: "Fees are the validator's"; 2026-10-21: pool
 deploys move to the BRC-207 wallet module; 2026-10-22: the validator's
 nonce, the attestation in state, no input named by the page.
 
-- **The terms.** The validator's fees are skein-wide config,
-  `config.amm.ammValidator` `{lpFeeBps, validatorFeeBps, commissionBps}`
-  (this manifest: 30, 5, 0; amm-validator's defaults the same). An LP
-  posting here accepts them: the page has no fee inputs and reads them with
-  `amm.pool.terms`. The three fees are the terms (no termsHash).
+- **The terms** (0.15.0, shruggr/skein-amm#2; David Case 2026-10-23:
+  "The configs should not be published in the image. This will be a
+  dynamic, competitive marketplace."). The validator's fees are a runtime
+  record root sets, skein-wide: root's message `{fn: "terms", args:
+  {lpFeeBps, validatorFeeBps, commissionBps}}` (each an integer, 0 to
+  10 000) in the box `amm/validator` sets them, `{fn: "terms", args:
+  null}` clears them, gated by `roles: {root: [..., "terms"]}`.
+  amm-validator keeps them as the root of the head `amm/terms` (the record
+  `{lpFeeBps, validatorFeeBps, commissionBps}`, or `null` once cleared;
+  src/terms.zig), answers root `{fn: "terms", request, result}` (or
+  `error: {code: "bad-args", message}`, nothing written), and sends the
+  instance itself `{fn: "rebeat"}` in box `amm`: the engine (skein-overlay
+  0.16.0) re-declares every registered topic's beat, whose `terms` is the
+  record. Terms set: this skein is a validator. Unset: a market only —
+  `affirm` and the swap signing are refused `not_validating`, "no terms:
+  this skein validates nothing", `amm.pool.terms` answers "no validator
+  here", and the beat carries no `terms`. No fee numbers ship in the
+  manifest or the image (`config.amm.ammValidator`, 0.9.0 to 0.14.2, is
+  gone, with no fallback). An LP posting here accepts the terms: the page
+  has no fee inputs and reads them with `amm.pool.terms`. The three fees
+  are the terms (no termsHash).
 - **The affirmation.** Before the LP's wallet builds the deploy, the page
   asks this skein's validator, `amm.pool.affirm {pool, satoshis}` (below,
   "Interfaces"): `pool` the pool output's locking script as the deploy will
@@ -363,7 +379,7 @@ box `amm` before 0.7.0), and the route `/call` (a signed request):
 | interface | functions | from |
 |---|---|---|
 | `amm.swap/1` | `submit` (writes), `status`, `terms` | anyone (root too) |
-| `amm.pool/1` | `terms` (0.9.0: `{validator, peerId?, lpFeeBps, validatorFeeBps, commissionBps}`, this skein's validator and its terms), `affirm` (0.13.0: `{pool: bytes, satoshis: int}` → `{validatorPubKey: bytes, nonce: bytes, signature: bytes}`, or the refusal `<reason>[: <detail>]`; no writes; 0.11.0–0.12.x: `{pool, satoshis, keyInput}` → `{signature}`) | anyone |
+| `amm.pool/1` | `terms` (0.9.0: `{validator, peerId?, lpFeeBps, validatorFeeBps, commissionBps}`, this skein's validator and its terms; 0.15.0: the record `amm/terms`, or the error "no validator here" when none is set), `affirm` (0.13.0: `{pool: bytes, satoshis: int}` → `{validatorPubKey: bytes, nonce: bytes, signature: bytes}`, or the refusal `<reason>[: <detail>]`; no writes; 0.11.0–0.12.x: `{pool, satoshis, keyInput}` → `{signature}`) | anyone |
 
 `amm.liquidity/1` is gone (0.9.0, with AddLiquidity); `amm.pool.submit` and
 `amm.pool.status` (0.9.0's delivered deploy) are gone (0.11.0).
@@ -472,16 +488,17 @@ lookups `ls_color`, `ls_color_deploys` (both `color-lookup`) and
 topic served; gossip on (the default); no `market` or `validator` (0.8.1:
 both always on, at the defaults 40 000 / 30 000 ms; 0.6.0–0.6.1 set
 `market: {window: 40000}` and `validator: {every: 30000}`, 0.6.2–0.8.0 had
-root's switch); `config.amm` (`ammValidator`: the validator's terms
-`{lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 0}`, 0.9.0; before, the
-bounds `minValidatorFeeBps`, `maxLpFeeBps`, `maxCommissionBps`;
-`commission`); `provides` the two `amm.*` interfaces (`amm.swap.submit` with
+root's switch); `config.amm` (`commission`; 0.9.0 to 0.14.2 also
+`ammValidator`, the validator's terms, and before 0.9.0 the bounds
+`minValidatorFeeBps`, `maxLpFeeBps`, `maxCommissionBps`: 0.15.0 moved the
+terms to the runtime record `amm/terms`, "The terms" above); `provides` the two `amm.*` interfaces (`amm.swap.submit` with
 `peerId: "string"` beside `validator`, 0.4.0; `amm.pool.terms`, 0.9.0;
 `amm.pool.affirm`, 0.11.0, in place of `amm.pool.submit` / `status`;
 0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`);
 `requires: ["chain/1"]`; no `start` / `stop` (0.6.0). No
-`config.overlay.terms`: skein's install refuses an unknown `config.overlay`
-field (the topic beat's `terms`, skein-overlay 0.12.1, waits on it).
+`config.overlay.terms` (skein-overlay 0.16.0 no longer reads it: the beat's
+`terms` is the record `amm/terms`); `roles.root` `register`,
+`registerLookup`, `deregisterLookup`, `rescind` and (0.15.0) `terms`.
 
 ### Routes
 
