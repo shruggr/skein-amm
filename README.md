@@ -198,7 +198,7 @@ wildcard DNS, `<host>/@<handle>/amm`).
 
    ```
    box:  amm/register
-   body: {"fn": "register", "args": {"topic": "tm_color_<txid>_0", "program": "color-topic"}}
+   body: {"fn": "register", "args": {"topic": "tm_color_<txid>_0", "program": "color-topic", "seed": ["<txid>"]}}
    body: {"fn": "registerLookup", "args": {"service": "ls_color_<txid>_0", "program": "color-lookup", "topics": ["tm_color_<txid>_0"]}}
    body: {"fn": "deregisterLookup", "args": {"service": "ls_color_<txid>_0"}}
    body: {"fn": "deregister", "args": {"topic": "tm_color_<txid>_0"}}

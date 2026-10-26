@@ -465,7 +465,7 @@ page's Market and Validator switches are gone. `config.overlay.market:
 {window}` / `.validator: {every}` give the ms (this manifest sets neither:
 40 000 / 30 000). (0.8.1's Validator page is gone with the 0.9.0 pages.)
 
-The engine, on `register {topic: "tm_color_<txid>_0", program: "color-topic"}`
+The engine, on `register {topic: "tm_color_<txid>_0", program: "color-topic", seed: ["<txid>"]}`
 (box `amm/register`, from root): subscribes the topic and seeds; emits
 `{event: "liveness", topic: "tm_color_<txid>_0-live", window}` and
 `{event: "beacon", topic: "tm_color_<txid>_0-live", every, body}` — the

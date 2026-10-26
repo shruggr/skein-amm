@@ -501,7 +501,7 @@ describe("exchange.ts, wired", () => {
     });
     const topic = `tm_color_${OTHER}`;
     expect(bodies).toEqual([
-      { fn: "register", args: { topic, program: "color-topic" } },
+      { fn: "register", args: { topic, program: "color-topic", seed: [OTHER.slice(0, 64)] } },
       { fn: "registerLookup", args: { service: `ls_color_${OTHER}`, program: "color-lookup", topics: [topic] } },
       { fn: "registerLookup", args: { service: "ls_amm", program: "amm-lookup" } },
       { fn: "deregisterLookup", args: { service: `ls_color_${OTHER}` } },

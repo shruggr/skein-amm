@@ -1124,16 +1124,20 @@ export const AMM_LOOKUP = "ls_amm";
 
 /**
  * Registers a token: root's messages to `<app>/register` — its topic
- * (`color-topic`), its lookup (`color-lookup`), and `ls_amm`
- * (`amm-lookup`, idempotent: the same again changes nothing) so the AMM
- * lookup's beat (the prices) is declared.
+ * (`color-topic`, seeded with the token's deploy txid, skein-overlay 0.7.8:
+ * the deploy the discovery topic admitted is admitted into the token's own
+ * topic too, so the module's deploy check (BRC-207 `admission`) finds it;
+ * a register without the seed left the topic empty: 0.16.1), its lookup
+ * (`color-lookup`), and `ls_amm` (`amm-lookup`, idempotent: the same again
+ * changes nothing) so the AMM lookup's beat (the prices) is declared.
  */
 export async function registerToken(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
   const me = await instanceIdentity();
   const box = `${app()}/register`;
   const topic = topicOf(tokenId);
-  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "color-topic" } });
+  const seed = [parseOutpoint(sdkTokenId(tokenId))!.txid];
+  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "color-topic", seed } });
   await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: lookupOf(tokenId), program: "color-lookup", topics: [topic] } });
   await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: AMM_LOOKUP, program: "amm-lookup" } });
   emit();

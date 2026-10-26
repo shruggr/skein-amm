@@ -4,6 +4,16 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.16.1 (2026-10-26)
+
+The Settings page's register seeds the token's topic with its deploy
+(`seed: [<deploy txid>]`, skein-overlay 0.7.8), as the 1Color pages do.
+Without the seed the topic started empty: the wallet module's deploy check
+(BRC-207 `admission` on `ls_color_<assetId>`) then refused every pool
+deploy of that token ("the overlay has no admitted deploy for …", AMM3 on
+swap, David Case 2026-10-26). Registering again fills an existing topic.
+`etc/app.json` 0.16.1; www/ rebuilt, www/color unchanged. vitest 152.
+
 ## 0.16.0 (2026-10-24)
 
 Market terms are a runtime record root sets: a minimum commission the
