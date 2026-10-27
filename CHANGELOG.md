@@ -4,6 +4,15 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.16.2 (2026-10-27)
+
+The pages depend on the published packages directly: `@1sat/*` 0.1.1 and the
+upstream `@bsv/sdk` 4.0.0, `@bsv/templates` 2.1.0,
+`@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0
+(released 2026-10-23). The interim `@bopen-io` repack aliases and their
+`overrides` are gone; `npm ls @bsv/sdk` shows one upstream copy. No page
+behaviour changes.
+
 ## 0.16.1 (2026-10-26)
 
 The Settings page's register seeds the token's topic with its deploy

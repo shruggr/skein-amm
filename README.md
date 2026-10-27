@@ -379,7 +379,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.1) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
-| the pages | `@1sat/actions`, `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types` 0.1.0 (published; `OneColor`); `@bsv/sdk` 4.0.1, `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0 as the interim `@bopen-io` repacks (npm aliases and `overrides`, one copy each; `web/ui/package-lock.json`) |
+| the pages | `@1sat/actions`, `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types` 0.1.1 (published; `OneColor`); upstream `@bsv/sdk` 4.0.0, `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0 (`overrides`, one copy each; `web/ui/package-lock.json`) |
 
 ## Contributing
 

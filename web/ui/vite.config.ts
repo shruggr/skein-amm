@@ -34,7 +34,7 @@ export default defineConfig({
       { find: /^xdelta3-wasm$/, replacement: resolve(here, "node_modules/xdelta3-wasm/dist/xdelta3-wasm.esm.js") },
     ],
     // runar-sdk's sources import @bsv/sdk from outside this package: resolve
-    // it from here, one copy (the @bopen-io/sdk 4 alias, package.json), so the
+    // it from here, one copy (@bsv/sdk 4, package.json overrides), so the
     // checkout needs no node_modules.
     dedupe: ["@bsv/sdk", "cbor2", "@ipld/dag-cbor", "cborg"],
   },

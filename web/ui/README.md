@@ -31,16 +31,15 @@ layout 1, before 0.13.0, still decodes, closes and recovers).
 
 **skein-amm 0.12.0: the pages on the wallet's BRC-207 1Color module**
 (David Case, 2026-10-21/22). The user's tokens are the wallet's `color`
-module's (`@bsv/color-permission-module`, the interim `@bopen-io` repack;
-Yours branch `1color` registers it); the page names the module's baskets,
+module's (`@bsv/color-permission-module`; Yours branch `1color` registers
+it); the page names the module's baskets,
 keys, plans and receipts and never holds a token output in a basket of its
 own except the active swap basket. `src/wallet/color.ts` holds the names.
 
-- **Dependencies**: `@1sat/*` 0.1.0 from npm, `@bsv/sdk` →
-  `npm:@bopen-io/sdk@4.0.1`, `@bsv/color-permission-module` →
-  `npm:@bopen-io/color-permission-module@0.1.0`, `@bsv/templates` →
-  `npm:@bopen-io/templates@2.1.0` (package.json `dependencies` and
-  `overrides`; one copy of `@bsv/sdk` in the tree). The 1Color template is
+- **Dependencies**: `@1sat/*` 0.1.1 from npm, `@bsv/sdk` ^4.0.0,
+  `@bsv/color-permission-module` ^0.1.0, `@bsv/templates` ^2.1.0 (upstream
+  releases of 2026-10-23; package.json `dependencies` and `overrides`; one
+  copy of `@bsv/sdk` in the tree). The 1Color template is
   1sat-sdk's `OneColor` (`@1sat/templates`, formerly `Mandala`;
   `src/pool/oneColor.ts`). The local 1sat-sdk checkout and
   `ONESAT_SDK_DIR` are gone; vitest runs against the published packages.
@@ -1144,16 +1143,13 @@ validator picker's table (`src/pages/LiveTable.tsx`, shared).
 
 ## The 1sat-sdk packages and the BRC-207 module (published)
 
-0.12.0: every 1sat-sdk package is the published 0.1.0 (`@1sat/actions`,
+Every 1sat-sdk package is the published 0.1.1 (`@1sat/actions`,
 `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types`), built on
-`@bsv/sdk` 4 through the interim `@bopen-io` repack; this package aliases the
-same names (`dependencies` and `overrides`): `@bsv/sdk` →
-`npm:@bopen-io/sdk@4.0.1`, `@bsv/templates` →
-`npm:@bopen-io/templates@2.1.0`, `@bsv/color-permission-module` →
-`npm:@bopen-io/color-permission-module@0.1.0`, `@bsv/wallet-toolbox-client`
-→ `npm:@bopen-io/wallet-toolbox-client@2.15.0` (the module's dependency).
-`npm ls @bsv/sdk` shows one copy. When upstream publishes, replace each
-`npm:@bopen-io/<name>@<v>` with the upstream version and drop the overrides.
+the upstream `@bsv/sdk` 4.0.0, `@bsv/templates` 2.1.0,
+`@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0
+(released 2026-10-23); this package pins the same (`dependencies` and
+`overrides`), so `npm ls @bsv/sdk` shows one copy. Until 2026-10-27 these
+were the interim `@bopen-io` repacks under npm aliases.
 
 The 1Color template is `OneColor` from `@1sat/templates` (1sat-sdk's
 `Mandala`, renamed; its embedded icon is `[mediaType, bytes]`);

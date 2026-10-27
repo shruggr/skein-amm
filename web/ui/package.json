@@ -14,15 +14,15 @@
     "serve": "bash serve.sh"
   },
   "dependencies": {
-    "@1sat/actions": "0.1.0",
-    "@1sat/connect": "0.1.0",
-    "@1sat/react": "0.1.0",
-    "@1sat/templates": "0.1.0",
-    "@1sat/types": "0.1.0",
+    "@1sat/actions": "0.1.1",
+    "@1sat/connect": "0.1.1",
+    "@1sat/react": "0.1.1",
+    "@1sat/templates": "0.1.1",
+    "@1sat/types": "0.1.1",
     "@amm-poc/matching-engine": "file:../engine",
-    "@bsv/color-permission-module": "npm:@bopen-io/color-permission-module@0.1.0",
-    "@bsv/sdk": "npm:@bopen-io/sdk@4.0.1",
-    "@bsv/templates": "npm:@bopen-io/templates@2.1.0",
+    "@bsv/color-permission-module": "^0.1.0",
+    "@bsv/sdk": "^4.0.0",
+    "@bsv/templates": "^2.1.0",
     "@ipld/dag-cbor": "^10.0.2",
     "cbor2": "^2.3.0",
     "cborg": "^6.1.4",
@@ -39,9 +39,9 @@
     "vitest": "^3.0.5"
   },
   "overrides": {
-    "@bsv/sdk": "npm:@bopen-io/sdk@4.0.1",
-    "@bsv/templates": "npm:@bopen-io/templates@2.1.0",
-    "@bsv/color-permission-module": "npm:@bopen-io/color-permission-module@0.1.0",
-    "@bsv/wallet-toolbox-client": "npm:@bopen-io/wallet-toolbox-client@2.15.0"
+    "@bsv/sdk": "^4.0.0",
+    "@bsv/templates": "^2.1.0",
+    "@bsv/color-permission-module": "^0.1.0",
+    "@bsv/wallet-toolbox-client": "^2.15.0"
   }
 }
