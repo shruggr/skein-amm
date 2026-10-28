@@ -26,6 +26,8 @@ import {
   instanceIdentity,
   setDefaultMarket,
   setDefaultTerms,
+  setDiscovery,
+  discoveryState,
   tokenBaseOf,
   deployPosition,
   executeSwap,
@@ -89,6 +91,8 @@ interface Instance {
   enabled: Record<string, unknown>[];
   /** The config instance's defaults (`/defaults`). */
   defaults: Record<string, unknown>;
+  /** The config instance's discovery record (0.18.0, `/discovery`). */
+  discovery: Record<string, unknown>;
   topics: Record<string, unknown>;
   tokens: unknown[];
   live: Record<string, unknown[]>;
@@ -110,6 +114,7 @@ function instance(): Instance {
   return {
     enabled: [enabledRow(TOKEN, "TST", 0, 2)],
     defaults: {},
+    discovery: { on: false },
     topics: { [TOPIC]: { name: "1Color" }, tm_color: { name: "1Color discovery" } },
     tokens: [
       { tokenId: TOKEN, topic: TOPIC, sym: "TST", dec: 0, txid: DEPLOY, vout: 0 },
@@ -148,6 +153,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   const path = u.pathname.replace(/^\/@[^/]+/, "").replace(/^\/amm/, "");
   if (path === "/tokens") return signed(inst.enabled);
   if (path === "/defaults") return json(inst.defaults);
+  if (path === "/discovery") return json(inst.discovery);
   if (path === "/listTopicManagers") return json(inst.topics);
   if (path === "/color/tokens") return json(inst.tokens);
   if (path.startsWith("/.live/")) {
@@ -419,6 +425,26 @@ describe("exchange.ts, wired", () => {
     for (const bad of [{ lpBps: 30.5, validatorBps: 5, commissionBps: 0 }, { lpBps: -1, validatorBps: 5, commissionBps: 0 }, { lpBps: 30, validatorBps: 10_001, commissionBps: 0 }])
       await expect(setDefaultTerms(bad)).rejects.toThrow(/0 to 10000/);
     expect(inst.sent).toHaveLength(4);
+  });
+
+  it("discovery (0.18.0): the config instance's GET /discovery; setDiscovery: root's {fn: discovery, args: {on}} to <app>/admin, the config instance's identity the recipient", async () => {
+    expect(await discoveryState()).toEqual({ on: false });
+    inst.discovery = { on: true, status: "enabled", since: 3, url: `${ORIGIN}/@discovery` };
+    expect(await discoveryState()).toEqual(inst.discovery);
+    await expect(setDiscovery(true)).rejects.toThrow(/Connect a wallet/);
+    connect();
+    let changed = 0;
+    const off = onDataChange(() => changed++);
+    await setDiscovery(true);
+    await setDiscovery(false);
+    off();
+    expect(changed).toBe(2);
+    const msgs = inst.sent.map((s) => s.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array });
+    expect(new Set(msgs.map((m) => `${Utils.toHex(Array.from(m.recipient))} ${m.messageBox}`))).toEqual(new Set([`${SKEIN} amm/admin`]));
+    expect(msgs.map((m) => decode(m.body))).toEqual([
+      { fn: "discovery", args: { on: true } },
+      { fn: "discovery", args: { on: false } },
+    ]);
   });
 
   it("tokenBaseOf (0.17.0): an enabled token's own instance, <url>/amm from the config instance's list; any other refused", async () => {

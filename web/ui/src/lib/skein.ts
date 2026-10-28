@@ -204,6 +204,35 @@ export interface Defaults {
   market?: { minCommissionBps: number };
 }
 
+/**
+ * The discovery instance (0.18.0, shruggr/skein#137; `GET <config>/discovery`, amm-config
+ * discovery.zig): `on` root's last ask, `status` its progress, `url` the instance's once created.
+ */
+export interface Discovery {
+  on: boolean;
+  status?: "creating" | "enabled" | "failed" | "stopping" | "stopped" | "starting";
+  url?: string;
+  reason?: string;
+  since?: number;
+}
+
+const DISCOVERY_STATUS = new Set(["creating", "enabled", "failed", "stopping", "stopped", "starting"]);
+
+/** `GET <config>/discovery`: the record, or `{on: false}` (none, or another shape). */
+export async function readDiscovery(base: string, fetchFn: typeof fetch = fetch): Promise<Discovery> {
+  const a = (await getJson(`${base}/discovery`, fetchFn)) as Record<string, unknown> | null;
+  if (!a || typeof a.on !== "boolean") return { on: false };
+  if (a.status === undefined) return { on: a.on };
+  if (typeof a.status !== "string" || !DISCOVERY_STATUS.has(a.status)) return { on: false };
+  return {
+    on: a.on,
+    status: a.status as Discovery["status"],
+    ...(typeof a.url === "string" ? { url: a.url } : {}),
+    ...(typeof a.reason === "string" ? { reason: a.reason } : {}),
+    ...(typeof a.since === "number" ? { since: a.since } : {}),
+  };
+}
+
 export async function readDefaults(base: string, fetchFn: typeof fetch = fetch): Promise<Defaults> {
   const a = (await getJson(`${base}/defaults`, fetchFn)) as Record<string, unknown> | null;
   const out: Defaults = {};

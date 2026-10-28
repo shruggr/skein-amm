@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.18.0 (2026-10-28)
+
+The discovery toggle (shruggr/skein#137; David Case 2026-10-28: discovery is
+its own instance, and the Settings page turns it on and off).
+
+- amm-config: root's `{fn: "discovery", args: {on: true | false}}` in
+  `amm/admin` (role root): on, the manager's `create {handle: "discovery",
+  image: <tokenImage>, config: {amm: {overlay: {topics: {tm_color:
+  color-topic}, lookups: {ls_color, ls_color_deploys: {topics:
+  [tm_color]}}}}}}` (no beef, no terms, no market), or `start` when it was
+  stopped; off, `stop`. The record under `amm/discovery` (`{on, status,
+  since, url?, reason?}`, src/discovery.zig); the read `/discovery`.
+- The pages: Settings "Discovery", one switch with its status and url
+  (root only). Enabling a token does not submit its deploy to discovery;
+  the 1Color deploy page submits each deploy to `tm_color` at the pages'
+  origin, routed by skein (main 2eafff1) to the instance that declares it.
+- zig build test 80 (amm-config 9); vitest 158.
+
 ## 0.17.0 (2026-10-28)
 
 The Open Exchange as a config instance and one token instance per token id

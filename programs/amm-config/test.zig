@@ -5,6 +5,7 @@ const std = @import("std");
 const w = @import("chain");
 const tokens = @import("src/tokens.zig");
 const requests = @import("src/requests.zig");
+const discovery = @import("src/discovery.zig");
 const vec = @import("vectors");
 const dagjson = @import("dagjson");
 const scbor = @import("sdk_cbor");
@@ -197,15 +198,15 @@ test "listing requests (0.9.0, moved here 0.17.0): recorded (the latest per toke
     try testing.expectEqualStrings(requests.requests_box, requests.requests_head);
 }
 
-test "the config app's manifest: amm; root's enable, disable, defaults; admin behind kernel.beef; requests; the reads; the pages" {
+test "the config app's manifest: amm; root's enable, disable, defaults, discovery; admin behind kernel.beef; requests; the reads; the pages" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
     const root = m.get("roles").?.get("root").?.array;
-    try testing.expectEqual(@as(usize, 3), root.len);
-    for ([_][]const u8{ "enable", "disable", "defaults" }, root) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    try testing.expectEqual(@as(usize, 4), root.len);
+    for ([_][]const u8{ "enable", "disable", "defaults", "discovery" }, root) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     try testing.expectEqualStrings("amm-token", scbor.Value.str(m.get("config").?.get("amm-config").?.get("tokenImage")).?);
     try testing.expectEqualStrings("chain/1", scbor.Value.str(m.get("requires").?.array[0]).?);
     // Only its own program: no token programs in this tree.
@@ -223,7 +224,86 @@ test "the config app's manifest: amm; root's enable, disable, defaults; admin be
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/requests")) seen |= 8;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) seen |= 16;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/defaults")) seen |= 32;
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/discovery")) {
+            try testing.expectEqualStrings("discovery", scbor.Value.str(r.get("filters").?.array[0]).?);
+            seen |= 64;
+        }
     }
-    try testing.expectEqual(@as(u8, 63), seen);
+    try testing.expectEqual(@as(u8, 127), seen);
+    try testing.expectEqualStrings("amm-config.discovery", scbor.Value.str(m.get("filters").?.get("discovery")).?);
     try testing.expectEqualStrings(tokens.admin_box, "amm/admin");
+}
+
+test "discovery (0.18.0): the create names tm_color, ls_color, ls_color_deploys and nothing else; no beef" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c = try discovery.createBody(a, "amm-token");
+    try testing.expectEqualStrings("discovery", c.getText("handle").?);
+    try testing.expectEqualStrings("amm-token", c.getText("image").?);
+    try testing.expect(c.get("beef") == null);
+    const amm = c.get("config").?.get("amm").?;
+    try testing.expectEqual(@as(usize, 1), amm.map.len); // no amm-p2p: no market
+    const ov = amm.get("overlay").?;
+    try testing.expectEqual(@as(usize, 2), ov.map.len); // topics, lookups: no terms
+    try testing.expectEqual(@as(usize, 1), ov.get("topics").?.map.len);
+    try testing.expectEqualStrings("color-topic", ov.get("topics").?.getText("tm_color").?);
+    const ls = ov.get("lookups").?;
+    try testing.expectEqual(@as(usize, 2), ls.map.len);
+    try testing.expectEqualStrings("color-lookup", ls.get("ls_color").?.getText("program").?);
+    try testing.expect(ls.get("ls_color").?.get("topics") == null);
+    try testing.expectEqualStrings("color-lookup", ls.get("ls_color_deploys").?.getText("program").?);
+    try testing.expectEqualStrings("tm_color", ls.get("ls_color_deploys").?.getArray("topics").?[0].text);
+    try testing.expectEqualStrings("discovery", (try discovery.handleBody(a)).getText("handle").?);
+}
+
+test "discovery (0.18.0): on/off decided from the record; the manager's answers move it; the read" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("{\"on\":false}", try discovery.json(a, null));
+    try testing.expect(discovery.onArg(try dagjsonValue(a, "{\"on\":true}")).?);
+    try testing.expect(!discovery.onArg(try dagjsonValue(a, "{\"on\":false}")).?);
+    try testing.expect(discovery.onArg(try dagjsonValue(a, "{\"on\":1}")) == null);
+    try testing.expect(discovery.onArg(null) == null);
+    // Off with nothing: refused. On with nothing: create.
+    try testing.expect((try discovery.decide(a, null, false)) == .refused);
+    try testing.expect((try discovery.decide(a, null, true)) == .create);
+    const creating = try discovery.asked(a, null, .create, 100);
+    try testing.expectEqual(discovery.Status.creating, discovery.statusOf(creating).?);
+    try testing.expect(creating.get("on").?.boolean);
+    try testing.expect((try discovery.decide(a, creating, true)) == .refused);
+    try testing.expect((try discovery.decide(a, creating, false)) == .refused);
+    // Created: enabled, its url.
+    const enabled = try discovery.answered(a, creating, try dagjsonValue(a, "{\"handle\":\"discovery\",\"url\":\"https://swap.example/@discovery\"}"));
+    try testing.expectEqual(discovery.Status.enabled, discovery.statusOf(enabled).?);
+    try testing.expectEqualStrings("https://swap.example/@discovery", enabled.getText("url").?);
+    try testing.expectEqual(@as(u64, 100), enabled.getUint("since").?);
+    const j = try discovery.json(a, enabled);
+    try testing.expect(std.mem.indexOf(u8, j, "\"on\":true") != null and std.mem.indexOf(u8, j, "\"status\":\"enabled\"") != null and std.mem.indexOf(u8, j, "\"url\":\"https://swap.example/@discovery\"") != null);
+    try testing.expect(std.mem.indexOf(u8, j, "kind") == null);
+    try testing.expect((try discovery.decide(a, enabled, true)) == .refused);
+    // Off: stop → stopped (the url kept); on again: start → enabled.
+    try testing.expect((try discovery.decide(a, enabled, false)) == .stop);
+    const stopping = try discovery.asked(a, enabled, .stop, 200);
+    try testing.expect(!stopping.get("on").?.boolean);
+    const stopped = try discovery.answered(a, stopping, try dagjsonValue(a, "{\"handle\":\"discovery\",\"stopped\":true}"));
+    try testing.expectEqual(discovery.Status.stopped, discovery.statusOf(stopped).?);
+    try testing.expectEqualStrings("https://swap.example/@discovery", stopped.getText("url").?);
+    try testing.expect((try discovery.decide(a, stopped, false)) == .refused);
+    try testing.expect((try discovery.decide(a, stopped, true)) == .start);
+    const starting = try discovery.asked(a, stopped, .start, 300);
+    const again = try discovery.answered(a, starting, try dagjsonValue(a, "{\"handle\":\"discovery\",\"started\":true,\"url\":\"https://swap.example/@discovery\"}"));
+    try testing.expectEqual(discovery.Status.enabled, discovery.statusOf(again).?);
+    // Failures: a create → failed (on again creates); a start → stopped; a stop → enabled; each with its reason.
+    const failed = try discovery.answered(a, creating, try dagjsonValue(a, "{\"error\":\"no image amm-token\"}"));
+    try testing.expectEqual(discovery.Status.failed, discovery.statusOf(failed).?);
+    try testing.expectEqualStrings("no image amm-token", failed.getText("reason").?);
+    try testing.expect((try discovery.decide(a, failed, true)) == .create);
+    try testing.expect((try discovery.decide(a, failed, false)) == .refused);
+    try testing.expect(discovery.answered(a, failed, .null) == error.BadState);
+    try testing.expectEqual(discovery.Status.stopped, discovery.statusOf(try discovery.answered(a, starting, try dagjsonValue(a, "{\"error\":\"x\"}"))).?);
+    try testing.expectEqual(discovery.Status.enabled, discovery.statusOf(try discovery.answered(a, stopping, try dagjsonValue(a, "{\"error\":\"x\"}"))).?);
+    // A new ask drops the earlier reason.
+    try testing.expect((try discovery.asked(a, failed, .create, 400)).get("reason") == null);
 }

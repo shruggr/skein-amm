@@ -1,5 +1,6 @@
 /**
- * Settings, root of the config instance only (0.17.0, shruggr/skein-amm#4):
+ * Settings, root of the config instance only (0.17.0, shruggr/skein-amm#4;
+ * 0.18.0 the Discovery switch, shruggr/skein#137):
  * Enable a token — a token id typed or picked from the holders' requests,
  * the deploy's BEEF from the connected wallet's module basket (or pasted when
  * the wallet does not hold it): root's `enable` to `<app>/admin`, the host
@@ -8,7 +9,8 @@
  * instance is created with — its initial validator terms and market minimum
  * (root's `defaults`). A token's own terms are root's message to
  * `/@<tokenId>` (not on this page). Topic and lookup names are derived from
- * the token id.
+ * the token id. Discovery: one switch, root's `discovery {on}` — the
+ * 1Color discovery topic `tm_color` served by an instance of its own.
  */
 import { useState } from "react";
 import { Id } from "../components/Id";
@@ -21,12 +23,15 @@ import {
   lookupOf,
   setDefaultMarket,
   setDefaultTerms,
+  setDiscovery,
   topicOf,
   useDefaults,
+  useDiscovery,
   useListingRequests,
   useRegisteredTokens,
   type Data,
   type Defaults,
+  type Discovery,
   type RegisteredToken,
   type Session,
 } from "../data/exchange";
@@ -273,6 +278,76 @@ function DefaultMarketCard({ defaults }: { defaults: Data<Defaults> }) {
   );
 }
 
+/** What the discovery record says, in a few words. */
+export function discoveryText(d: Discovery): string {
+  switch (d.status) {
+    case undefined:
+      return "Off: no discovery instance here.";
+    case "creating":
+      return "Turning on: its instance is being created…";
+    case "starting":
+      return "Turning on: its instance is starting…";
+    case "enabled":
+      return "On: deploys submitted to this exchange under tm_color are kept and listed (ls_color_deploys).";
+    case "stopping":
+      return "Turning off…";
+    case "stopped":
+      return `Off: its instance is stopped${d.reason ? ` (${d.reason})` : ""}.`;
+    case "failed":
+      return `Could not turn on${d.reason ? `: ${d.reason}` : ""}.`;
+  }
+}
+
+/** Discovery (0.18.0, root only): the 1Color discovery topic `tm_color`, its own instance; one switch. */
+function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
+  const [error, busy, run] = useAct();
+  const d = discovery.data;
+  const settling = d?.status === "creating" || d?.status === "starting" || d?.status === "stopping";
+  const on = d?.on === true && d.status !== "failed";
+  return (
+    <section className="panel stack-sm" aria-labelledby="disc-h">
+      <div className="row row-wrap">
+        <h2 id="disc-h" className="h2 grow">
+          Discovery
+        </h2>
+        <label className="row" htmlFor="disc-on">
+          <input
+            id="disc-on"
+            type="checkbox"
+            role="switch"
+            checked={on}
+            disabled={busy || d === null || settling}
+            aria-checked={on}
+            onChange={(e) => {
+              const want = e.target.checked;
+              run(async () => {
+                await setDiscovery(want);
+                discovery.reload();
+              });
+            }}
+          />
+          <span className="small">{on ? "On" : "Off"}</span>
+        </label>
+      </div>
+      {d === null ? (
+        <p className="muted">{discovery.error ? `Could not read discovery: ${discovery.error}` : "Reading discovery…"}</p>
+      ) : (
+        <p className="fg2">{discoveryText(d)}</p>
+      )}
+      {d?.url && (
+        <dl className="kv kv-left small">
+          <dt>Instance</dt>
+          <dd className="mono">{d.url}</dd>
+        </dl>
+      )}
+      <span className="help">
+        The 1Color discovery topic (tm_color): every token&apos;s deploy, listed by ls_color_deploys, in an instance of its own. Enabling a token does not submit its deploy here; the 1Color deploy page submits each new deploy.
+      </span>
+      {error && <Notice kind="bad">Could not send: {error}</Notice>}
+    </section>
+  );
+}
+
 function EnabledRow({ t }: { t: RegisteredToken }) {
   const [confirm, setConfirm] = useState(false);
   const [error, busy, run] = useAct();
@@ -360,6 +435,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
   const connected = session.status === "connected";
   const reg = useRegisteredTokens(connected && root);
   const defs = useDefaults(connected && root);
+  const disc = useDiscovery(connected && root);
   const [pick, setPick] = useState("");
   return (
     <>
@@ -377,6 +453,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
         <>
           <DefaultTermsCard defaults={defs} />
           <DefaultMarketCard defaults={defs} />
+          <DiscoveryCard discovery={disc} />
           <EnableCard pick={pick} setPick={setPick} />
           <section className="panel stack-sm" aria-labelledby="regd-h">
             <h2 id="regd-h" className="h2">

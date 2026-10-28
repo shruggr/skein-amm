@@ -68,7 +68,7 @@ import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readDefaults, readRequests, readSpend, readTokens, sendMessage, type Beat, type Defaults, type EnabledToken, type ListedToken } from "../lib/skein";
+import { readBeats, readDefaults, readDiscovery, readRequests, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -328,7 +328,7 @@ export interface RegisteredToken {
   delivered?: EnabledToken["delivered"];
 }
 
-export type { EnabledToken, Defaults };
+export type { EnabledToken, Defaults, Discovery };
 
 /** A holder's "Add to this exchange". */
 export interface ListingRequest {
@@ -1303,6 +1303,25 @@ export async function clearDefaultMarket(): Promise<void> {
   await sendDefaults({ market: null });
 }
 
+/** The discovery instance's record (0.18.0, shruggr/skein#137; `GET <config>/discovery`): `{on: false}` until root turns it on. */
+export async function discoveryState(): Promise<Discovery> {
+  return readDiscovery(context.base);
+}
+
+/**
+ * Turns the 1Color discovery topic on or off (0.18.0, shruggr/skein#137): root's `{fn:
+ * "discovery", args: {on}}` to the config instance's `<app>/admin`. On: the host creates (or
+ * starts) the instance `discovery`, serving `tm_color` and its lookups `ls_color` /
+ * `ls_color_deploys`; a deploy POSTed to this origin's `/submit` with `X-Topics: tm_color` is
+ * routed to it. Off: its instance stopped. Enabling a token does not submit its deploy there.
+ */
+export async function setDiscovery(on: boolean): Promise<void> {
+  const { af } = needWallet();
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/admin`, { fn: "discovery", args: { on } });
+  emit();
+}
+
 /** Holders' requests to list a token, newest first (`GET <config>/requests`: the ones not on the list yet). */
 export async function listingRequests(): Promise<ListingRequest[] | null> {
   const [rs, meta] = await Promise.all([readRequests(context.base), tokenMeta()]);
@@ -1372,6 +1391,7 @@ export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabl
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
 export const useListingRequests = (enabled: boolean) => useData(listingRequests, [], enabled);
 export const useDefaults = (enabled: boolean) => useData(defaults, [], enabled);
+export const useDiscovery = (enabled: boolean) => useData(discoveryState, [], enabled);
 /** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
 export const useTokenPools = (tokenId: TokenId | undefined, connected: boolean) =>
   useData(() => (tokenId ? swapPools(tokenId) : Promise.resolve({ pools: [], hidden: 0 })), [tokenId, connected]);

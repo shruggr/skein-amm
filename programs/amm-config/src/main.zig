@@ -15,6 +15,11 @@
 //!                       `enabled` (url, delivered) or `failed` (reason) and root is answered.
 //!     {fn: "disable", args: {tokenId}}        `stop {handle}`; on the answer the row `stopped`.
 //!     {fn: "defaults", args: {terms?, market?}}   the head `amm/defaults` (tokens.zig `withDefaults`).
+//!     {fn: "discovery", args: {on}}   (0.18.0, shruggr/skein#137) the discovery instance — handle
+//!                       `discovery`, from the token image, serving `tm_color`, `ls_color` and
+//!                       `ls_color_deploys` (discovery.zig `createBody`) — created, started or
+//!                       stopped (discovery.zig `decide`); the head `amm/discovery` follows the
+//!                       manager's answer as the enable list does.
 //!     Each answered to the sender in that box: `{fn, request, replyTo, result | error}`. A body
 //!     that is itself an answer (`request` / `replyTo` in it: this program's answer looped back
 //!     when root's key is the instance's own, a one-key host) is not a request: nothing runs.
@@ -26,12 +31,14 @@
 //!   tokens    `/tokens`: the enable list, newest first (tokens.zig `tokensJson`)
 //!   defaults  `/defaults`: the defaults, `{terms?, market?}` (tokens.zig `defaultsJson`)
 //!   requests  `/requests`: the holders' requests, less the tokens on the list
+//!   discovery `/discovery`: the discovery record (discovery.zig `json`), or `{on: false}`
 //!   serve     `/` (prefix): the Swap pages, www/ of the app's own tree (skein-sdk `files.serve`)
 const std = @import("std");
 const w = @import("chain");
 const vm = @import("overlay_sk");
 const tokens = @import("tokens.zig");
 const requests = @import("requests.zig");
+const discovery = @import("discovery.zig");
 const sk = @import("sk");
 const app = @import("app");
 const files = @import("files");
@@ -88,6 +95,8 @@ fn call(a: Allocator, in: Value) !void {
         try httpJson(a, 200, try tokens.defaultsJson(a, try headRecord(a, tokens.defaults_head)))
     else if (eql(u8, func, "requests"))
         try requestsRead(a)
+    else if (eql(u8, func, "discovery"))
+        try httpJson(a, 200, try discovery.json(a, try headRecord(a, discovery.head)))
     else if (eql(u8, func, "serve"))
         try servePages(a, arg)
     else
@@ -151,7 +160,8 @@ fn step(a: Allocator, in: Value) !void {
     if (eql(u8, func, "enable")) return enable(a, in, args, body);
     if (eql(u8, func, "disable")) return disable(a, args, body);
     if (eql(u8, func, "defaults")) return defaults(a, args, body);
-    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable and defaults"));
+    if (eql(u8, func, "discovery")) return discoveryAsk(a, in, args, body);
+    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, defaults and discovery"));
 }
 
 /// Answer root (the message's sender) in the box it wrote to; the thread ends.
@@ -243,6 +253,13 @@ fn disable(a: Allocator, args: Value, body: Value) !void {
 fn managerAnswered(a: Allocator, args: Value, body: Value, ans: Value) !void {
     const func = body.getText("fn") orelse "";
     const message = args.getCid("message");
+    if (eql(u8, func, "discovery")) {
+        const prev = (try headRecord(a, discovery.head)) orelse return error.BadState;
+        const rec = try discovery.answered(a, prev, ans);
+        try vm.advance(discovery.head, try vm.store().putValue(a, rec));
+        const answer = if (ans.getText("error")) |e| try tokens.refusal(a, func, message, "refused", e) else try tokens.answer(a, func, message, rec);
+        return answerRoot(a, args, func, answer);
+    }
     const id = (try tokenIdArg(a, body)) orelse return error.BadInput;
     const prev = tokens.find(tokens.rowsOf(try headRecord(a, tokens.tokens_head)), id) orelse return error.BadState;
     const row: Value = if (eql(u8, func, "disable"))
@@ -277,4 +294,24 @@ fn listingRequest(a: Allocator, in: Value, args: Value, body: Value) !void {
     const rec = try requests.record(a, s, try headRecord(a, requests.requests_head), token, sender, at);
     try vm.advance(requests.requests_head, try s.putValue(a, rec));
     _ = try vm.finish(a, s, try resultRecord(a, "request", &.{.{ .key = "tokenId", .value = .{ .text = try requests.tokenIdText(a, token) } }}));
+}
+
+/// `discovery {on}` (0.18.0, shruggr/skein#137): the discovery instance created, started or stopped.
+fn discoveryAsk(a: Allocator, in: Value, args: Value, body: Value) !void {
+    const s = vm.store();
+    const message = args.getCid("message");
+    const on = discovery.onArg(body.get("args")) orelse return answerRoot(a, args, "discovery", try tokens.refusal(a, "discovery", message, "bad-args", "want args {on: true | false}"));
+    const prev = try headRecord(a, discovery.head);
+    const d = try discovery.decide(a, prev, on);
+    const box: []const u8, const req: Value = switch (d) {
+        .refused => |why| return answerRoot(a, args, "discovery", try tokens.refusal(a, "discovery", message, "bad-args", why)),
+        .create => .{ "create", try discovery.createBody(a, try tokenImage(a)) },
+        .start => .{ "start", try discovery.handleBody(a) },
+        .stop => .{ "stop", try discovery.handleBody(a) },
+    };
+    const at: u64 = in.getUint("at") orelse in.getUint("now") orelse 0;
+    try vm.advance(discovery.head, try s.putValue(a, try discovery.asked(a, prev, d, at)));
+    const m = try vm.send(a, try managerKey(a), box, req);
+    try vm.awaitRecord(m);
+    _ = try vm.finish(a, s, try resultRecord(a, "discovery", &.{ .{ .key = "on", .value = .{ .boolean = on } }, .{ .key = "asked", .value = .{ .text = box } } }));
 }
