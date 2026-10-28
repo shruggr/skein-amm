@@ -4,6 +4,19 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.16.3 (2026-10-27)
+
+The host chain (shruggr/skein#156): the image installs skein-chain **v0.7.0**
+(tree a0b7e769), whose chain state points at the host chain's record instead
+of copying headers (the host sends a `chain` event at install, at each start
+and once per block; a fresh host bootstraps its chain from the image). Engine
+skein-overlay v0.16.1 and skein-1color v0.11.4: chain/state read through
+skein-sdk v0.12.0's one opener `chain.open` (shruggr/skein-sdk#1). amm-p2p,
+amm-validator and amm-lookup read the chain state through the engine
+(`engine_vm.load`, the lookup handler) and change no source; `bin/` rebuilt
+(the engine and the 1Color components copied from their tags). No behaviour
+change in this app; the pages and `www/` are unchanged.
+
 ## 0.16.2 (2026-10-27)
 
 The pages depend on the published packages directly: `@1sat/*` 0.1.1 and the

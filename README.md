@@ -138,7 +138,7 @@ scripts/www.sh     # www/: the pages from web/ui, then the 1Color pages into www
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.16.0 and skein-1color v0.11.3 by tag
+`build.zig.zon` names skein-overlay v0.16.1 and skein-1color v0.11.4 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/color-topic.wasm`, `bin/color-lookup.wasm`
 from the skein-1color package, byte for byte. skein-1color's pages are
@@ -352,7 +352,8 @@ skein-host add <h> --image <this repo>/image
 ```
 
 Its `etc/apps.json` installs, at birth, the chain app (shruggr/skein-chain
-v0.6.1 by its release tarball, checked by its tree's git id; this app
+v0.7.0 by its release tarball (the host chain, shruggr/skein#156: its state
+points at the host's header chain), checked by its tree's git id; this app
 requires `chain/1`, and the chain app has no start message, so a genesis can
 carry it) and then this app (`..`, the repo root), and adds root's three
 routes, as the old image did: `POST /submit` (`kernel.beef`, the engine's
@@ -372,12 +373,12 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.16.0 |
-| skein-overlay | v0.16.0 (ad2cc9d) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.11.3's; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-1color | v0.11.3 (08ebd3f; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
-| skein-sdk | v0.11.1, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
+| this app | 0.16.3 |
+| skein-overlay | v0.16.1 (fe69411) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (byte-identical to the tag's and to skein-1color 0.11.4's; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
+| skein-1color | v0.11.4 (53973f1; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
+| skein-sdk | v0.12.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
-| requires | `chain/1` (shruggr/skein-chain; the image installs v0.6.1) |
+| requires | `chain/1` (shruggr/skein-chain; the image installs v0.7.0) |
 | Rúnar | d207ee8e (go.mod; the pages' runar-sdk) |
 | the pages | `@1sat/actions`, `@1sat/connect`, `@1sat/react`, `@1sat/templates`, `@1sat/types` 0.1.1 (published; `OneColor`); upstream `@bsv/sdk` 4.0.0, `@bsv/templates` 2.1.0, `@bsv/color-permission-module` 0.1.0 and `@bsv/wallet-toolbox-client` 2.15.0 (`overrides`, one copy each; `web/ui/package-lock.json`) |
 
