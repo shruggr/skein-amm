@@ -1,6 +1,10 @@
 /**
- * The skein instance this page talks to, and nothing else: every request the
- * page makes goes to `AMM_OVERLAY` (a GET by plain `fetch`; every POST through
+ * The skein instances this page talks to (0.17.0, shruggr/skein-amm#4): the
+ * CONFIG instance that serves it (`AMM_OVERLAY`: the token list `GET
+ * <base>/tokens`, the defaults, the holders' requests, root's enable /
+ * disable / defaults messages) and, per enabled token, that token's own
+ * instance (`tokenBase`: its pools, prices, liveness, `/call`, `/submit`,
+ * `/spends`). Every request goes to one of those (a GET by plain `fetch`; every POST through
  * the connected wallet's BRC-104 `AuthFetch`, since a skein takes no unsigned
  * POST; src/lib/overlay.ts), or to the connected BRC-100 wallet. There are no DEV keys or DEV services.
  *
@@ -85,3 +89,17 @@ export const AMM_PEER_OVERLAY = (env?.VITE_AMM_PEER_OVERLAY ?? "").replace(/\/+$
  * input at `PoolTemplate.maxCallUnlockLength`; the contract allows no change.
  */
 export const FEE_RATE_SATS_PER_KB = Number(env?.VITE_FEE_RATE ?? 100);
+
+/** A token on the config instance's list (`GET <config>/amm/tokens`): its instance's `url` when it is up. */
+export interface TokenInstance {
+  url?: string;
+}
+
+/**
+ * A token instance's AMM base (0.17.0, shruggr/skein-amm#4): its `url` from the config instance's
+ * token list (`<host>/@<tokenId>`), the app `amm` under it. Undefined when the list names no url
+ * (the token is not up).
+ */
+export function tokenBase(t: TokenInstance): string | undefined {
+  return t.url ? `${t.url.replace(/\/+$/, "")}/${ROOT_APP}` : undefined;
+}

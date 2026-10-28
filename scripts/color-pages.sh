@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The 1Color pages (deploy a token; root's registered token topics),
-# copied into www/color/ from the skein-1color v0.11.3 tag, as built there.
+# copied into the config app's www/color/ (apps/config/www/color/, 0.17.0)
+# from the skein-1color v0.11.3 tag, as built there.
 # They are outside that package's Zig `paths`, so they come from the tag's
 # tarball by URL and sha256 (the same tag build.zig.zon names by URL and
 # hash). Nothing is built here.
@@ -16,7 +17,7 @@ trap 'rm -rf "$tmp"' EXIT
 curl -sSfL -o "$tmp/c.tar.gz" "$URL"
 echo "${SHA256}  $tmp/c.tar.gz" | sha256sum -c --quiet -
 tar -xzf "$tmp/c.tar.gz" -C "$tmp" "skein-1color-${TAG#v}/www"
-rm -rf www/color
-mkdir -p www/color
-cp -R "$tmp/skein-1color-${TAG#v}/www/." www/color/
-echo "www/color/ <- skein-1color ${TAG} www/"
+rm -rf apps/config/www/color
+mkdir -p apps/config/www/color
+cp -R "$tmp/skein-1color-${TAG#v}/www/." apps/config/www/color/
+echo "apps/config/www/color/ <- skein-1color ${TAG} www/"

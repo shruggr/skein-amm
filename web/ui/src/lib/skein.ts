@@ -9,6 +9,10 @@
  *   dag-cbor. The instance is the AMM base's origin (or its `/@<handle>`
  *   prefix); the recipient its identity key. Root's register messages
  *   (`amm/register`) and a holder's listing request (`amm/requests`).
+ * - **The token list** (0.17.0, shruggr/skein-amm#4: `readTokens`): `GET
+ *   <config>/tokens`, the config instance's enable list — each token's id,
+ *   topic, metadata, status and its own instance's `url`; and the defaults a
+ *   new token instance is created with (`readDefaults`, `GET <config>/defaults`).
  * - **The reads** (no signature; nothing logged): `GET <base>/requests` (the
  *   holders' listing requests), `GET <base>/spends?outpoint=` (the chain
  *   state of an outpoint), `GET <base>/color/tokens` (the token list), and
@@ -151,4 +155,61 @@ export async function readBeats(base: string, topic: string, fetchFn: typeof fet
       body: typeof x.body === "string" ? Uint8Array.from(Utils.toArray(x.body, "base64") as number[]) : new Uint8Array(),
       from: typeof x.from === "string" ? x.from : "",
     }));
+}
+
+/** A token on the config instance's enable list (0.17.0, `GET <config>/tokens`, amm-config tokens.zig). */
+export interface EnabledToken {
+  tokenId: string;
+  topic: string;
+  sym: string;
+  dec: number;
+  icon?: string;
+  status: "creating" | "enabled" | "failed" | "stopped" | "starting";
+  /** The token instance's origin path (`<host>/@<tokenId>`), once created. */
+  url?: string;
+  /** When it was enabled, ms. */
+  since: number;
+  /** Why it failed (the instance manager's error), or why a disable or start was refused. */
+  reason?: string;
+  /** The create's delivery of the deploy into the instance: the host's verdict. */
+  delivered?: { verdict: string; reason?: string };
+}
+
+const STATUSES = new Set(["creating", "enabled", "failed", "stopped", "starting"]);
+
+/** The config instance's enable list, newest first as the read lists it. */
+export async function readTokens(base: string, fetchFn: typeof fetch = fetch): Promise<EnabledToken[]> {
+  const a = await getJson(`${base}/tokens`, fetchFn);
+  return (Array.isArray(a) ? (a as Record<string, unknown>[]) : [])
+    .filter((t) => typeof t.tokenId === "string" && typeof t.status === "string" && STATUSES.has(t.status))
+    .map((t) => ({
+      tokenId: String(t.tokenId),
+      topic: typeof t.topic === "string" ? t.topic : `tm_color_${String(t.tokenId)}`,
+      sym: typeof t.sym === "string" ? t.sym : "",
+      dec: typeof t.dec === "number" ? t.dec : 0,
+      ...(typeof t.icon === "string" ? { icon: t.icon } : {}),
+      status: t.status as EnabledToken["status"],
+      ...(typeof t.url === "string" ? { url: t.url } : {}),
+      since: typeof t.since === "number" ? t.since : 0,
+      ...(typeof t.reason === "string" ? { reason: t.reason } : {}),
+      ...(t.delivered && typeof t.delivered === "object" && typeof (t.delivered as { verdict?: unknown }).verdict === "string"
+        ? { delivered: t.delivered as { verdict: string; reason?: string } }
+        : {}),
+    }));
+}
+
+/** The defaults a new token instance is created with (0.17.0, `GET <config>/defaults`): each absent when unset. */
+export interface Defaults {
+  terms?: { lpFeeBps: number; validatorFeeBps: number; commissionBps: number };
+  market?: { minCommissionBps: number };
+}
+
+export async function readDefaults(base: string, fetchFn: typeof fetch = fetch): Promise<Defaults> {
+  const a = (await getJson(`${base}/defaults`, fetchFn)) as Record<string, unknown> | null;
+  const out: Defaults = {};
+  const t = a?.terms as Record<string, unknown> | undefined;
+  if (t && typeof t.lpFeeBps === "number" && typeof t.validatorFeeBps === "number" && typeof t.commissionBps === "number") out.terms = { lpFeeBps: t.lpFeeBps, validatorFeeBps: t.validatorFeeBps, commissionBps: t.commissionBps };
+  const m = a?.market as Record<string, unknown> | undefined;
+  if (m && typeof m.minCommissionBps === "number") out.market = { minCommissionBps: m.minCommissionBps };
+  return out;
 }

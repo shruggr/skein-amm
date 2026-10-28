@@ -1138,22 +1138,21 @@ test "market and validator are the engine's (0.6.0, shruggr/skein#120), root's s
     try testing.expect(ov_cfg.get("market") == null and ov_cfg.get("validator") == null);
 }
 
-test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, reads or senders; the box amm is the engine's (derived), amm-p2p's box amm/amm-p2p; register root's; the reads read routes" {
+test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token app): no dispatch, reads or senders; the box amm is the engine's (derived), amm-p2p's box amm/amm-p2p; no register, no pages, no requests; the reads read routes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const m = try dagjson.decode(a, manifest_json);
     try testing.expect(m.get("dispatch") == null and m.get("reads") == null);
     const gated = m.get("roles").?.get("root").?.array;
-    // register, registerLookup, deregisterLookup (skein-overlay 0.11.0); no market / validator
-    // (0.8.1, skein-overlay 0.12.0: always both, no switch); rescind, the validator's (0.13.0; 0.11.0's close);
-    // terms, the validator's (0.15.0: the runtime record); market, the market's (0.16.0: the runtime record).
-    try testing.expectEqual(@as(usize, 6), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "rescind", "terms", "market" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    // 0.17.0 (shruggr/skein-amm#4): no register, registerLookup, deregisterLookup — a token instance's
+    // topic is its config's at birth; rescind, the validator's (0.13.0); terms, the validator's (0.15.0:
+    // the runtime record); market, the market's (0.16.0: the runtime record).
+    try testing.expectEqual(@as(usize, 3), gated.len);
+    for ([_][]const u8{ "rescind", "terms", "market" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
     const filters = m.get("filters").?;
-    try testing.expectEqualStrings("amm-p2p.serve", scbor.Value.str(filters.get("page")).?);
+    try testing.expect(filters.get("page") == null and filters.get("requests") == null);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
-    try testing.expectEqualStrings("amm-p2p.requests", scbor.Value.str(filters.get("requests")).?);
     try testing.expectEqualStrings("amm-p2p.spends", scbor.Value.str(filters.get("spends")).?);
     var seen: u8 = 0;
     var seen_tokens = false;
@@ -1168,32 +1167,22 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
             try testing.expectEqualStrings("amm-p2p", h.?);
             seen |= 1;
         }
-        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "register")) {
-            try testing.expectEqualStrings("overlay.register", h.?);
-            seen |= 2;
-        }
+        // 0.17.0: no register box, no pages, no holders' requests (the config app's).
+        try testing.expect(!(std.mem.eql(u8, t, "mailbox") and (std.mem.eql(u8, addr, "register") or std.mem.eql(u8, addr, "requests"))));
+        try testing.expect(!(std.mem.eql(u8, t, "http") and (std.mem.eql(u8, addr, "/") or std.mem.eql(u8, addr, "/requests"))));
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/call")) {
             try testing.expectEqualStrings("amm-p2p.call", h.?);
             try testing.expectEqualStrings("kernel.brc104", scbor.Value.str(r.get("filters").?.array[0]).?);
-            seen |= 4;
+            seen |= 2;
         }
-        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) {
-            try testing.expect(h == null);
-            try testing.expectEqualStrings("page", scbor.Value.str(r.get("filters").?.array[0]).?);
-            seen |= 8;
-        }
-        // 0.9.0: the validator's box (root's rescind, 0.13.0), the holders' requests, and two reads.
+        // 0.9.0: the validator's box (root's rescind, 0.13.0) and the read /spends.
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "validator")) {
             try testing.expectEqualStrings("amm-validator", h.?);
-            seen |= 16;
+            seen |= 4;
         }
-        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "requests")) {
-            try testing.expectEqualStrings("amm-p2p", h.?);
-            seen |= 32;
-        }
-        if (std.mem.eql(u8, t, "http") and (std.mem.eql(u8, addr, "/requests") or std.mem.eql(u8, addr, "/spends"))) {
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/spends")) {
             try testing.expect(h == null);
-            seen |= if (std.mem.eql(u8, addr, "/requests")) 64 else 128;
+            seen |= 8;
         }
         // No addLiquidity (0.9.0), no delivered deploy (0.11.0).
         try testing.expect(!std.mem.eql(u8, addr, "/amm-validator/1/addLiquidity"));
@@ -1205,45 +1194,14 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0): no dispatch, rea
         }
         try testing.expect(!std.mem.eql(u8, addr, "/mandala/tokens"));
     }
-    try testing.expectEqual(@as(u8, 255), seen);
+    try testing.expectEqual(@as(u8, 15), seen);
     try testing.expect(seen_tokens);
     try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
 }
 
-// ================================================================ the reads and the listing requests (0.9.0)
+// ================================================================ the reads (0.9.0)
 
 const reads = @import("src/reads.zig");
-
-test "listing requests (0.9.0): a holder's request is recorded (the latest per token, any id form), listed newest first, less the tokens registered" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const s = ms.store();
-    const t1 = "01" ** 32;
-    const t2 = "02" ** 32;
-    const holder: [33]u8 = .{0x02} ++ .{0x11} ** 32;
-    const other: [33]u8 = .{0x03} ++ .{0x22} ** 32;
-    var rec = try reads.record(a, s, null, t1 ++ "_0", &holder, 100);
-    rec = try reads.record(a, s, rec, t2 ++ ".0", &other, 200);
-    rec = try reads.record(a, s, rec, t1, &other, 300); // the same token again: the latest kept
-    try testing.expectError(error.BadTokenId, reads.record(a, s, rec, "abc", &holder, 400));
-    const all = try reads.list(a, s, rec, &.{});
-    try testing.expectEqual(@as(usize, 2), all.len);
-    try testing.expectEqualStrings(t1 ++ "_0", all[0].token_id);
-    try testing.expectEqual(@as(u64, 300), all[0].at);
-    try testing.expectEqualSlices(u8, &other, all[0].from);
-    try testing.expectEqualStrings(t2 ++ "_0", all[1].token_id);
-    // Registered: settled, not listed.
-    const left = try reads.list(a, s, rec, &.{"tm_color_" ++ t1 ++ "_0"});
-    try testing.expectEqual(@as(usize, 1), left.len);
-    try testing.expectEqualStrings(t2 ++ "_0", left[0].token_id);
-    const json = try reads.requestsJson(a, left);
-    try testing.expect(std.mem.indexOf(u8, json, "\"tokenId\":\"" ++ t2 ++ "_0\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"from\":\"03" ++ "22" ** 32 ++ "\"") != null);
-    try testing.expectEqualStrings(reads.requests_box, reads.requests_head);
-}
 
 test "spends (0.9.0): the chain state of an outpoint — a pool followed from the deploy to its current output; closed by Close; unspent" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1377,4 +1335,8 @@ test "the commission key (0.16.0): the instance's own, BRC-43 level 1 `amm commi
     const pkh = hash160(&mine);
     const t = try relay.terms(a, .{ .pkh = pkh }, .{});
     try testing.expectEqualSlices(u8, &pkh, t.getBytes("commissionPkh").?);
+}
+
+test {
+    _ = relay.market;
 }

@@ -14,6 +14,10 @@
 //! shouldn't be?"): `amm.swap.terms` answers it and the Swap page lists only the pools at or above
 //! it; the relay refuses nothing by it (anyone can swap against any pool through their own skein
 //! or straight to the validator).
+//!
+//! The initial value (0.17.0, shruggr/skein-amm#4): a token instance is created with its admin's
+//! default minimum in its config, `config["amm-p2p"].market: {minCommissionBps}` (the app record's:
+//! given at the create). The head, once root writes it (its `null` too), wins (`current`).
 const std = @import("std");
 const c = @import("chain");
 
@@ -70,4 +74,28 @@ pub fn fromRecord(v: ?Value) Market {
         .set => |m| m,
         .clear, .bad => .{},
     };
+}
+
+/// The program's section of the config the minimum's initial value is under: `config["amm-p2p"]`.
+pub const config_section = "amm-p2p";
+
+/// The market now (0.17.0): the head `<app>/market`'s record when there is one (`head`, the record
+/// `null` included: cleared, the default), else the app record's `config["amm-p2p"].market`, else
+/// the default (0).
+pub fn current(head: ?Value, app: ?Value) Market {
+    if (head) |h| return fromRecord(h);
+    const cf = (app orelse return .{}).get("config") orelse return .{};
+    const sec = cf.get(config_section) orelse return .{};
+    return fromRecord(sec.get("market"));
+}
+
+test "market: the head wins, its null too; else config[\"amm-p2p\"].market; else 0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const app: Value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "config", .value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = config_section, .value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "market", .value = try record(a, .{ .min_commission_bps = 7 }) }}) } }}) } }}) };
+    try std.testing.expectEqual(@as(u64, 7), current(null, app).min_commission_bps);
+    try std.testing.expectEqual(@as(u64, 0), current(.null, app).min_commission_bps);
+    try std.testing.expectEqual(@as(u64, 3), current(try record(a, .{ .min_commission_bps = 3 }), app).min_commission_bps);
+    try std.testing.expectEqual(@as(u64, 0), current(null, null).min_commission_bps);
 }

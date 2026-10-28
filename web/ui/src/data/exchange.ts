@@ -3,7 +3,13 @@
  * module (shruggr/skein#147; wired in skein-amm 0.9.0). The pages import from
  * here and nowhere else in the data layer.
  *
- * Where each comes from:
+ * Where each comes from (0.17.0, shruggr/skein-amm#4): the pages are served by
+ * the CONFIG instance (`context.base`): its token list (`GET <config>/tokens`:
+ * each enabled token with its own instance's url), its defaults, the holders'
+ * requests and root's enable / disable / defaults messages. Everything per
+ * token — pools, prices, liveness, `/call`, `/submit`, `/spends` — goes to
+ * that token's own instance (`tokenBaseOf`: `<url>/amm`). No read crosses
+ * instances.
  *
  * - **Prices** (`hostedTokens`, `subscribePrices`): the AMM lookup's beats
  *   (skein-overlay 0.12.0, David Case 2026-10-09: "Pricing lives in the AMM
@@ -33,13 +39,14 @@
  *   balance <assetTag>`; src/wallet/color.ts) and the active swap basket
  *   (`moveBackTokens`); `requestListing` a message to the box
  *   `<app>/requests`.
- * - **Settings** (root): the token list (`/color/tokens`) and the
- *   registered topics; root's messages to `<app>/register`; the holders'
- *   requests (`GET <base>/requests`); the validator's terms (0.15.0:
- *   `amm.pool.terms`, set or cleared by root's message `{fn: "terms"}` to
- *   `<app>/validator`); the market's terms (0.16.0: `amm.swap.terms`'s
- *   `minCommissionBps`, set or cleared by root's message `{fn: "market"}` to
- *   `<app>/amm-p2p`). `isRoot` is a stub (no grants read).
+ * - **Settings** (root of the config instance, 0.17.0): the enable list
+ *   (`GET <config>/tokens`) with Disable / Enable again; Enable a token —
+ *   root's `{fn: "enable", args: {tokenId, beef}}` to `<app>/admin`, the
+ *   deploy's BEEF from the wallet's module basket or pasted; the holders'
+ *   requests (`GET <config>/requests`); the defaults a new token instance is
+ *   created with (`GET <config>/defaults`; root's `{fn: "defaults"}`): its
+ *   initial validator terms and market minimum (a token's own terms are root's
+ *   message to `/@<tokenId>`: not on this page). `isRoot` is a stub (no grants read).
  * - **The instance's identity** (0.15.0, `instanceIdentity`): the key its
  *   signed answers carry, the recipient of root's messages and a listing
  *   request (a market-only skein refuses `amm.pool.terms`, which named it
@@ -55,13 +62,13 @@
  * themselves.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AuthFetch, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
+import { AuthFetch, Beef, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
 import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
-import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName } from "../lib/config";
-import { fetchLive, listTokenTopics, lookup, lookupPoolOutput, parseOutputList, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readRequests, readSpend, readTokenList, sendMessage, type Beat, type ListedToken } from "../lib/skein";
+import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
+import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
+import { readBeats, readDefaults, readRequests, readSpend, readTokens, sendMessage, type Beat, type Defaults, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -78,7 +85,7 @@ import { deployPool } from "../lp/poolDeploy";
 import { PoolTemplate } from "../pool";
 import { colorOutput, positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
 import { recoverPosition as recoverPoolRow } from "../lp/recover";
-import { POOLS_BASKET, assetBalance, heldOutputs } from "../wallet/color";
+import { POOLS_BASKET, assetBalance, assetBasket, heldOutputs } from "../wallet/color";
 import { completeClose, prepareClose, submitToOverlay } from "../lp/close";
 
 // ---------------------------------------------------------------------------
@@ -309,12 +316,19 @@ export interface DiscoveryToken {
   seenAt?: number;
 }
 
-/** A token registered on this exchange, as Settings lists it. */
+/** A token on this exchange's list (0.17.0: the config instance's enable list), as Settings lists it. */
 export interface RegisteredToken {
   tokenId: TokenId;
   sym: string;
   icon?: string;
+  status: EnabledToken["status"];
+  /** The token instance's origin, once created. */
+  url?: string;
+  reason?: string;
+  delivered?: EnabledToken["delivered"];
 }
+
+export type { EnabledToken, Defaults };
 
 /** A holder's "Add to this exchange". */
 export interface ListingRequest {
@@ -353,7 +367,7 @@ export const SITE_HREF = "/site/";
 type Signed = SignedFetch & AuthFetchLike;
 
 interface ExchangeContext {
-  /** The AMM app's base URL (src/lib/config.ts). */
+  /** The config instance's AMM base URL (src/lib/config.ts): the pages' own. */
   base: string;
   wallet: WalletInterface | null;
   /** The wallet's BRC-104 client. */
@@ -392,14 +406,35 @@ function app(): string {
   return appName(context.base) ?? "amm";
 }
 
-/** The token list's metadata by token id (`/color/tokens`); empty when the read fails. */
+/** The config instance's enable list (0.17.0, `GET <config>/tokens`), every status. */
+async function enabledList(): Promise<EnabledToken[]> {
+  return (await readTokens(context.base)).map((t) => {
+    const id = parseOutpoint(t.tokenId.replace("_", "."));
+    return id ? { ...t, tokenId: tokenIdText(id) } : t;
+  });
+}
+
+/** The tokens up on this exchange: enabled, with their instance's url. */
+async function enabledTokens(): Promise<EnabledToken[]> {
+  return (await enabledList()).filter((t) => t.status === "enabled" && t.url);
+}
+
+/**
+ * A token's own instance's AMM base (0.17.0): `<url>/amm` from the config instance's list. Refused
+ * for a token that is not enabled here.
+ */
+export async function tokenBaseOf(tokenId: TokenId): Promise<string> {
+  const t = (await enabledTokens()).find((x) => x.tokenId === tokenId);
+  const b = t ? tokenBase(t) : undefined;
+  if (!b) throw new Error(`${tokenId.slice(0, 8)}… is not enabled on this exchange`);
+  return b;
+}
+
+/** The token list's metadata by token id (0.17.0: the config instance's list); empty when the read fails. */
 async function tokenMeta(): Promise<Map<string, ListedToken>> {
   const m = new Map<string, ListedToken>();
   try {
-    for (const t of await readTokenList(context.base)) {
-      const id = parseOutpoint(t.tokenId.replace("_", "."));
-      m.set(id ? tokenIdText(id) : t.tokenId, t);
-    }
+    for (const t of await enabledList()) m.set(t.tokenId, { tokenId: t.tokenId, topic: t.topic, sym: t.sym, dec: t.dec, ...(t.icon ? { icon: t.icon } : {}) });
   } catch {
     /* no metadata: ids only */
   }
@@ -413,7 +448,7 @@ async function tokenMeta(): Promise<Map<string, ListedToken>> {
  */
 async function deployMeta(tokenId: string): Promise<{ sym?: string; dec?: number; icon?: string } | null> {
   try {
-    const out = parseOutputList(await lookup(context.af, context.base, "ls_color_deploys", { tokenId: sdkTokenId(tokenId) }))[0];
+    const out = parseOutputList(await lookup(context.af, await tokenBaseOf(tokenId), "ls_color_deploys", { tokenId: sdkTokenId(tokenId) }))[0];
     if (!out) return null;
     const tx = Transaction.fromAtomicBEEF(out.beef);
     const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${out.outputIndex}`, lockingScript: tx.outputs[out.outputIndex]?.lockingScript.toHex() });
@@ -481,18 +516,32 @@ export async function isRoot(identityKey: string | null): Promise<boolean> {
 // Landing: hosted tokens and live prices
 // ---------------------------------------------------------------------------
 
-/** The live validators of the topics `topics` and the `ls_amm` beats: their senders. */
-async function liveFor(topics: TokenTopic[]): Promise<{ beats: Beat[]; live: Set<string> }> {
-  const [beats, ...tokenBeats] = await Promise.all([
-    readBeats(context.base, "ls_amm-live").catch(() => [] as Beat[]),
-    ...topics.map((t) => readBeats(context.base, `${t.topic}-live`).catch(() => [] as Beat[])),
+/** A token topic with its own instance's AMM base (0.17.0). */
+type HostedTopic = TokenTopic & { base: string };
+
+/** The token topics up on this exchange (0.17.0: enabled on the config instance's list, each with its instance's base). */
+async function hostedTopics(): Promise<HostedTopic[]> {
+  const out: HostedTopic[] = [];
+  for (const t of await enabledTokens()) {
+    const topic = parseTokenTopic(t.topic);
+    const base = tokenBase(t);
+    if (topic && base) out.push({ ...topic, base });
+  }
+  return out;
+}
+
+/** One token instance's `ls_amm` beats and its token topic's: their live senders (0.17.0: one read per token instance). */
+async function liveFor(t: HostedTopic): Promise<{ beats: Beat[]; live: Set<string> }> {
+  const [beats, tokenBeats] = await Promise.all([
+    readBeats(t.base, "ls_amm-live").catch(() => [] as Beat[]),
+    readBeats(t.base, `${t.topic}-live`).catch(() => [] as Beat[]),
   ]);
-  return { beats, live: liveSenders(beats, ...tokenBeats) };
+  return { beats, live: liveSenders(beats, tokenBeats) };
 }
 
 /** This skein's own listing of a token, its live pools summed: the fallback when no beat reports the token. */
-async function localPrice(t: TokenTopic, dec: number): Promise<TokenPrice> {
-  const [pools, live] = await Promise.all([queryPools(context.af, context.base, t.tokenId), fetchLive(context.base, t.topic)]);
+async function localPrice(t: HostedTopic, dec: number): Promise<TokenPrice> {
+  const [pools, live] = await Promise.all([queryPools(context.af, t.base, t.tokenId), fetchLive(t.base, t.topic)]);
   const usable = pools.filter((p) => validatorStatus(p.validatorIdentityKey, live).live);
   const sats = usable.reduce((a, p) => a + p.bsvReserve, 0n);
   const tokens = usable.reduce((a, p) => a + p.tokenReserve, 0n);
@@ -506,14 +555,13 @@ async function localPrice(t: TokenTopic, dec: number): Promise<TokenPrice> {
   };
 }
 
-/** Every registered token's price: the beats first, this skein's listing for a token no beat reports. */
-async function pricesNow(topics: TokenTopic[], meta: Map<string, ListedToken>): Promise<Map<string, TokenPrice>> {
-  const { beats, live } = await liveFor(topics);
-  const fromBeats = pricesFromBeats(beats, live, (id) => meta.get(id)?.dec ?? 0);
+/** Every hosted token's price: its instance's beats first, its instance's listing when no beat reports it. */
+async function pricesNow(topics: HostedTopic[], meta: Map<string, ListedToken>): Promise<Map<string, TokenPrice>> {
   const out = new Map<string, TokenPrice>();
   await Promise.all(
     topics.map(async (t) => {
-      const b = fromBeats.get(t.tokenId);
+      const { beats, live } = await liveFor(t);
+      const b = pricesFromBeats(beats, live, (id) => meta.get(id)?.dec ?? 0).get(t.tokenId);
       if (b && b.validators.length > 0) return out.set(t.tokenId, b);
       try {
         out.set(t.tokenId, await localPrice(t, meta.get(t.tokenId)?.dec ?? 0));
@@ -527,7 +575,7 @@ async function pricesNow(topics: TokenTopic[], meta: Map<string, ListedToken>): 
 
 /** The tokens this overlay hosts (registered here: 1Color tokens at output 0), each priced. No wallet needed. */
 export async function hostedTokens(): Promise<HostedToken[]> {
-  const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
+  const [topics, meta] = await Promise.all([hostedTopics(), tokenMeta()]);
   const native = topics.filter((t) => t.kind === "native");
   const prices = await pricesNow(native, meta);
   return native.map((t) => {
@@ -551,7 +599,7 @@ export function subscribePrices(onUpdate: (u: PriceUpdate) => void): () => void 
   let stopped = false;
   const tick = async () => {
     try {
-      const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
+      const [topics, meta] = await Promise.all([hostedTopics(), tokenMeta()]);
       const prices = await pricesNow(topics.filter((t) => t.kind === "native"), meta);
       if (stopped) return;
       for (const p of prices.values()) onUpdate({ tokenId: p.tokenId, marginalPrice: p.marginalPrice, depth: p.depth, pools: p.pools, reserves: p.reserves, at: Date.now() });
@@ -591,7 +639,8 @@ export function useHostedTokens(): { tokens: HostedToken[] | null; error: string
 /** A token's listed pools on this skein, each with its validator's liveness. */
 export async function tokenPools(tokenId: TokenId): Promise<PoolView[]> {
   const topic = `tm_color_${sdkTokenId(tokenId)}`;
-  const [pools, live] = await Promise.all([queryPools(context.af, context.base, tokenId), fetchLive(context.base, topic)]);
+  const base = await tokenBaseOf(tokenId);
+  const [pools, live] = await Promise.all([queryPools(context.af, base, tokenId), fetchLive(base, topic)]);
   return pools.map((p) => ({
     outpoint: outpointText(p.outpoint),
     tokenId,
@@ -602,14 +651,15 @@ export async function tokenPools(tokenId: TokenId): Promise<PoolView[]> {
 }
 
 /**
- * This market's minimum commission (0.16.0, bps): `amm.swap.terms`'s
- * `minCommissionBps`, the record root sets (`amm/market`; unset, 0). Null
+ * A token's market minimum commission (0.16.0, bps; 0.17.0: the token instance's own): `amm.swap.terms`'s
+ * `minCommissionBps`, the record root sets there (`amm/market`; else its initial value, the
+ * config's default at its create; unset, 0). Null
  * when it cannot be read here: no wallet is connected (`amm.swap.terms` is a
  * signed call), and then no pool is hidden.
  */
-export async function marketMinimum(): Promise<number | null> {
+export async function marketMinimum(tokenId: TokenId): Promise<number | null> {
   if (!context.af) return null;
-  return (await swapTerms(context.af, context.base)).minCommissionBps;
+  return (await swapTerms(context.af, await tokenBaseOf(tokenId))).minCommissionBps;
 }
 
 /**
@@ -632,7 +682,8 @@ export function belowMinimumText(n: number): string {
 /** The pools the Swap page lists for a token (0.16.0): `tokenPools` at or above this market's minimum commission, and how many are hidden. */
 export async function swapPools(tokenId: TokenId): Promise<{ pools: PoolView[]; hidden: number }> {
   const topic = `tm_color_${sdkTokenId(tokenId)}`;
-  const [pools, live, min] = await Promise.all([queryPools(context.af, context.base, tokenId), fetchLive(context.base, topic), marketMinimum()]);
+  const base = await tokenBaseOf(tokenId);
+  const [pools, live, min] = await Promise.all([queryPools(context.af, base, tokenId), fetchLive(base, topic), marketMinimum(tokenId)]);
   const { listed, hidden } = atMarketMinimum(pools, min);
   return {
     pools: listed.map((p) => ({
@@ -664,7 +715,8 @@ const planned = new WeakMap<Quote, Planned>();
 export async function quoteSwap(req: QuoteRequest): Promise<Quote> {
   if (req.amountIn <= 0n) throw new Error("Enter an amount");
   const topic = `tm_color_${sdkTokenId(req.tokenId)}`;
-  const [all, live, meta, min] = await Promise.all([queryPools(context.af, context.base, req.tokenId), fetchLive(context.base, topic), tokenMeta(), marketMinimum()]);
+  const base = await tokenBaseOf(req.tokenId);
+  const [all, live, meta, min] = await Promise.all([queryPools(context.af, base, req.tokenId), fetchLive(base, topic), tokenMeta(), marketMinimum(req.tokenId)]);
   const { listed: pools, hidden } = atMarketMinimum(all, min);
   if (pools.length === 0 && hidden > 0) throw new Error(`No pool to swap against: ${belowMinimumText(hidden)}`);
   const dec = meta.get(req.tokenId)?.dec ?? 0;
@@ -721,10 +773,11 @@ export async function executeSwap(quote: Quote): Promise<SwapResult> {
   const p = planned.get(quote);
   if (!p) throw new Error("Quote again: this quote was not planned here");
   const tokenId = quote.request.tokenId;
-  const fresh = await queryPools(af, context.base, tokenId);
+  const base = await tokenBaseOf(tokenId);
+  const fresh = await queryPools(af, base, tokenId);
   const gone = goneFromLookup(p.plan, fresh);
   if (gone.length > 0 && !quote.request.allowPartial) throw new Error(`${gone.map(outpointText).join(", ")} ${gone.length === 1 ? "was" : "were"} spent since the quote: quote again`);
-  const terms = await swapTerms(af, context.base);
+  const terms = await swapTerms(af, base);
   const direction = quote.request.side === "buy" ? "bsvToToken" : "tokenToBsv";
   const legs: LegResult[] = [];
   const running: Promise<void>[] = [];
@@ -764,7 +817,7 @@ export async function executeSwap(quote: Quote): Promise<SwapResult> {
     }
     let sent: number[] | undefined;
     if (short.length > 0) {
-      const s = await sendToSwapBasket(wallet, context.base, tokenId, short.map((r) => r.leg.amountIn), { sym: p.sym });
+      const s = await sendToSwapBasket(wallet, base, tokenId, short.map((r) => r.leg.amountIn), { sym: p.sym });
       sent = s.tx;
       short.forEach((r, n) => {
         const h = s.holdings[n];
@@ -784,12 +837,12 @@ export async function executeSwap(quote: Quote): Promise<SwapResult> {
       }
     }
     try {
-      const poolOutput = await lookupPoolOutput(af, context.base, tokenId, leg.outpoint);
+      const poolOutput = await lookupPoolOutput(af, base, tokenId, leg.outpoint);
       const prepared = await prepareSwap({ wallet, tokenId, meta: { sym: p.sym, dec: p.dec }, direction, leg, pool, poolOutput, commissionPkh: terms.commissionPkh, tokenInputs, ...(tokenBeef ? { tokenBeef } : {}), satsPerKb: FEE_RATE_SATS_PER_KB });
       const pending = pendingSwapPayouts(prepared, tokenId);
       for (const r of pending) context.payouts.save(r);
       running.push(
-        relaySwap({ wallet, authFetch: af, base: context.base }, prepared, peerId)
+        relaySwap({ wallet, authFetch: af, base }, prepared, peerId)
           .catch((e): SwapOutcome => ({ status: "unknown", reason: errText(e) }))
           .then((o) => {
             for (const r of pending) {
@@ -838,15 +891,17 @@ export async function myPositions(): Promise<Position[]> {
   const lives = new Map<string, Promise<LiveAnswer | null>>();
   for (const row of rows) {
     let pos: LoadedPosition;
+    let base: string;
     try {
-      pos = await loadPosition(af, context.base, row);
+      base = await tokenBaseOf(row.tokenId);
+      pos = await loadPosition(af, base, row);
     } catch {
       continue;
     }
     if (!pos.current || !pos.pool || pos.sats === undefined) continue;
     loaded.set(pos.current, pos);
     const topic = `tm_color_${sdkTokenId(row.tokenId)}`;
-    if (!lives.has(topic)) lives.set(topic, fetchLive(context.base, topic).catch(() => null));
+    if (!lives.has(topic)) lives.set(topic, fetchLive(base, topic).catch(() => null));
     const live = await lives.get(topic)!;
     const m = meta.get(row.tokenId);
     const identity = pos.pool.state.validatorIdentity;
@@ -879,10 +934,10 @@ function fee(x: unknown, name: string): number {
   return n;
 }
 
-/** `amm.pool.terms`: this skein's validator, its peer ID and its terms (an error "no validator here" when none are set). */
-async function rawTerms(): Promise<RawTerms> {
+/** `amm.pool.terms` of a token's instance (0.17.0): its validator, its peer ID and its terms (an error "no validator here" when none are set). */
+async function rawTerms(tokenId: TokenId): Promise<RawTerms> {
   const { af } = needWallet();
-  const t = (await callApp(af, context.base, "amm.pool.terms", {})) as Record<string, unknown>;
+  const t = (await callApp(af, await tokenBaseOf(tokenId), "amm.pool.terms", {})) as Record<string, unknown>;
   const bytes = readBytes(t.validator);
   const hex = bytes ? Utils.toHex(bytes) : "";
   if (!/^[0-9a-f]{66}$/.test(hex)) throw new Error("amm.pool.terms: no validator identity");
@@ -898,10 +953,10 @@ async function rawTerms(): Promise<RawTerms> {
  * accepts them); `{none: true}` when no terms are set (0.15.0: `amm.pool.terms` answers "no
  * validator here").
  */
-export async function validatorTerms(): Promise<ValidatorTerms | NoTerms> {
+export async function validatorTerms(tokenId: TokenId): Promise<ValidatorTerms | NoTerms> {
   let t: RawTerms;
   try {
-    t = await rawTerms();
+    t = await rawTerms(tokenId);
   } catch (e) {
     if (e instanceof RelayError && e.message.endsWith(NO_VALIDATOR)) return { none: true };
     throw e;
@@ -910,19 +965,23 @@ export async function validatorTerms(): Promise<ValidatorTerms | NoTerms> {
 }
 
 /**
- * The instance's identity (hex, 0.15.0): the key its signed answers carry
+ * An instance's identity (hex, 0.15.0): the key its signed answers carry
  * (`x-bsv-auth-identity-key`), as skein-1color's tokens page reads it
- * (web/src/tokens/instance.ts `identity`), off a signed `amm.swap.terms`,
- * which every skein answers, validator or market only. The recipient of
- * root's messages and of a listing request.
+ * (web/src/tokens/instance.ts `identity`). A token instance's (`base` a token
+ * base) off a signed `amm.swap.terms`, which every token instance answers,
+ * validator or market only; the config instance's (0.17.0, no `base`) off a
+ * signed read of its token list. The recipient of root's messages and of a
+ * listing request.
  */
-export async function instanceIdentity(): Promise<string> {
+export async function instanceIdentity(base?: string): Promise<string> {
   const { af } = needWallet();
-  const res = await af.fetch(callUrl(context.base), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ fn: SWAP_TERMS_FN, args: {} }),
-  });
+  const res = base
+    ? await af.fetch(callUrl(base), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fn: SWAP_TERMS_FN, args: {} }),
+      })
+    : await af.fetch(`${context.base}/tokens`, { method: "GET" });
   const key = (res.headers.get("x-bsv-auth-identity-key") ?? "").toLowerCase();
   if (!/^[0-9a-f]{66}$/.test(key)) throw new Error("the skein's answer carries no identity key (x-bsv-auth-identity-key)");
   return key;
@@ -939,12 +998,12 @@ export async function instanceIdentity(): Promise<string> {
 export async function deployPosition(req: DeployRequest): Promise<DeployResult> {
   const { wallet, af } = needWallet();
   if (req.tokens <= 0n || req.sats <= 0n) throw new Error("Both amounts must be more than 0");
-  const [terms, held, meta] = await Promise.all([rawTerms(), heldOutputs(wallet), tokenMeta()]);
+  const [terms, held, meta, base] = await Promise.all([rawTerms(req.tokenId), heldOutputs(wallet), tokenMeta(), tokenBaseOf(req.tokenId)]);
   const m = meta.get(req.tokenId) ?? (await deployMeta(req.tokenId));
   const d = await deployPool({
     wallet,
     af,
-    base: context.base,
+    base,
     tokenId: req.tokenId,
     tokens: req.tokens,
     sats: req.sats,
@@ -981,7 +1040,7 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     bsvFee: req.bsvFee,
     satsPerKb: FEE_RATE_SATS_PER_KB,
   });
-  await submitToOverlay(context.base, prepared.topic, prepared.beef);
+  await submitToOverlay(await tokenBaseOf(pos.row.tokenId), prepared.topic, prepared.beef);
   await completeClose(wallet, prepared, pos.row.deployOutpoint, context.payouts);
   loaded.delete(req.outpoint);
   emit();
@@ -997,16 +1056,32 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
 export async function recoverPosition(outpoint: string): Promise<RecoverResult> {
   const { wallet, af } = needWallet();
   const [rows, meta] = await Promise.all([basketRows(wallet, POOLS_BASKET), tokenMeta()]);
+  const base = await baseHolding(outpoint);
   const r = await recoverPoolRow({
     wallet,
     outpoint,
     rows,
-    spendOf: (o) => readSpend(context.base, o),
-    outputOf: (o) => colorOutput(af, context.base, o),
+    spendOf: (o) => readSpend(base, o),
+    outputOf: (o) => colorOutput(af, base, o),
     metaOf: async (tokenId) => meta.get(tokenId) ?? (await deployMeta(tokenId)),
   });
   emit();
   return { outpoint: r.outpoint, sym: r.sym ?? r.tokenId.slice(0, 8), filed: r.filed };
+}
+
+/**
+ * The token instance that knows a pool outpoint (0.17.0: a pasted outpoint names no token): the first
+ * enabled token's instance whose chain state follows it as a pool (`/spends`: a current output, a
+ * spender or a close); refused when none does.
+ */
+async function baseHolding(outpoint: string): Promise<string> {
+  for (const t of await enabledTokens()) {
+    const base = tokenBase(t);
+    if (!base) continue;
+    const s = await readSpend(base, outpoint).catch(() => null);
+    if (s && (s.current || s.spentBy || s.closed)) return base;
+  }
+  throw new Error(`no token instance on this exchange knows ${outpoint}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,7 +1101,7 @@ export async function myTokens(): Promise<WalletToken[]> {
   const [held, swaps, topics, meta, requests] = await Promise.all([
     heldOutputs(wallet),
     swapTotals(wallet).catch(() => new Map<string, { amount: bigint; outputs: number }>()),
-    listTokenTopics(context.base).catch(() => [] as TokenTopic[]),
+    enabledTokens().catch(() => [] as EnabledToken[]),
     tokenMeta(),
     readRequests(context.base).catch(() => []),
   ]);
@@ -1070,12 +1145,12 @@ export async function myTokens(): Promise<WalletToken[]> {
 export async function moveBackTokens(tokenId: TokenId): Promise<{ txid: string; amount: bigint; internalized: boolean; errors: string[] }> {
   const { wallet, af } = needWallet();
   const meta = await tokenMeta();
-  const r = await moveBack({ wallet, af, base: context.base, tokenId, meta: { sym: symOf(meta, tokenId) }, satsPerKb: FEE_RATE_SATS_PER_KB, payouts: context.payouts });
+  const r = await moveBack({ wallet, af, base: await tokenBaseOf(tokenId), tokenId, meta: { sym: symOf(meta, tokenId) }, satsPerKb: FEE_RATE_SATS_PER_KB, payouts: context.payouts });
   emit();
   return { txid: r.txid, amount: r.amount, internalized: r.internalized, errors: r.errors };
 }
 
-/** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the box `<app>/requests` (anyone may send; recorded for root). */
+/** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the config instance's box `<app>/requests` (anyone may send; recorded for root). */
 export async function requestListing(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
   const me = await instanceIdentity();
@@ -1087,26 +1162,20 @@ export async function requestListing(tokenId: TokenId): Promise<void> {
 // Settings (root)
 // ---------------------------------------------------------------------------
 
-/** The tokens the discovery topic knows (`/color/tokens`) that this exchange does not serve yet. */
-export async function discoveryTokens(): Promise<DiscoveryToken[]> {
-  const [list, topics] = await Promise.all([readTokenList(context.base), listTokenTopics(context.base)]);
-  const registered = new Set(topics.map((t) => t.tokenId));
-  return list
-    .map((t) => {
-      const id = parseOutpoint(t.tokenId.replace("_", "."));
-      return { ...t, tokenId: id ? tokenIdText(id) : t.tokenId };
-    })
-    .filter((t) => !registered.has(t.tokenId) && t.tokenId.endsWith("_0"))
-    .map((t) => ({ tokenId: t.tokenId, sym: t.sym ?? t.tokenId.slice(0, 8), dec: t.dec ?? 0, ...(t.icon ? { icon: t.icon } : {}) }));
-}
-
-/** The tokens registered on this exchange (`listTopicManagers`). */
+/**
+ * The tokens on this exchange's list (0.17.0: the config instance's enable list, `GET
+ * <config>/tokens`), every status, newest first.
+ */
 export async function registeredTokens(): Promise<RegisteredToken[]> {
-  const [topics, meta] = await Promise.all([listTokenTopics(context.base), tokenMeta()]);
-  return topics.map((t) => {
-    const m = meta.get(t.tokenId);
-    return { tokenId: t.tokenId, sym: symOf(meta, t.tokenId), ...(m?.icon ? { icon: m.icon } : {}) };
-  });
+  return (await enabledList()).map((t) => ({
+    tokenId: t.tokenId,
+    sym: t.sym || t.tokenId.slice(0, 8),
+    ...(t.icon ? { icon: t.icon } : {}),
+    status: t.status,
+    ...(t.url ? { url: t.url } : {}),
+    ...(t.reason ? { reason: t.reason } : {}),
+    ...(t.delivered ? { delivered: t.delivered } : {}),
+  }));
 }
 
 /** The topic a token's pools are admitted under (BRC-207; skein-amm 0.8.0): derived, never typed. */
@@ -1119,37 +1188,72 @@ export function lookupOf(tokenId: TokenId): string {
   return `ls_color_${sdkTokenId(tokenId)}`;
 }
 
-/** The AMM lookup's service: registered so it beats its prices on `ls_amm-live` (skein-overlay 0.12: a registered lookup beats). */
+/** The AMM lookup's service: a token instance's config names it, so it beats its prices on `ls_amm-live` (skein-overlay 0.17.0: a configured lookup beats). */
 export const AMM_LOOKUP = "ls_amm";
 
 /**
- * Registers a token: root's messages to `<app>/register` — its topic
- * (`color-topic`, seeded with the token's deploy txid, skein-overlay 0.7.8:
- * the deploy the discovery topic admitted is admitted into the token's own
- * topic too, so the module's deploy check (BRC-207 `admission`) finds it;
- * a register without the seed left the topic empty: 0.16.1), its lookup
- * (`color-lookup`), and `ls_amm` (`amm-lookup`, idempotent: the same again
- * changes nothing) so the AMM lookup's beat (the prices) is declared.
+ * A token deploy's BEEF from the connected wallet (0.17.0), as the 1Color tokens page gets it
+ * (skein-1color web/src/overlay.ts `walletDeployBeef`): the deploy output in the module's basket
+ * `p color <txid>v<vout>` (then its `authority` basket), its transaction as BEEF (`include: "entire
+ * transactions"`), as an Atomic BEEF of the deploy. Undefined when the wallet holds it in neither
+ * (not the deployer's, or the output spent).
  */
-export async function registerToken(tokenId: TokenId): Promise<void> {
-  const { af } = needWallet();
-  const me = await instanceIdentity();
-  const box = `${app()}/register`;
-  const topic = topicOf(tokenId);
-  const seed = [parseOutpoint(sdkTokenId(tokenId))!.txid];
-  await sendMessage(af, context.base, me, box, { fn: "register", args: { topic, program: "color-topic", seed } });
-  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: lookupOf(tokenId), program: "color-lookup", topics: [topic] } });
-  await sendMessage(af, context.base, me, box, { fn: "registerLookup", args: { service: AMM_LOOKUP, program: "amm-lookup" } });
-  emit();
+export async function walletDeployBeef(wallet: WalletInterface, tokenId: TokenId): Promise<number[] | undefined> {
+  const op = parseOutpoint(sdkTokenId(tokenId).replace("_", "."));
+  if (!op) throw new Error(`not a token id: ${tokenId}`);
+  const assetId = `${op.txid}_${op.vout}`;
+  for (const basket of [assetBasket(assetId, "value"), assetBasket(assetId, "authority")]) {
+    const r = await wallet.listOutputs({ basket, include: "entire transactions", limit: 100 });
+    const held = r.outputs.some((o) => o.outpoint === `${op.txid}.${op.vout}`);
+    if (held && r.BEEF && r.BEEF.length > 0) return Beef.fromBinary(Array.from(r.BEEF)).toBinaryAtomic(op.txid);
+  }
+  return undefined;
 }
 
-/** Deregisters a token: its lookup, then its topic (root's messages to `<app>/register`). */
-export async function deregisterToken(tokenId: TokenId): Promise<void> {
+/** A pasted BEEF (hex), as bytes; refused when it is not hex. */
+export function pastedBeef(text: string): number[] {
+  const t = text.trim().replace(/\s+/g, "");
+  if (!/^([0-9a-fA-F]{2})+$/.test(t)) throw new Error("the BEEF is not hex");
+  return Utils.toArray(t, "hex") as number[];
+}
+
+/** What enabling a token reports (0.17.0): where the BEEF came from. */
+export interface EnableSent {
+  beefFrom: "wallet" | "pasted";
+}
+
+/**
+ * Enables a token (0.17.0, shruggr/skein-amm#4): root's message `{fn: "enable", args: {tokenId,
+ * beef}}` to the config instance's `<app>/admin`. The deploy's BEEF from the connected wallet's
+ * module basket, else `pasted` (hex); with neither, refused here ("this wallet does not hold the
+ * deploy; paste its BEEF"). The config instance asks the host for the token instance, created
+ * with the deploy; the list shows it `creating`, then `enabled` (or `failed`). A stopped token is
+ * started again (its BEEF not needed).
+ */
+export async function enableToken(tokenId: TokenId, pasted?: string): Promise<EnableSent> {
+  const { af, wallet } = needWallet();
+  const id = parseOutpoint(sdkTokenId(tokenId).replace("_", "."));
+  if (!id) throw new Error(`not a token id: ${tokenId}`);
+  const canonical = tokenIdText(id);
+  const row = (await enabledList().catch(() => [] as EnabledToken[])).find((t) => t.tokenId === canonical);
+  let beef: number[] | undefined;
+  let from: EnableSent["beefFrom"] = "wallet";
+  if (row?.status !== "stopped") {
+    beef = pasted && pasted.trim() ? pastedBeef(pasted) : await walletDeployBeef(wallet, canonical);
+    if (pasted && pasted.trim()) from = "pasted";
+    if (!beef) throw new Error("this wallet does not hold the deploy; paste its BEEF");
+  }
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/admin`, { fn: "enable", args: { tokenId: canonical, ...(beef ? { beef: Uint8Array.from(beef) } : {}) } });
+  emit();
+  return { beefFrom: from };
+}
+
+/** Disables a token (0.17.0): root's `{fn: "disable", args: {tokenId}}` to `<app>/admin`; its instance stopped. */
+export async function disableToken(tokenId: TokenId): Promise<void> {
   const { af } = needWallet();
   const me = await instanceIdentity();
-  const box = `${app()}/register`;
-  await sendMessage(af, context.base, me, box, { fn: "deregisterLookup", args: { service: lookupOf(tokenId) } });
-  await sendMessage(af, context.base, me, box, { fn: "deregister", args: { topic: topicOf(tokenId) } });
+  await sendMessage(af, context.base, me, `${app()}/admin`, { fn: "disable", args: { tokenId: sdkTokenId(tokenId) } });
   emit();
 }
 
@@ -1160,51 +1264,46 @@ export interface TermsInput {
   commissionBps: number;
 }
 
-/**
- * Sets this skein's validator terms (0.15.0): root's message `{fn: "terms",
- * args: {lpFeeBps, validatorFeeBps, commissionBps}}` to `<app>/validator`
- * (amm-validator writes the record `<app>/terms`; the engine re-declares the
- * beats with it). Refused here unless each fee is an integer 0 to 10 000.
- */
-export async function setValidatorTerms(t: TermsInput): Promise<void> {
+/** The defaults a new token instance is created with (0.17.0, `GET <config>/defaults`). */
+export async function defaults(): Promise<Defaults> {
+  return readDefaults(context.base);
+}
+
+async function sendDefaults(args: Record<string, unknown>): Promise<void> {
   const { af } = needWallet();
+  const me = await instanceIdentity();
+  await sendMessage(af, context.base, me, `${app()}/admin`, { fn: "defaults", args });
+  emit();
+}
+
+/**
+ * Sets the default validator terms (0.17.0): root's `{fn: "defaults", args: {terms: {lpFeeBps,
+ * validatorFeeBps, commissionBps}}}` to the config instance's `<app>/admin` — a new token
+ * instance's initial terms (its own `amm/terms`, root's message to `/@<tokenId>`, wins once
+ * written). Refused here unless each fee is an integer 0 to 10 000.
+ */
+export async function setDefaultTerms(t: TermsInput): Promise<void> {
   for (const [k, v] of Object.entries(t)) if (!Number.isInteger(v) || v < 0 || v > 10_000) throw new Error(`${k}: an integer, 0 to 10000 basis points`);
-  const me = await instanceIdentity();
-  await sendMessage(af, context.base, me, `${app()}/validator`, { fn: "terms", args: { lpFeeBps: t.lpBps, validatorFeeBps: t.validatorBps, commissionBps: t.commissionBps } });
-  emit();
+  await sendDefaults({ terms: { lpFeeBps: t.lpBps, validatorFeeBps: t.validatorBps, commissionBps: t.commissionBps } });
 }
 
-/** Clears this skein's validator terms (0.15.0): root's `{fn: "terms", args: null}` to `<app>/validator`; a market only. */
-export async function clearValidatorTerms(): Promise<void> {
-  const { af } = needWallet();
-  const me = await instanceIdentity();
-  await sendMessage(af, context.base, me, `${app()}/validator`, { fn: "terms", args: null });
-  emit();
+/** Clears the default validator terms (0.17.0): `{fn: "defaults", args: {terms: null}}`; a new token instance is a market only. */
+export async function clearDefaultTerms(): Promise<void> {
+  await sendDefaults({ terms: null });
 }
 
-/**
- * Sets this market's minimum commission (0.16.0): root's message `{fn:
- * "market", args: {minCommissionBps}}` to `<app>/amm-p2p` (amm-p2p writes
- * the record `<app>/market`; the Swap page lists the pools at or above it).
- * Refused here unless it is an integer 0 to 10 000.
- */
-export async function setMarketMinimum(minCommissionBps: number): Promise<void> {
-  const { af } = needWallet();
+/** Sets the default market minimum (0.17.0): `{fn: "defaults", args: {market: {minCommissionBps}}}`; a new token instance's initial minimum. */
+export async function setDefaultMarket(minCommissionBps: number): Promise<void> {
   if (!Number.isInteger(minCommissionBps) || minCommissionBps < 0 || minCommissionBps > 10_000) throw new Error("minCommissionBps: an integer, 0 to 10000 basis points");
-  const me = await instanceIdentity();
-  await sendMessage(af, context.base, me, `${app()}/amm-p2p`, { fn: "market", args: { minCommissionBps } });
-  emit();
+  await sendDefaults({ market: { minCommissionBps } });
 }
 
-/** Clears this market's minimum commission (0.16.0): root's `{fn: "market", args: null}` to `<app>/amm-p2p`; every pool listed. */
-export async function clearMarketMinimum(): Promise<void> {
-  const { af } = needWallet();
-  const me = await instanceIdentity();
-  await sendMessage(af, context.base, me, `${app()}/amm-p2p`, { fn: "market", args: null });
-  emit();
+/** Clears the default market minimum (0.17.0): `{fn: "defaults", args: {market: null}}`. */
+export async function clearDefaultMarket(): Promise<void> {
+  await sendDefaults({ market: null });
 }
 
-/** Holders' requests to list a token, newest first (`GET <base>/requests`: the ones not yet registered). */
+/** Holders' requests to list a token, newest first (`GET <config>/requests`: the ones not on the list yet). */
 export async function listingRequests(): Promise<ListingRequest[] | null> {
   const [rs, meta] = await Promise.all([readRequests(context.base), tokenMeta()]);
   return rs
@@ -1266,12 +1365,13 @@ export function useData<T>(load: () => Promise<T>, deps: unknown[], enabled = tr
 
 export const useMyPositions = (enabled: boolean) => useData(myPositions, [], enabled);
 export const useMyTokens = (enabled: boolean) => useData(myTokens, [], enabled);
-export const useValidatorTerms = () => useData(validatorTerms, []);
+/** A token's validator terms (0.17.0: its own instance's), none while no token is picked. */
+export const useValidatorTerms = (tokenId: TokenId | undefined) =>
+  useData(() => (tokenId ? validatorTerms(tokenId) : Promise.resolve(null)), [tokenId]);
 export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabled);
-export const useDiscoveryTokens = (enabled: boolean) => useData(discoveryTokens, [], enabled);
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
 export const useListingRequests = (enabled: boolean) => useData(listingRequests, [], enabled);
-export const useMarketMinimum = (enabled: boolean) => useData(marketMinimum, [], enabled);
+export const useDefaults = (enabled: boolean) => useData(defaults, [], enabled);
 /** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
 export const useTokenPools = (tokenId: TokenId | undefined, connected: boolean) =>
   useData(() => (tokenId ? swapPools(tokenId) : Promise.resolve({ pools: [], hidden: 0 })), [tokenId, connected]);

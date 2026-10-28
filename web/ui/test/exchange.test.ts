@@ -1,8 +1,10 @@
 /**
- * src/data/exchange.ts, wired (skein-amm 0.9.0): each function against a
- * fake instance (the routes it reads: listTopicManagers, /color/tokens,
- * the liveness reads, /lookup, /requests, /spends, /call, /sendMessage) and
- * a fake wallet, over the Go fixtures (src/fixtures/vectors.zig's copy).
+ * src/data/exchange.ts, wired (skein-amm 0.9.0; 0.17.0: a config instance and
+ * one instance per token): each function against fake instances (one route
+ * table: the config instance's /tokens, /defaults, /requests and a token
+ * instance's liveness reads, /lookup, /spends, /call, /sendMessage, at
+ * `/@<tokenId>/amm/…`) and a fake wallet, over the Go fixtures
+ * (src/fixtures/vectors.zig's copy).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Beef, LockingScript, PrivateKey, Transaction, UnlockingScript, Utils, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
@@ -13,15 +15,19 @@ import { decode, encode } from "cbor2";
 import { P1SAT_PROTOCOL } from "@1sat/actions";
 import {
   NO_TERMS_TEXT,
-  clearValidatorTerms,
+  clearDefaultMarket,
+  clearDefaultTerms,
   closePosition,
   connectAction,
+  defaults,
+  disableToken,
+  enableToken,
   hasTerms,
   instanceIdentity,
-  setValidatorTerms,
+  setDefaultMarket,
+  setDefaultTerms,
+  tokenBaseOf,
   deployPosition,
-  deregisterToken,
-  discoveryTokens,
   executeSwap,
   hostedTokens,
   isRoot,
@@ -31,14 +37,11 @@ import {
   myTokens,
   onDataChange,
   quoteSwap,
-  registerToken,
   registeredTokens,
   requestListing,
   setExchangeContext,
   subscribePrices,
   swapPools,
-  setMarketMinimum,
-  clearMarketMinimum,
   marketMinimum,
   atMarketMinimum,
   belowMinimumText,
@@ -55,7 +58,9 @@ import { PEER } from "./liveRead";
 import v from "./fixtures/amm-topic-vectors.json";
 
 const OUTPOINT = /^[0-9a-f]{64}\.\d+$/;
-const BASE = "http://alice.localhost:8300/amm";
+const ORIGIN = "http://alice.localhost:8300";
+/** The config instance's AMM base (the pages'). */
+const BASE = `${ORIGIN}/amm`;
 const tokenDeploy = Transaction.fromHex(v.token_deploy);
 const fund = Transaction.fromHex(v.fund);
 const poolDeploy = Transaction.fromHex(v.pool_deploy);
@@ -80,6 +85,10 @@ const wirePool = (txid: string, p: { bsv: number; tokens: number }) => ({ outpoi
 
 /** The instance: a route table over plain fetch and the wallet's signed fetch alike. */
 interface Instance {
+  /** The config instance's enable list (0.17.0, `/tokens`). */
+  enabled: Record<string, unknown>[];
+  /** The config instance's defaults (`/defaults`). */
+  defaults: Record<string, unknown>;
   topics: Record<string, unknown>;
   tokens: unknown[];
   live: Record<string, unknown[]>;
@@ -95,8 +104,12 @@ interface Instance {
   minCommissionBps: number;
 }
 
+const enabledRow = (tokenId: string, sym: string, dec: number, since: number) => ({ tokenId, topic: `tm_color_${tokenId}`, sym, dec, status: "enabled", url: `${ORIGIN}/@${tokenId}`, since });
+
 function instance(): Instance {
   return {
+    enabled: [enabledRow(TOKEN, "TST", 0, 2)],
+    defaults: {},
     topics: { [TOPIC]: { name: "1Color" }, tm_color: { name: "1Color discovery" } },
     tokens: [
       { tokenId: TOKEN, topic: TOPIC, sym: "TST", dec: 0, txid: DEPLOY, vout: 0 },
@@ -132,7 +145,9 @@ const signed = (body: unknown, status = 200) =>
 
 async function route(url: string, init?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<Response> {
   const u = new URL(url);
-  const path = u.pathname.replace(/^\/amm/, "");
+  const path = u.pathname.replace(/^\/@[^/]+/, "").replace(/^\/amm/, "");
+  if (path === "/tokens") return signed(inst.enabled);
+  if (path === "/defaults") return json(inst.defaults);
   if (path === "/listTopicManagers") return json(inst.topics);
   if (path === "/color/tokens") return json(inst.tokens);
   if (path.startsWith("/.live/")) {
@@ -153,7 +168,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     if (b.fn === "amm.pool.terms") return inst.terms ? signed({ fn: b.fn, result: inst.terms }) : signed({ fn: b.fn, error: { code: "failed", message: "no validator here" } }, 500);
     if (b.fn === "amm.swap.terms") return signed({ fn: b.fn, result: { commissionPkh: null, minCommissionBps: inst.minCommissionBps } });
   }
-  if (u.pathname === "/sendMessage") {
+  if (path === "/sendMessage") {
     inst.sent.push({ url, body: decode(init!.body as Uint8Array) as Record<string, unknown> });
     return new Response(encode({ status: "success", id: `msg${inst.sent.length}` }) as BodyInit, { status: 200 });
   }
@@ -166,6 +181,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
  * active swap basket (`amm-swap`), a default basket, its identity.
  */
 interface WalletRows {
+  deploy?: { basket: string; outpoint: string; beef: number[] };
   pools?: unknown[];
   held?: unknown[];
   balances?: Record<string, string>;
@@ -179,6 +195,8 @@ function fakeWallet(rows: WalletRows = {}, sats: number[] = [1_000, 2_500]): Wal
       if (args.basket === "amm-swap") return { totalOutputs: rows.swaps?.length ?? 0, outputs: rows.swaps ?? [] };
       if (args.basket === "p color assets") return { totalOutputs: rows.held?.length ?? 0, outputs: rows.held ?? [] };
       if (args.basket.startsWith("p color balance ")) return { totalOutputs: rows.balances?.[args.basket] ?? "0", outputs: [] };
+      // 0.17.0: a deploy output in its token's module basket (enableToken reads its BEEF there).
+      if (rows.deploy && args.basket === rows.deploy.basket) return { totalOutputs: 1, outputs: [{ outpoint: rows.deploy.outpoint, satoshis: 1, spendable: true }], BEEF: rows.deploy.beef };
       return { totalOutputs: 0, outputs: [] };
     },
     async listActions() {
@@ -206,7 +224,7 @@ const connect = (rows?: WalletRows) => setExchangeContext({ wallet: fakeWallet(r
 
 describe("exchange.ts, wired", () => {
   it("hostedTokens: the registered 1Color tokens, priced from ls_amm's beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
-    inst.topics[`tm_color_${OTHER}`] = {};
+    inst.enabled.push(enabledRow(OTHER, "OTH", 2, 1));
     inst.pools[OTHER] = [];
     const ts = await hostedTokens();
     expect(ts.map((t) => [t.tokenId, t.sym, t.dec])).toEqual([
@@ -353,11 +371,11 @@ describe("exchange.ts, wired", () => {
 
   it("market terms (0.16.0): amm.swap.terms's minCommissionBps; swapPools lists the pools at or above it and counts the rest; quoteSwap plans over the listed ones only; no wallet, no minimum known, nothing hidden", async () => {
     // The fixture pool charges 10 bps.
-    expect(await marketMinimum()).toBeNull();
+    expect(await marketMinimum(TOKEN)).toBeNull();
     inst.minCommissionBps = 11;
     expect(await swapPools(TOKEN)).toMatchObject({ pools: [{ outpoint: `${poolDeploy.id("hex")}.0` }], hidden: 0 });
     connect();
-    expect(await marketMinimum()).toBe(11);
+    expect(await marketMinimum(TOKEN)).toBe(11);
     expect(await swapPools(TOKEN)).toEqual({ pools: [], hidden: 1 });
     await expect(quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, allowPartial: false })).rejects.toThrow("No pool to swap against: 1 pool below this market's minimum commission");
     inst.minCommissionBps = 10;
@@ -374,75 +392,68 @@ describe("exchange.ts, wired", () => {
     expect(belowMinimumText(2)).toBe("2 pools below this market's minimum commission");
   });
 
-  it("setMarketMinimum / clearMarketMinimum (0.16.0): root's {fn: market} to <app>/amm-p2p, the skein's identity the recipient; a bad minimum refused before anything is sent", async () => {
-    await expect(setMarketMinimum(1)).rejects.toThrow(/Connect a wallet/);
+  it("defaults (0.17.0): the config instance's GET /defaults; setDefaultTerms / clearDefaultTerms / setDefaultMarket / clearDefaultMarket: root's {fn: defaults} to <app>/admin, the config instance's identity the recipient; bad values refused before anything is sent", async () => {
+    expect(await defaults()).toEqual({});
+    inst.defaults = { terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 }, market: { minCommissionBps: 1 } };
+    expect(await defaults()).toEqual(inst.defaults);
+    await expect(setDefaultMarket(1)).rejects.toThrow(/Connect a wallet/);
     connect();
     let changed = 0;
     const off = onDataChange(() => changed++);
-    await setMarketMinimum(1);
-    await clearMarketMinimum();
+    await setDefaultTerms({ lpBps: 30, validatorBps: 5, commissionBps: 25 });
+    await clearDefaultTerms();
+    await setDefaultMarket(1);
+    await clearDefaultMarket();
     off();
-    expect(changed).toBe(2);
+    expect(changed).toBe(4);
     const msgs = inst.sent.map((s) => s.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array });
-    expect(msgs.map((m) => [Utils.toHex(Array.from(m.recipient)), m.messageBox])).toEqual([
-      [SKEIN, "amm/amm-p2p"],
-      [SKEIN, "amm/amm-p2p"],
-    ]);
+    expect(new Set(msgs.map((m) => `${Utils.toHex(Array.from(m.recipient))} ${m.messageBox}`))).toEqual(new Set([`${SKEIN} amm/admin`]));
+    expect(inst.sent.every((x) => x.url === `${ORIGIN}/sendMessage`)).toBe(true);
     expect(msgs.map((m) => decode(m.body))).toEqual([
-      { fn: "market", args: { minCommissionBps: 1 } },
-      { fn: "market", args: null },
+      { fn: "defaults", args: { terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } } },
+      { fn: "defaults", args: { terms: null } },
+      { fn: "defaults", args: { market: { minCommissionBps: 1 } } },
+      { fn: "defaults", args: { market: null } },
     ]);
-    for (const bad of [1.5, -1, 10_001]) await expect(setMarketMinimum(bad)).rejects.toThrow(/0 to 10000/);
-    expect(inst.sent).toHaveLength(2);
+    for (const bad of [1.5, -1, 10_001]) await expect(setDefaultMarket(bad)).rejects.toThrow(/0 to 10000/);
+    for (const bad of [{ lpBps: 30.5, validatorBps: 5, commissionBps: 0 }, { lpBps: -1, validatorBps: 5, commissionBps: 0 }, { lpBps: 30, validatorBps: 10_001, commissionBps: 0 }])
+      await expect(setDefaultTerms(bad)).rejects.toThrow(/0 to 10000/);
+    expect(inst.sent).toHaveLength(4);
+  });
+
+  it("tokenBaseOf (0.17.0): an enabled token's own instance, <url>/amm from the config instance's list; any other refused", async () => {
+    expect(await tokenBaseOf(TOKEN)).toBe(`${ORIGIN}/@${TOKEN}/amm`);
+    await expect(tokenBaseOf(OTHER)).rejects.toThrow(/not enabled on this exchange/);
+    inst.enabled.push({ ...enabledRow(OTHER, "OTH", 2, 3), status: "stopped" });
+    await expect(tokenBaseOf(OTHER)).rejects.toThrow(/not enabled on this exchange/);
   });
 
   it("validatorTerms: amm.pool.terms on /call — this skein's validator, its fees (read-only)", async () => {
     connect();
-    expect(await validatorTerms()).toEqual({ validator: { identityKey: SKEIN, live: true }, isThisExchange: true, fees: { lpBps: 30, validatorBps: 5, commissionBps: 0 } });
+    expect(await validatorTerms(TOKEN)).toEqual({ validator: { identityKey: SKEIN, live: true }, isThisExchange: true, fees: { lpBps: 30, validatorBps: 5, commissionBps: 0 } });
     expect(inst.calls).toEqual([{ fn: "amm.pool.terms", args: {} }]);
   });
 
   it("validatorTerms (0.15.0): none set — amm.pool.terms answers \"no validator here\" — is {none: true}, which the pages show as the no-terms text", async () => {
     connect();
     inst.terms = null;
-    const t = await validatorTerms();
+    const t = await validatorTerms(TOKEN);
     expect(t).toEqual({ none: true });
     expect(hasTerms(t)).toBe(false);
     expect(NO_TERMS_TEXT).toBe("This exchange validates nothing: no terms are set.");
     // Another failure is still an error.
     inst.terms = { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 0 };
-    await expect(validatorTerms()).rejects.toThrow(/no validator identity/);
+    await expect(validatorTerms(TOKEN)).rejects.toThrow(/no validator identity/);
   });
 
-  it("instanceIdentity (0.15.0): the key the instance's signed answer carries, read off amm.swap.terms (every skein answers it, terms or none)", async () => {
+  it("instanceIdentity (0.15.0; 0.17.0): the key an instance's signed answer carries — a token instance's off amm.swap.terms (every token instance answers it, terms or none), the config instance's off a signed read of its token list", async () => {
     await expect(instanceIdentity()).rejects.toThrow(/Connect a wallet/);
     connect();
     inst.terms = null;
-    expect(await instanceIdentity()).toBe(SKEIN);
+    expect(await instanceIdentity(await tokenBaseOf(TOKEN))).toBe(SKEIN);
     expect(inst.calls).toEqual([{ fn: "amm.swap.terms", args: {} }]);
-  });
-
-  it("setValidatorTerms / clearValidatorTerms (0.15.0): root's {fn: terms} to <app>/validator, the skein's identity the recipient; bad fees refused before anything is sent", async () => {
-    connect();
-    inst.terms = null; // a market only: setting the terms still reaches it
-    let changed = 0;
-    const off = onDataChange(() => changed++);
-    await setValidatorTerms({ lpBps: 30, validatorBps: 5, commissionBps: 25 });
-    await clearValidatorTerms();
-    off();
-    expect(changed).toBe(2);
-    const msgs = inst.sent.map((s) => s.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array });
-    expect(msgs.map((m) => [Utils.toHex(Array.from(m.recipient)), m.messageBox])).toEqual([
-      [SKEIN, "amm/validator"],
-      [SKEIN, "amm/validator"],
-    ]);
-    expect(msgs.map((m) => decode(m.body))).toEqual([
-      { fn: "terms", args: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } },
-      { fn: "terms", args: null },
-    ]);
-    for (const bad of [{ lpBps: 30.5, validatorBps: 5, commissionBps: 0 }, { lpBps: -1, validatorBps: 5, commissionBps: 0 }, { lpBps: 30, validatorBps: 10_001, commissionBps: 0 }])
-      await expect(setValidatorTerms(bad)).rejects.toThrow(/0 to 10000/);
-    expect(inst.sent).toHaveLength(2);
+    expect(await instanceIdentity()).toBe(SKEIN);
+    expect(inst.calls).toHaveLength(1);
   });
 
   it("deployPosition (0.12.0): from the module's held outputs; refused without the token, or short of the deposit (no claim's unit any more)", async () => {
@@ -482,36 +493,52 @@ describe("exchange.ts, wired", () => {
     expect(changed).toBe(1);
     expect(inst.sent).toHaveLength(1);
     const m = inst.sent[0]!;
-    expect(m.url).toBe("http://alice.localhost:8300/sendMessage");
+    expect(m.url).toBe(`${ORIGIN}/sendMessage`);
     const msg = m.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
     expect(Utils.toHex(Array.from(msg.recipient))).toBe(SKEIN);
     expect(msg.messageBox).toBe("amm/requests");
     expect(decode(msg.body)).toEqual({ fn: "request", args: { tokenId: OTHER } });
   });
 
-  it("registerToken / deregisterToken: root's messages to <app>/register — the topic, its lookup and ls_amm (so the prices beat); then the lookup and the topic; on a market only too (no terms: 0.15.0)", async () => {
+  it("enableToken / disableToken (0.17.0): root's {fn: enable, args: {tokenId, beef}} to the config instance's <app>/admin, the deploy's Atomic BEEF from the wallet's module basket (p color <txid>v<vout>), else pasted (hex), else refused; disable {tokenId}; a stopped token enabled again without a BEEF", async () => {
     connect();
-    inst.terms = null;
-    await registerToken(OTHER);
-    await deregisterToken(OTHER);
-    const bodies = inst.sent.map((s) => {
-      const msg = s.body.message as { messageBox: string; body: Uint8Array };
-      expect(msg.messageBox).toBe("amm/register");
-      return decode(msg.body);
-    });
-    const topic = `tm_color_${OTHER}`;
-    expect(bodies).toEqual([
-      { fn: "register", args: { topic, program: "color-topic", seed: [OTHER.slice(0, 64)] } },
-      { fn: "registerLookup", args: { service: `ls_color_${OTHER}`, program: "color-lookup", topics: [topic] } },
-      { fn: "registerLookup", args: { service: "ls_amm", program: "amm-lookup" } },
-      { fn: "deregisterLookup", args: { service: `ls_color_${OTHER}` } },
-      { fn: "deregister", args: { topic } },
-    ]);
+    await expect(enableToken(OTHER)).rejects.toThrow(/does not hold the deploy; paste its BEEF/);
+    expect(inst.sent).toHaveLength(0);
+    const full = atomic(tokenDeploy, [fund]);
+    const beefOf = (m: Record<string, unknown>) => (decode((m.message as { body: Uint8Array }).body) as { args: { beef: Uint8Array } }).args.beef;
+    // Held by the wallet: its basket's BEEF, as an Atomic BEEF of the deploy.
+    const basketBeef = new Beef();
+    basketBeef.mergeRawTx(fund.toBinary());
+    basketBeef.mergeRawTx(tokenDeploy.toBinary());
+    connect({ deploy: { basket: `p color ${DEPLOY}v0`, outpoint: `${DEPLOY}.0`, beef: basketBeef.toBinary() } });
+    expect(await enableToken(TOKEN)).toEqual({ beefFrom: "wallet" });
+    let msg = inst.sent.at(-1)!.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
+    expect(Utils.toHex(Array.from(msg.recipient))).toBe(SKEIN);
+    expect(msg.messageBox).toBe("amm/admin");
+    const body = decode(msg.body) as { fn: string; args: { tokenId: string; beef: Uint8Array } };
+    expect(body.fn).toBe("enable");
+    expect(body.args.tokenId).toBe(TOKEN);
+    expect(Transaction.fromAtomicBEEF(Array.from(body.args.beef)).id("hex")).toBe(DEPLOY);
+    // Pasted (hex).
+    connect();
+    expect(await enableToken(OTHER, Utils.toHex(full))).toEqual({ beefFrom: "pasted" });
+    expect(Array.from(beefOf(inst.sent.at(-1)!.body))).toEqual(full);
+    await expect(enableToken(OTHER, "zz")).rejects.toThrow(/not hex/);
+    // Disable; a stopped token enabled again names no BEEF.
+    await disableToken(TOKEN);
+    msg = inst.sent.at(-1)!.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
+    expect(decode(msg.body)).toEqual({ fn: "disable", args: { tokenId: TOKEN } });
+    inst.enabled[0] = { ...inst.enabled[0], status: "stopped" };
+    await enableToken(TOKEN);
+    expect(decode((inst.sent.at(-1)!.body.message as { body: Uint8Array }).body)).toEqual({ fn: "enable", args: { tokenId: TOKEN } });
   });
 
-  it("discoveryTokens, registeredTokens, listingRequests: the token list less the registered, the registered, the requests newest first", async () => {
-    expect(await discoveryTokens()).toEqual([{ tokenId: OTHER, sym: "OTH", dec: 2 }]);
-    expect(await registeredTokens()).toEqual([{ tokenId: TOKEN, sym: "TST" }]);
+  it("registeredTokens, listingRequests (0.17.0): the config instance's enable list, every status; the requests newest first", async () => {
+    inst.enabled.push({ tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, status: "failed", reason: "handle taken", since: 1 });
+    expect(await registeredTokens()).toEqual([
+      { tokenId: TOKEN, sym: "TST", status: "enabled", url: `${ORIGIN}/@${TOKEN}` },
+      { tokenId: OTHER, sym: "OTH", status: "failed", reason: "handle taken" },
+    ]);
     expect(await listingRequests()).toEqual([
       { tokenId: `${"ef".repeat(32)}_0`, sym: "efefefef", from: V2, at: 400 },
       { tokenId: OTHER, sym: "OTH", from: ME, at: 300 },

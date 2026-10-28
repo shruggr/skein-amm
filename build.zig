@@ -5,20 +5,21 @@
 //
 //   amm-lookup      ls_amm: the listed pools over every token topic served; the prices beat   programs/amm-lookup
 //   amm-validator   the validator: swap (a libp2p direct call), affirm; root's close         programs/amm-validator
-//   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the listing requests, programs/amm-p2p
-//                   the reads /requests and /spends, and its pages (www/, files.serve)
+//   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the read /spends      programs/amm-p2p
+//   amm-config      the config app (0.17.0, shruggr/skein-amm#4): enable/disable/defaults,   programs/amm-config
+//                   the token list, the listing requests, the pages; built into apps/config/bin/
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the
 // `1color` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/, with bin/overlay.wasm (skein-overlay v0.15.0)
+//   zig build bin          the three, written to bin/ (amm-config to apps/config/bin/), with bin/overlay.wasm (skein-overlay v0.17.0)
 //                          and bin/color-{topic,lookup}.wasm (skein-1color v0.11.0) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
 // The 1Color pages (skein-1color v0.11.0's www/) are copied into www/color/ by
 // scripts/color-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
-// The AMM pages are built from web/ui into www/ (scripts/www.sh runs both).
+// The AMM pages are built from web/ui into apps/config/www/ (scripts/www.sh runs both): the config app serves them.
 const std = @import("std");
 
 /// The modules a program or a test imports, for one target.
@@ -118,6 +119,13 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "topic", .module = m.topic },
         .{ .name = "overlay_sk", .module = m.overlay_sk },
         .{ .name = "skein_overlay", .module = m.engine },
+    } else if (std.mem.eql(u8, program, "amm-config")) &.{
+        .{ .name = "sk", .module = m.sk },
+        .{ .name = "app", .module = m.app },
+        .{ .name = "files", .module = m.files },
+        .{ .name = "sdk_cbor", .module = m.cbor },
+        .{ .name = "dagjson", .module = m.dagjson },
+        .{ .name = "overlay_sk", .module = m.overlay_sk },
     } else &.{
         .{ .name = "wallet", .module = m.wallet },
         .{ .name = "message", .module = m.message },
@@ -133,6 +141,9 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
 }
 
 const programs = [_][]const u8{ "amm-lookup", "amm-validator", "amm-p2p" };
+/// The config app's program (0.17.0, shruggr/skein-amm#4): built into the config app's own tree,
+/// apps/config/bin/, not the token app's bin/.
+const config_program = "amm-config";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -156,6 +167,20 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
         bin.addCopyFileToSource(exe.getEmittedBin(), b.fmt("bin/{s}.wasm", .{p}));
     }
+    {
+        const exe = b.addExecutable(.{
+            .name = config_program,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("programs/amm-config/src/main.zig"),
+                .target = wasi,
+                .optimize = .ReleaseSafe,
+                .strip = true,
+                .imports = imports(b, wm, config_program),
+            }),
+        });
+        b.installArtifact(exe);
+        bin.addCopyFileToSource(exe.getEmittedBin(), "apps/config/bin/amm-config.wasm");
+    }
     // The engine and the 1Color components, as their tags built them (not rebuilt here).
     const ov = b.dependency("skein_overlay", .{ .target = wasi, .optimize = .ReleaseSafe });
     const cd = b.dependency("skein_1color", .{ .target = wasi, .optimize = .ReleaseSafe });
@@ -171,6 +196,7 @@ pub fn build(b: *std.Build) void {
         .{ "amm-lookup", "programs/amm-lookup/test.zig" },
         .{ "amm-validator", "programs/amm-validator/test.zig" },
         .{ "amm-p2p", "programs/amm-p2p/test.zig" },
+        .{ "amm-config", "programs/amm-config/test.zig" },
     };
     for (roots) |r| {
         const m = b.createModule(.{
@@ -185,6 +211,13 @@ pub fn build(b: *std.Build) void {
         _ = wf.addCopyFile(b.path("etc/app.json"), "app.json");
         m.addImport("app_manifest", b.createModule(.{
             .root_source_file = wf.add("app_manifest.zig", "pub const json = @embedFile(\"app.json\");\n"),
+            .target = target,
+            .optimize = .Debug,
+        }));
+        // The config app's manifest (0.17.0), for amm-config's tests.
+        _ = wf.addCopyFile(b.path("apps/config/etc/app.json"), "config_app.json");
+        m.addImport("config_manifest", b.createModule(.{
+            .root_source_file = wf.add("config_manifest.zig", "pub const json = @embedFile(\"config_app.json\");\n"),
             .target = target,
             .optimize = .Debug,
         }));

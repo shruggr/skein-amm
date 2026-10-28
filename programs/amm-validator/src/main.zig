@@ -98,21 +98,23 @@ fn oracleCall(_: *anyopaque, a: std.mem.Allocator, frame: []const u8) anyerror![
 /// The validator's terms now (0.15.0, David Case 2026-10-23: a runtime record root sets; no fee
 /// numbers in the image): the record of the head `<app>/terms` (src/terms.zig), or null — no head,
 /// the record `null` (cleared): a market only, nothing affirmed or signed. No fallback.
+///
+/// (0.17.0, shruggr/skein-amm#4) No head yet: the app record's `config.overlay.terms`, the initial
+/// value a token instance's create gives (src/terms.zig `current`; the engine's beat reads the same).
 fn termsNow(a: std.mem.Allocator, in: Value) !?validator.Terms {
-    const rc = (try vm.head(a, try terms.headName(a, ov.calls.appOf(in)))) orelse return null;
-    return terms.fromRecord(try vm.store().getValue(a, rc));
+    const app = ov.calls.appOf(in);
+    const s = vm.store();
+    const head: ?Value = if (try vm.head(a, try terms.headName(a, app))) |rc| try s.getValue(a, rc) else null;
+    const rec: ?Value = if (try vm.head(a, try std.fmt.allocPrint(a, "{s}/app", .{app}))) |rc| try s.getValue(a, rc) else null;
+    return terms.current(head, rec);
 }
 
 /// The topics this instance signs for (0.6.0, shruggr/skein#120; 0.8.1, David 2026-10-09: every
-/// skein is a validator, always): every topic in the engine's registered set, the head
-/// `<app>/topics`; any other refused `not_validating`.
+/// skein is a validator, always): every topic the engine serves — the ones registered with it (the
+/// head `<app>/topics`) and (0.17.0, shruggr/skein-amm#4: a token instance's topic comes from its
+/// config at birth) the ones `config.overlay.topics` names; any other refused `not_validating`.
 fn validatedSet(a: std.mem.Allocator, in: Value) ![]const []const u8 {
-    const c = (try vm.head(a, try ov.topics.headName(a, ov.calls.appOf(in)))) orelse return &.{};
-    const rec = try vm.store().getValue(a, c);
-    const entries = try ov.topics.entriesOf(a, rec);
-    const out = try a.alloc([]const u8, entries.len);
-    for (entries, out) |e, *o| o.* = e.topic;
-    return out;
+    return ov.calls.servedTopics(a, in);
 }
 
 /// The app's overlay state (`<app>/state`) over the chain app's (`chain/state`), as the step sees them.
@@ -134,6 +136,9 @@ fn run(a: std.mem.Allocator) anyerror!void {
     // or the Rescind (0.13.0) — and the Rescind thread's later steps (the wallet threads it
     // launched at rest, the engine's answer).
     if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) {
+        // 0.17.0: this program's own answer to root, looped back when root is the instance's own key
+        // (a one-key host, shruggr/skein#160): an answer (it names its `request`), not a request.
+        if (try isOwnAnswer(a, raw_in)) return finishAnswer(a);
         if (try isTermsMessage(a, raw_in)) return termsStep(a, raw_in);
         return rescindStep(a, raw_in);
     }
@@ -220,6 +225,24 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !vo
 }
 
 // ---------------------------------------------------------------- the terms (0.15.0)
+
+/// Whether the step is a message that answers a request (`{fn, request, result | error}`: this
+/// program's answer to root, delivered back when root's key is the instance's own) — its first step.
+fn isOwnAnswer(a: std.mem.Allocator, raw_in: Value) !bool {
+    if (raw_in.get("reply") != null or raw_in.get("resolved") != null) return false;
+    const args = raw_in.get("args") orelse return false;
+    const bc = args.getCid("body") orelse return false;
+    const body = try vm.store().getValue(a, bc);
+    return body.get("request") != null or body.get("replyTo") != null;
+}
+
+/// An answer delivered back: nothing to do; the thread ends.
+fn finishAnswer(a: std.mem.Allocator) !void {
+    _ = try vm.finish(a, vm.store(), .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "kind", .value = .{ .text = "amm-answer" } },
+        .{ .key = "stage", .value = .{ .text = "ignored" } },
+    }) });
+}
 
 /// Whether the step is root's message `{fn: "terms", …}` (its first step: no reply, nothing resolved).
 fn isTermsMessage(a: std.mem.Allocator, raw_in: Value) !bool {

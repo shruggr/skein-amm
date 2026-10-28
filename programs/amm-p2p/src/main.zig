@@ -27,7 +27,6 @@
 //!   call            route /amm/call (APPS.md §4; kernel.brc104: the caller is the signed request's key,
 //!                   who may call is the kernel's gate, 0.7.0): {fn, args} → {fn, result} | {fn, error}; `amm.swap.submit`
 //!                   answers {wait: true} and, called again with `resolved`, the record
-//!   requests        the read route `/requests` (filter `requests`, 0.9.0): the holders' listing requests (reads.zig)
 //!   spends          the read route `/spends?outpoint=<txid>.<vout>` (filter `spends`, 0.9.0): the chain
 //!                   state of an outpoint, a pool followed to its current output (reads.zig)
 //!   amm.swap.submit, amm.swap.status, amm.swap.terms   an in-VM call of the interface amm.swap/1 (relay.zig)
@@ -44,8 +43,6 @@
 //!   message {fn: "market", args} in box `amm/amm-p2p`  root's market record (0.16.0, market.zig; `roles.root`
 //!                                                     gates it): {minCommissionBps} sets, null clears, the head
 //!                                                     `amm/market`; answered to root in that box
-//!   message {fn: "request", args: {tokenId}} in box `amm/requests`   a holder's listing request (0.9.0): recorded
-//!                                                     under the head `amm/requests` (reads.zig)
 //!   thread  {kind: "amm-swap-relay" | "amm-pool-relay", id}   the relay (launched by a submit): a thread resting on
 //!                                                     the libp2p provider's answers to its dial of the validator
 //!                                                     the caller named, or (that validator is this node) on
@@ -260,11 +257,8 @@ fn call(a: Allocator, in: Value) !void {
         const page = try servePages(a, arg);
         return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, page) else page);
     }
-    // The reads (0.9.0): the holders' listing requests, and the chain state of an outpoint.
-    if (eql(u8, func, "requests")) {
-        const ans = try requestsRead(a, in);
-        return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, ans) else ans);
-    }
+    // The read (0.9.0): the chain state of an outpoint. (The holders' listing requests moved to the
+    // config app, amm-config, 0.17.0.)
     if (eql(u8, func, "spends")) {
         const ans = try spendsRead(a, in, arg);
         return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, ans) else ans);
@@ -279,42 +273,12 @@ fn headRecord(a: Allocator, name: []const u8) !?Value {
     return try vm.store().getValue(a, c);
 }
 
-/// The engine's registered topics (`<app>/topics`).
-fn registeredTopics(a: Allocator, in: Value) ![]const []const u8 {
-    const rec = (try headRecord(a, try ov.topics.headName(a, ov.calls.appOf(overlay_in orelse in)))) orelse return &.{};
-    const entries = try ov.topics.entriesOf(a, rec);
-    const out = try a.alloc([]const u8, entries.len);
-    for (entries, out) |e, *o| o.* = e.topic;
-    return out;
-}
-
-/// The read `/requests` (filter `requests`): the holders' listing requests, newest first, less the
-/// tokens registered already (reads.zig).
-fn requestsRead(a: Allocator, in: Value) !Value {
-    const rs = try reads.list(a, vm.store(), try headRecord(a, reads.requests_head), try registeredTopics(a, in));
-    return reads.httpJson(a, 200, try reads.requestsJson(a, rs));
-}
-
 /// The read `/spends?outpoint=<txid>.<vout>` (filter `spends`): the chain state of an outpoint
 /// (reads.zig `spendOf`).
 fn spendsRead(a: Allocator, in: Value, arg: Value) !Value {
     const op = reads.queryOutpoint(arg.getText("query") orelse "") orelse return reads.httpJson(a, 400, "{\"error\":\"want ?outpoint=<txid>.<vout>\"}");
     const st = try loadState(a, in);
     return reads.httpJson(a, 200, try reads.spendJson(a, try reads.spendOf(a, st.ch, op)));
-}
-
-/// A holder's listing request, a message `{fn: "request", args: {tokenId}}` in the box
-/// `amm/requests` (0.9.0): recorded under the head `amm/requests`; nothing else runs.
-fn listingRequest(a: Allocator, in: Value, args: Value) !void {
-    const s = vm.store();
-    const body = try s.getValue(a, args.getCid("body") orelse return error.BadInput);
-    if (!eql(u8, body.getText("fn") orelse "", "request")) return error.BadMessage;
-    const token = (body.get("args") orelse return error.BadMessage).getText("tokenId") orelse return error.BadMessage;
-    const sender = args.getBytes("sender") orelse return error.BadInput;
-    const at: u64 = in.getUint("at") orelse in.getUint("now") orelse 0;
-    const rec = try reads.record(a, s, try headRecord(a, reads.requests_head), token, sender, at);
-    try vm.advance(reads.requests_head, try s.putValue(a, rec));
-    _ = try vm.finish(a, s, try resultRecord(a, "request", &.{.{ .key = "tokenId", .value = .{ .text = try reads.tokenIdText(a, token) } }}));
 }
 
 /// The serving side of the direct call: one request frame, one reply frame. A utility since 0.2.0:
@@ -372,8 +336,6 @@ fn step(a: Allocator, in: Value) !void {
     const args = in.get("args") orelse return error.BadInput;
     // The relay thread (launched by amm.swap.submit).
     if (relay.Kind.ofRelay(args.getText("kind") orelse "")) |kind| return relayStep(a, in, args, kind);
-    // A holder's listing request in the box `amm/requests` (0.9.0).
-    if (eql(u8, args.getText("box") orelse "", reads.requests_box)) return listingRequest(a, in, args);
     // A message in this program's box `amm/amm-p2p`: a call {fn, args} (APPS.md §4). (Before
     // 0.7.0 the app's box `amm`, shared with the overlay engine by sender; since shruggr/skein#143 a
     // box has one route, and `amm` is the engine's: its own watch, resume and wait.)
@@ -826,9 +788,12 @@ fn poolAffirm(c: *app.Call) !scbor.Value {
 /// `amm/terms` `{lpFeeBps, validatorFeeBps, commissionBps}` (src/terms.zig; amm-validator writes it
 /// on root's `terms` and reads the same), or null — none set: a market only. No fallback
 /// (`config.amm.ammValidator`, 0.9.0 to 0.14.2, is gone).
+///
+/// (0.17.0, shruggr/skein-amm#4) No head yet: the app record's `config.overlay.terms`, the initial
+/// value (src/terms.zig `current`), as amm-validator and the engine's beat read them.
 fn validatorTerms(a: Allocator) !?terms.Terms {
-    const rc = (try vm.head(a, try terms.headName(a, relay.app_name))) orelse return null;
-    return terms.fromRecord(try vm.store().getValue(a, rc));
+    const head: ?Value = if (try vm.head(a, try terms.headName(a, relay.app_name))) |rc| try vm.store().getValue(a, rc) else null;
+    return terms.current(head, try appRecord(a));
 }
 
 /// amm.pool.terms {} → {validator: <identity, bytes 33>, peerId?: text, lpFeeBps, validatorFeeBps,
@@ -854,9 +819,12 @@ fn commissionKey(a: Allocator) !relay.Commission {
 
 /// The market record now (0.16.0): the root of the head `amm/market` (market.zig), or the default
 /// (a minimum of 0) when none is set or it was cleared.
+///
+/// (0.17.0, shruggr/skein-amm#4) No head yet: the app record's `config["amm-p2p"].market`, the
+/// initial value a token instance's create gives (market.zig `current`).
 fn marketNow(a: Allocator) !relay.market.Market {
-    const rc = (try vm.head(a, try relay.market.headName(a, relay.app_name))) orelse return .{};
-    return relay.market.fromRecord(try vm.store().getValue(a, rc));
+    const head: ?Value = if (try vm.head(a, try relay.market.headName(a, relay.app_name))) |rc| try vm.store().getValue(a, rc) else null;
+    return relay.market.current(head, try appRecord(a));
 }
 
 /// amm.swap.terms {} → {commissionPkh: bytes(20) | null, minCommissionBps}: what the page names as

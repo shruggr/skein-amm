@@ -468,3 +468,7 @@ test "pool: swaps, the LP's Close and the validator's Rescind admitted; pool.che
 }
 
 // --- the program: topic names and the topic contract ---
+
+test {
+    _ = @import("terms");
+}

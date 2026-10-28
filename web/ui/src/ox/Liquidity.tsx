@@ -137,7 +137,6 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
 
 function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   const mine = useMyTokens(true);
-  const terms = useValidatorTerms();
   const usable = mine.data?.filter((t) => t.onExchange && t.balance > 0n) ?? null;
   const [pick, setPick] = useState<string>("");
   const [tokensText, setTokensText] = useState("");
@@ -147,6 +146,8 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   const [done, setDone] = useState<{ outpoint: string; warnings?: string[] } | null>(null);
 
   const token = usable?.find((t) => t.tokenId === pick) ?? usable?.[0];
+  // 0.17.0: the terms are the token's own instance's.
+  const terms = useValidatorTerms(token?.tokenId);
   const dec = token?.dec ?? 0;
   const tokens = parseInput(tokensText, dec);
   const sats = parseInput(satsText, 0);

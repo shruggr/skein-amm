@@ -147,7 +147,7 @@ connected wallet's identity (short), the overlay's host, and links to the
 1Color pages the app carries (`color/deploy/`, `color/tokens/`).
 
 Moved from amm-poc `web/ui` (with its matching engine, `../engine`).
-Changed for skein-amm: the build writes `../../www/` (the app's pages,
+Changed for skein-amm: the build writes `../../apps/config/www/` (0.17.0: the config app's pages,
 committed; `../../scripts/www.sh` builds them and copies the 1Color pages
 into `www/color/`); the base URL is the page's own directory
 (`src/lib/config.ts` `appBaseOf`: `https://<handle>.<host>/amm` or
@@ -406,7 +406,7 @@ and matching engine", "UI and deployment", "Commission fee (decided
 ```
 npm ci
 npm run dev        # local dev server
-npm run build       # typecheck, then ../../www/ (the 1Color pages: ../../scripts/color-pages.sh after it)
+npm run build       # typecheck, then ../../apps/config/www/ (the 1Color pages: ../../scripts/color-pages.sh after it)
 npm test            # vitest run
 npm run typecheck
 ```

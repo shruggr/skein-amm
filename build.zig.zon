@@ -1,14 +1,14 @@
 .{
     .name = .skein_amm,
-    .version = "0.16.0",
+    .version = "0.17.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.16.1.tar.gz",
-            .hash = "skein_overlay-0.16.1-IMuNgaq9IQARZCi4ktHxRrilecXl5ZWQGmtIRw0zcdxU",
+            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.17.0.tar.gz",
+            .hash = "skein_overlay-0.17.0-IMuNgRE7IgCr-0tZyghBRE9ddaN2IzfTJ27_Uo47a9ej",
         },
         // The 1Color components: the `1color` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
@@ -27,7 +27,7 @@
         "test.zig",
         "bin",
         "etc",
-        "www",
+        "apps",
         "docs",
         "README.md",
         "CHANGELOG.md",

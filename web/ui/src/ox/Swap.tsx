@@ -90,7 +90,7 @@ function SwapForm({ session, token }: { session: Session; token: HostedToken }) 
   const sats = useWalletSats(connected);
   const mine = useMyTokens(connected);
   const pools = useTokenPools(token.tokenId, connected);
-  const terms = useValidatorTerms();
+  const terms = useValidatorTerms(token.tokenId);
   const mineToken = mine.data?.find((t) => t.tokenId === token.tokenId);
   // A sell spends the swap basket's outputs first, then what the wallet sends into it (0.12.0).
   const inSwaps = mineToken?.inSwaps ?? 0n;

@@ -511,7 +511,23 @@ split, we would split it across multiple skeins".
 
 ## The manifest
 
-`etc/app.json`: the six programs; `config.overlay` with no topics and the
+0.17.0 (shruggr/skein-amm#4): two apps, both `amm`. `etc/app.json` is the
+**token app**, run as one instance per token id (its topic, lookups and
+initial values in its config at birth, "The config instance" below);
+`apps/config/etc/app.json` the **config app** (below). The token app as of
+0.17.0: no `register` box and no `roles.root` `register`,
+`registerLookup`, `deregisterLookup` (the engine's functions remain; no
+route reaches them; topics registered by an earlier version stay served);
+no pages (the `/` read, the filter `page`); no holders' requests (the box
+`requests`, the read `/requests`, the filter `requests`: the config app's).
+`config.overlay.topics` and the per-token lookup come from the create's
+config; `config.overlay.terms` (skein-overlay 0.17.0) and
+`config["amm-p2p"].market` are the initial terms and market minimum, read
+when the heads `amm/terms` / `amm/market` are unset (a record there, its
+`null` included, wins). amm-validator signs for every topic the engine
+serves, configured or registered.
+
+Until 0.16.3, `etc/app.json`: the six programs; `config.overlay` with no topics and the
 lookups `ls_color`, `ls_color_deploys` (both `color-lookup`) and
 `ls_amm` (`amm-lookup`), none with a `topics` list, so each listens to every
 topic served; gossip on (the default); no `market` or `validator` (0.8.1:
@@ -529,7 +545,7 @@ moved the terms to the runtime record `amm/terms`, "The terms" above); `provides
 `config.overlay.terms` (skein-overlay 0.16.0 no longer reads it: the beat's
 `terms` is the record `amm/terms`); `roles.root` `register`,
 `registerLookup`, `deregisterLookup`, `rescind`, (0.15.0) `terms` and
-(0.16.0) `market`.
+(0.16.0) `market` (0.17.0: `rescind`, `terms`, `market`).
 
 ### Routes
 
@@ -539,7 +555,7 @@ filters and a handler; no sender. Mailbox addresses are relative to the app
 run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterLookup", "rescind"]}`.
 
 1. `register` → `overlay.register` (register / deregister and
-   registerLookup / deregisterLookup; root's: any other key's message is recorded and runs nothing)
+   registerLookup / deregisterLookup; root's: any other key's message is recorded and runs nothing) — gone in 0.17.0
 2. `submit`, `kernel.beef` → `overlay.submit` (submissions by message from
    anyone whose BEEF validates; the validator's own among them; skein-overlay 0.7.6)
 3. `amm-p2p` → `amm-p2p` (the relay's interfaces by message, `{fn, args}`,
@@ -550,7 +566,7 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    relay took its own box.
 4. `validator` → `amm-validator` (0.13.0: root's `rescind`, and the steps
    of its thread; 0.11.0–0.12.x: `close`; 0.9.0–0.10.2: the claim's `rescind`)
-5. `requests` → `amm-p2p` (0.9.0: a holder's listing request, anyone)
+5. `requests` → `amm-p2p` (0.9.0: a holder's listing request, anyone) — the config app's in 0.17.0
 6. http `/call`, `kernel.brc104` → `amm-p2p.call` (a signed request; the
    caller is its key)
 7. libp2p `/amm-validator/1/swap` → `amm-validator.swap` (refused
@@ -589,9 +605,9 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/lookup` | read (derived) | `lookup` → `overlay.lookup` | skein #135 |
 | `/listTopicManagers`, `/listLookupServiceProviders` | read | `listTopicManagers`, `listLookupServiceProviders` → `overlay.<the same>` | 0.5.0 (http rows before) |
 | `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `topicDocumentation`, `lookupDocumentation` → `overlay.<the same>` | 0.5.0 (http rows before) |
-| `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `page` → `amm-p2p.serve` | 0.5.0 (an http row before) |
+| `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `page` → `amm-p2p.serve` | 0.5.0 (an http row before); the config app's in 0.17.0 |
 | `/color/tokens` | read | `tokens` → `color-lookup.tokens` | 0.6.0 |
-| `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0 |
+| `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
 | `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
@@ -609,7 +625,60 @@ needed:
 skein routes add --transport http --prefix --filters amm.page --settings '{"root":"www","index":"index.html"}' / <origin>
 ```
 
+## The config instance (0.17.0)
+
+shruggr/skein-amm#4 (David Case 2026-10-27/28): one token instance per
+token id, from one token image, all on one one-key host (one key, one
+libp2p node); the handle is the token id (`/@<tokenId>`), its topic
+`tm_color_<tokenId>`, its lookup `ls_color_<tokenId>`. Standing one up is
+one `create` of the host's instance manager carrying the deploy's BEEF
+(skein's `create {handle, image, config, beef}` → `{handle, identity, url,
+delivered}`). The config instance owns the enable list, emits the creates,
+starts and stops, holds the defaults and the holders' requests, and serves
+the pages.
+
+`apps/config/etc/app.json`: the program `amm-config`
+(`programs/amm-config`, Zig over skein-overlay's `sk`, as the other
+programs; `apps/config/bin/amm-config.wasm`); `requires: ["chain/1"]` (the
+door's `kernel.beef` on `admin` reads `chain/state`); `config["amm-config"]
+.tokenImage` (default `amm-token`); `roles.root` `enable`, `disable`,
+`defaults`.
+
+| route | what |
+|---|---|
+| mailbox `admin`, `kernel.beef` → `amm-config` | root's `enable {tokenId, beef}`, `disable {tokenId}`, `defaults {terms?, market?}`, each answered in `amm/admin` `{fn, request, replyTo, result \| error}` |
+| mailbox `requests` → `amm-config` | a holder's `request {tokenId}` (as before, moved from amm-p2p) |
+| http `/tokens`, read (`tokens`) | the enable list `[{tokenId, topic, sym, dec, icon?, status, url?, since, reason?, delivered?}]`, newest first |
+| http `/defaults`, read (`defaults`) | `{terms?, market?}` |
+| http `/requests`, read (`requests`) | the requests less the tokens on the list (enabled, creating, starting) |
+| http `/` prefix, read (`page`), `root: "www"` | the pages |
+
+State: `amm/tokens` (`{kind: "amm-tokens", tokens: [<row>]}`, status
+`creating` → `enabled` / `failed`; `stopped`; `starting`), `amm/defaults`
+(`{kind: "amm-defaults", terms?, market?}`), `amm/requests` (as before).
+A message whose body names a `request` or `replyTo` is an answer (amm-config's
+own, looped back when root's key is the instance's own on a one-key host):
+nothing runs. amm-validator does the same with its answers to root (0.17.0).
+
+The pages (served by the config instance): the token list from `GET
+<config>/amm/tokens`; everything per token at `<url>/amm` of that token's
+row (`tokenBase`): its pools, prices (one `ls_amm-live` read per token
+instance), liveness, `/call`, `/submit`, `/spends`. No read crosses
+instances. Settings: Enable a token (a token id typed or picked from the
+holders' requests; the deploy's BEEF from the connected wallet's module
+basket, else pasted), the enabled list with Disable / Enable again, the
+Default validator terms and Default market minimum cards; a token's own
+terms are root's message to `/@<tokenId>` (no page for it).
+
 ## Not wired
+
+- **The enable's BEEF is not checked at the config instance's door when
+  root posts it by HTTP `/sendMessage`** (0.17.0, found in the acceptance):
+  skein's front door admits such a message without running the `admin`
+  route's filters (`kernel.beef` runs for a carried `local` message); the
+  BEEF reaches amm-config as bytes. The token instance's door (its libp2p
+  receive row) checks it when the host delivers it: a BEEF it turns away
+  is reported in the row (`delivered`).
 
 - **Pools deployed before 0.13.0, on chain.** amm-lookup and
   amm-validator know layout 2 only: a layout-1 pool still listed stays in

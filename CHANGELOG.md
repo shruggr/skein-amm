@@ -4,6 +4,40 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.17.0 (2026-10-28)
+
+The Open Exchange as a config instance and one token instance per token id
+(shruggr/skein-amm#4; David Case 2026-10-27/28). Two apps, both `amm`; two
+images, `image/token/` and `image/config/` (`image/` is gone).
+
+- The token app (`etc/app.json`, 0.17.0): no `register` box, no
+  `roles.root` `register` / `registerLookup` / `deregisterLookup`
+  (`[rescind, terms, market]`), no pages, no holders' requests. Its topic
+  and lookups come from its create's config. `config.overlay.terms` is the
+  initial validator terms and `config["amm-p2p"].market` the initial market
+  minimum (src/terms.zig `current`, market.zig `current`: the head first, a
+  record or its `null`, else the config's); amm-validator signs for every
+  topic the engine serves (configured or registered); amm-validator ignores
+  its own answer to root looped back (root is the instance's own key on a
+  one-key host).
+- The config app (`apps/config/`, program `amm-config`): root's `enable
+  {tokenId, beef}` (the deploy checked, the manager's `create` with the
+  token's config and the BEEF), `disable` (`stop`), `enable` of a stopped
+  token (`start`), `defaults {terms?, market?}`; the reads `/tokens`,
+  `/defaults`, `/requests`; the holders' requests (moved from amm-p2p);
+  the pages.
+- The pages (served by the config instance): the token list from
+  `/tokens`, every per-token read and call at that token's instance
+  (`tokenBase`); Settings: Enable a token (BEEF from the wallet's module
+  basket or pasted), the enabled list with Disable / Enable again, Default
+  validator terms, Default market minimum. Pages built into
+  `apps/config/www/`; the 1Color pages copied beside them.
+- Engine skein-overlay v0.17.0 (configured topics and lookups beat;
+  `config.overlay.terms`, shruggr/skein-overlay#8). Needs skein with the
+  manager's `create {…, beef}` (skein main 61a39e0).
+- zig build test 78 (pool 11, amm-lookup 15, amm-validator 23, amm-p2p 22,
+  amm-config 7); vitest 155.
+
 ## 0.16.3 (2026-10-27)
 
 The host chain (shruggr/skein#156): the image installs skein-chain **v0.7.0**
