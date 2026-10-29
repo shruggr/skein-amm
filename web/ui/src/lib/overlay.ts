@@ -4,7 +4,7 @@
  * app's base URL, `https://<handle>.<host>/amm` or `<host>/@<handle>/amm`):
  *
  *   GET  <base>/listTopicManagers            {tm_color_<txid>_<vout>: {name, shortDescription}, …}: the registered token topics
- *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_color: …, ls_color_deploys: …}
+ *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_color_<txid>_<vout>: …} (a token instance, 0.20.0)
  *   POST <base>/lookup   {service: "ls_amm", query: {tokenId, …}}   BRC-24
  *   GET  <base>/.live/tm_color_<txid>_0-live        [{sender, at, body, from}]: the validators beating on a
  *                                             token, kept by the runtime's liveness tool (skein#138)

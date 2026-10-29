@@ -12,7 +12,7 @@ topic per token, registered by root at runtime.
 |---|---|---|
 | `overlay` | skein-overlay 0.16.0 (`bin/overlay.wasm`, copied; 0.16.0: the beat's `terms` from the head `amm/terms`) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
-| `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
+| `color-lookup` | skein-1color 0.10.0 (copied) | a token instance's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`; and the outputs by token id and outpoint), the discovery instance's `ls_color` (a deploy by its outpoint; 0.20.0, skein-1color 0.12.0: `ls_color_deploys` gone), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the read `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
@@ -219,7 +219,7 @@ counterparty}`).
 
 - **Your tokens.** The assets `p color assets` lists, each balance `p color
   balance <tag>` (an exact decimal string); symbol, decimals and icon from
-  the token list (`/color/tokens`), else `ls_color_deploys {tokenId}`, else
+  the token list (`/color/tokens`), else `ls_color {txid, outputIndex}` at the host root (0.20.0), else
   a deploy the wallet holds. Beside it, what `amm-swap` holds, with Move
   back.
 - **Deploy a position** (0.13.0). The LP key: a BRC-29 key to self under a
@@ -376,7 +376,7 @@ topic manager's beat carries no prices.
 | route | what |
 |---|---|
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
-| `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); `ls_color`, `ls_color_deploys` (skein-1color README) |
+| `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); a token instance's `ls_color_<assetId>`; the discovery instance's `ls_color` (skein-1color README; 0.20.0) |
 | `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read. The config app's in 0.17.0; removed in 0.19.0 |
 | `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): the chain state of an outpoint, a pool followed to its current output, `{outpoint, spentBy?, current?, hops, closed}`; a read |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |

@@ -287,7 +287,7 @@ export function discoveryText(d: Discovery): string {
     case "starting":
       return "Turning on: its instance is starting…";
     case "enabled":
-      return "On: deploys submitted to this exchange under tm_color are kept and listed (ls_color_deploys).";
+      return "On: deploys submitted to this exchange under tm_color are kept and looked up by their outpoint (ls_color).";
     case "stopping":
       return "Turning off…";
     case "stopped":
@@ -340,7 +340,7 @@ function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
         </dl>
       )}
       <span className="help">
-        The 1Color discovery topic (tm_color): every token&apos;s deploy, listed by ls_color_deploys, in an instance of its own. Enabling a token does not submit its deploy here; the 1Color deploy page submits each new deploy.
+        The 1Color discovery topic (tm_color): every token&apos;s deploy, looked up by its outpoint under ls_color, in an instance of its own. Enabling a token does not submit its deploy here; the 1Color deploy page submits each new deploy.
       </span>
       {error && <Notice kind="bad">Could not send: {error}</Notice>}
     </section>

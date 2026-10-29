@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # The 1Color pages (deploy a token; root's registered token topics),
 # copied into the config app's www/color/ (apps/config/www/color/, 0.17.0)
-# from the skein-1color v0.11.3 tag, as built there.
+# from the skein-1color v0.12.0 tag, as built there.
 # They are outside that package's Zig `paths`, so they come from the tag's
 # tarball by URL and sha256 (the same tag build.zig.zon names by URL and
 # hash). Nothing is built here.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TAG=v0.11.3
+TAG=v0.12.0
 URL="https://github.com/shruggr/skein-1color/archive/refs/tags/${TAG}.tar.gz"
-SHA256=9b706994de147dfc2486ec0bbba85cbdfd799bbb8003a225bed967cd03480372
+SHA256=8b0bc80c0472014763b5a84e476815a9e2967b5cd3511a17b12bdd5e130c39ec
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

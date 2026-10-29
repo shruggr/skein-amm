@@ -330,13 +330,15 @@ export function steakText(r: { steak?: Steak }): string {
 }
 
 /**
- * Whether the overlay admitted `txid`: `ls_color {txid, outputIndex}` (one 1Color output, if
- * unspent; skein-1color docs/1COLOR.md) asked until it answers the output or `timeoutMs` passes.
+ * Whether the overlay admitted `txid`: the token instance's `ls_color_<tokenId> {txid, outputIndex}`
+ * (`service`; one 1Color output, if unspent; skein-1color 0.12.0 docs/1COLOR.md) asked until it
+ * answers the output or `timeoutMs` passes.
  * The engine admits once the chain app accepts the transaction (its broadcast succeeded).
  */
 export async function awaitAdmitted(
   af: SignedFetch | null,
   base: string,
+  service: string,
   txid: string,
   outputIndex: number,
   o: { timeoutMs?: number; intervalMs?: number } = {},
@@ -347,7 +349,7 @@ export async function awaitAdmitted(
     const res = await signed.fetch(`${base}/lookup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ service: "ls_color", query: { txid, outputIndex } }),
+      body: JSON.stringify({ service, query: { txid, outputIndex } }),
     });
     if (res.ok) {
       const a = (await res.json()) as { outputs?: unknown[] };

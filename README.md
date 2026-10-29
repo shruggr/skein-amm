@@ -6,7 +6,14 @@ Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
 1Color components and the AMM's programs), run as one instance per token
 id, and the **config app** (`apps/config/`: the enable list, the defaults,
 and the pages), run as one instance that creates the
-token instances. Version **0.19.0** (2026-10-29, David Case: the holders'
+token instances. Version **0.20.0** (2026-10-29, David: "There should be
+no difference between what these things are looking up. The only
+difference is which topic the instance has got access to."): one lookup
+name per topic — a token instance serves `ls_color_<tokenId>` over its
+topic (and `ls_amm`), no `ls_color`; the discovery instance `ls_color`
+over `tm_color`; `ls_color_deploys` gone; a deploy's metadata is asked
+`ls_color {txid, outputIndex}` at the host root (skein-1color 0.12.0).
+0.19.0 (2026-10-29, David Case: the holders'
 "request to list a token" is not part of Open Exchange, removed: the box
 `amm/requests`, the read `/requests`, the pages' "Add to this exchange"
 and Settings' requests list). 0.18.1 (2026-10-29, shruggr/skein#137: the
@@ -107,7 +114,7 @@ validator's with bsvFee 0; everything out to the LP either way); delisting
 is the validator's Close (root's `close`, the pool a caller input of the
 instance's wallet, shruggr/skein#93). The pages are the Open Exchange
 (Landing, Swap, Liquidity, Your tokens, Settings), at the origin root by a
-root route. On skein-overlay 0.16.0 and skein-1color 0.11.3
+root route. On skein-overlay 0.17.0 and skein-1color 0.12.0
 (0.10.0: the 1Color rename, BRC-207's wire names, and the image moved here
 from skein, shruggr/skein#152; CHANGELOG.md). Earlier versions are in
 CHANGELOG.md. Ported from amm-poc (b-open-io/amm-poc, its `programs/`,
@@ -116,7 +123,9 @@ CHANGELOG.md. Ported from amm-poc (b-open-io/amm-poc, its `programs/`,
 **Names** (0.10.0, skein-1color 0.10.0; BRC-207's wire names): a token's
 topic is `tm_color_<assetId>` (`tm_color_<txid>_0` at output 0), its lookup
 `ls_color_<assetId>`, the discovery topic `tm_color` and its lookup
-`ls_color_deploys`; the index lookup is `ls_color` (head `<app>/ls_color`);
+`ls_color` (0.20.0; `ls_color_deploys` until 0.19.0, gone); every name of
+`color-lookup` reads one index (head `<app>/ls_color`) and answers the same
+queries;
 the programs are `color-topic` and `color-lookup`; the token list is the
 read route `/color/tokens`; the 1Color pages are under `<base>/color/`. No
 aliases: the names before 0.10.0 (`tm_mandala_*`, `ls_mandala*`,
@@ -134,7 +143,7 @@ were.
 |---|---|---|
 | `overlay` | `bin/overlay.wasm` | the overlay engine, skein-overlay 0.16.0's build (0.16.0: a topic's beat carries `terms` from the head `amm/terms`, the record amm-validator writes, none when unset; `{fn: "rebeat"}` from the instance re-declares every topic's beacon, shruggr/skein-overlay#7; 0.15.1: a submission whose parent is held but not yet admitted pauses and resumes on the parent's admission, shruggr/skein-overlay#6; 0.15.0: the sync protocol `/skein/overlay/sync/1.0.0` answered by its filter `sync` on this manifest's libp2p row, `filters.sync = "overlay.sync"`, no handler; its receive row `/skein/overlay/beef/1.0.0`, `kernel.beef` → `overlay.submit`, takes a catch-up's fetched BEEFs (0.14.1); 0.14.0: a topic's beat also carries its tip anchor; the reads `/holds`, `/anchors`, `/admitted` are the engine's, not routed by this manifest): serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`, only in `amm/register`, root's) and, always (a market and a validator; `config.overlay.market` / `.validator` give the ms, absent here: 40 000 / 30 000), asks liveness of and beacons each registered token's `tm_color_<txid>_0-live` (the body its view digest) and each registered lookup's `<service>-live`, takes submissions by message (box `amm/submit`, answered to the sender's box) and by `POST /submit` (BRC-22: the STEAK) |
 | `color-topic` | `bin/color-topic.wasm` | skein-1color 0.10.0's topic manager: one topic per token, `tm_color_<assetId>` (`tm_color_<txid>_0`), judged by the BRC-162 rules alone; the discovery topic `tm_color` |
-| `color-lookup` | `bin/color-lookup.wasm` | skein-1color 0.10.0's lookups `ls_color` (a token's value and authority outputs, one output), `ls_color_deploys` (a token's deploy output) and each token's `ls_color_<assetId>` (BRC-207), one index; the token list (the read route `/color/tokens`, its filter `tokens`) |
+| `color-lookup` | `bin/color-lookup.wasm` | skein-1color 0.12.0's lookup under a name paired with the topic that feeds it, the same queries under every name (a token's value and authority outputs, one output by outpoint — a deploy `tm_color` admitted among them, spent or not): a token instance's `ls_color_<assetId>` (and BRC-207's queries), the discovery instance's `ls_color`; one index; the token list (the read route `/color/tokens`, its filter `tokens`) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (an affirmed deploy's pool and its continuations, unspent) of every token topic the overlay serves, each query naming its token; its beat, the prices |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last and submits it to its own overlay by message, answering on the engine's answer (`swap`, a libp2p direct call); affirms an LP's proposed pool at its terms (`affirm`, called in-VM by amm-p2p, 0.11.0); both only while terms are set (0.15.0); root's `terms` (box `amm/validator`: the record `amm/terms`, set or cleared); root's `close` (box `amm/validator`): the contract's Close on the validator's path, the pool a caller input of the instance's wallet |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1` with `terms`: a transaction carried to the validator the caller names), the read `/spends`; the market minimum (`amm/market`, else the config's `config["amm-p2p"].market`, 0.17.0) |
@@ -143,7 +152,7 @@ were.
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
 | | `web/ui`, `web/engine` | the pages (the Open Exchange: Landing, Swap, Liquidity, Your tokens, Settings) and the matching engine, built into `apps/config/www/` |
-| | `apps/config/www/color/` | skein-1color 0.11.3's pages: deploy a token (through the wallet's BRC-207 `color` module), root's token topics (kept beside the pages: the deploy page is linked from Your tokens) |
+| | `apps/config/www/color/` | skein-1color 0.12.0's pages: deploy a token (through the wallet's BRC-207 `color` module), root's token topics (kept beside the pages: the deploy page is linked from Your tokens) |
 | | `image/token/`, `image/config/` | the two skein images (shruggr/skein#152): each the chain app and its app installed at birth (below, "The images") |
 
 docs/AMM.md has the pieces, the pool rule, the interfaces, the rows and
@@ -162,7 +171,7 @@ scripts/www.sh     # apps/config/www/: the pages from web/ui, then the 1Color pa
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.17.0 and skein-1color v0.11.4 by tag
+`build.zig.zon` names skein-overlay v0.17.0 and skein-1color v0.12.0 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/color-topic.wasm`, `bin/color-lookup.wasm`
 from the skein-1color package, byte for byte. skein-1color's pages are
@@ -217,9 +226,9 @@ grant`; no page does that). The flow, each step one message:
    a token enabled, creating or starting already is refused. It records
    the token `creating` and asks the manager `create {handle: <tokenId>,
    image: <tokenImage>, config: {amm: {overlay: {topics:
-   {tm_color_<tokenId>: "color-topic"}, lookups: {ls_color,
-   ls_color_deploys, ls_amm, ls_color_<tokenId>: {program: "color-lookup",
-   topics: [tm_color_<tokenId>]}}, terms?}, "amm-p2p": {market?}}}, beef,
+   {tm_color_<tokenId>: "color-topic"}, lookups: {ls_amm,
+   ls_color_<tokenId>: {program: "color-lookup", topics:
+   [tm_color_<tokenId>]}}, terms?}, "amm-p2p": {market?}}}, beef,
    topics: [tm_color_<tokenId>, ls_color_<tokenId>]}` — `terms` and
    `market` the defaults when set; `topics` (0.18.1) the names the host
    routes to the instance at the bare host. A `stopped` token: `start
@@ -251,7 +260,9 @@ topic the engine serves.
 ## Discovery (0.18.0)
 
 `tm_color` is the 1Color discovery topic (BRC-207): every token's deploy,
-whatever the token, listed by `ls_color_deploys` (and `ls_color`), so a
+whatever the token, a deploy looked up by its outpoint under `ls_color`
+(0.20.0: `{txid, outputIndex}`, the token id `<txid>_<vout>` IS it; spent
+or not; `ls_color_deploys` gone), so a
 wallet or page can find tokens it has never seen. It is served by an
 instance of its own (shruggr/skein#137), which root turns on and off from
 Settings ("Discovery": one switch), one message each:
@@ -259,9 +270,9 @@ Settings ("Discovery": one switch), one message each:
 1. Root → config, box `amm/admin`: `{fn: "discovery", args: {on: true}}`.
 2. amm-config asks the manager `create {handle: "discovery", image:
    <tokenImage>, config: {amm: {overlay: {topics: {tm_color:
-   "color-topic"}, lookups: {ls_color: {program: "color-lookup"},
-   ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}},
-   topics: ["tm_color", "ls_color_deploys"]}` — no BEEF, no terms, no
+   "color-topic"}, lookups: {ls_color: {program: "color-lookup", topics:
+   ["tm_color"]}}}}}, topics: ["tm_color", "ls_color"]}` — no BEEF, no
+   terms, no
    market — or `start {handle: "discovery", topics}` when it was stopped.
    The create/start ask names the topics the host routes to it (0.18.1). Its record, the head `amm/discovery`: `{on, status:
    creating | enabled | failed | stopping | stopped | starting, since,
@@ -273,7 +284,7 @@ Enabling a token does not submit its deploy to discovery: deploys are
 submitted on deploy (the 1Color deploy page, `www/color/deploy/`, submits
 each new deploy to `tm_color` at the pages' own origin). The host routes a
 `POST /submit` with `X-Topics: tm_color`, and a `POST /lookup` for
-`ls_color_deploys`, to the instance whose create or start named that topic
+`ls_color`, to the instance whose create or start named that topic
 (skein's router, by the instance's row, whether or not it has run yet;
 skein main fef7823 or later); with discovery off nothing here takes
 `tm_color` and the answer is the config instance's own refusal. A deploy made before discovery was on
@@ -441,8 +452,8 @@ POST <base>/lookup
 {"service": "ls_amm", "query": {"tokenId": "<txid>"}}                                        (listed pools only, 0.9.0)
 {"service": "ls_amm", "query": {"tokenId": "<txid>", "outpoint": "<txid>_0", "beef": true}}
 {"service": "ls_amm", "query": {"tokenId": "<txid>", "validatorIdentityKey": "<hex>"}}
-{"service": "ls_color", "query": {"tokenId": "<txid>"}}
-{"service": "ls_color_deploys", "query": {"tokenId": "<txid>"}}
+{"service": "ls_color_<txid>_0", "query": {"txid": "<txid>", "outputIndex": 1}}          (a token instance, 0.20.0)
+{"service": "ls_color", "query": {"txid": "<txid>", "outputIndex": 0}}                   (the discovery instance: a deploy, at the host root)
 {"service": "ls_color_<txid>_0", "query": {"type": "color-spendability", "version": 1, "assetId": "<txid>_0", "topic": "tm_color_<txid>_0", "outpoints": ["<txid>.1"]}}
 ```
 
@@ -488,10 +499,10 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.19.0 |
+| this app | 0.20.0 |
 | skein | main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.17.0 (9d72eca) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
-| skein-1color | v0.11.4 (53973f1; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
+| skein-1color | v0.12.0 (b0e0835; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (0.12.0: `color-lookup.wasm` rebuilt, `ls_color_deploys` gone), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.12.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |
 | requires | `chain/1` (shruggr/skein-chain; the image installs v0.7.0) |

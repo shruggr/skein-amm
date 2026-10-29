@@ -80,8 +80,11 @@ test "the create: {handle: <tokenId>, image, config: {amm: {overlay: {topics, lo
     const ov = plain.get("config").?.get("amm").?.get("overlay").?;
     try testing.expectEqualStrings("color-topic", ov.get("topics").?.getText("tm_color_aa_0").?);
     const ls = ov.get("lookups").?;
-    try testing.expectEqual(@as(usize, 4), ls.map.len);
-    for ([_][]const u8{ "ls_color", "ls_color_deploys", "ls_amm", "ls_color_aa_0" }) |k| try testing.expect(ls.get(k) != null);
+    // 0.20.0: ls_amm and the token's own ls_color_<id> only (no ls_color, no ls_color_deploys).
+    try testing.expectEqual(@as(usize, 2), ls.map.len);
+    for ([_][]const u8{ "ls_amm", "ls_color_aa_0" }) |k| try testing.expect(ls.get(k) != null);
+    for ([_][]const u8{ "ls_color", "ls_color_deploys" }) |k| try testing.expect(ls.get(k) == null);
+    try testing.expectEqualStrings("color-lookup", ls.get("ls_color_aa_0").?.getText("program").?);
     try testing.expectEqualStrings("amm-lookup", ls.get("ls_amm").?.getText("program").?);
     try testing.expectEqualStrings("tm_color_aa_0", ls.get("ls_color_aa_0").?.getArray("topics").?[0].text);
     try testing.expect(ov.get("terms") == null);
@@ -219,7 +222,7 @@ test "the config app's manifest: amm; root's enable, disable, defaults, discover
     try testing.expectEqualStrings(tokens.admin_box, "amm/admin");
 }
 
-test "discovery (0.18.0): the create names tm_color, ls_color, ls_color_deploys and nothing else; no beef" {
+test "discovery (0.20.0): the create names tm_color and ls_color over it, nothing else; no beef" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -234,18 +237,18 @@ test "discovery (0.18.0): the create names tm_color, ls_color, ls_color_deploys 
     try testing.expectEqual(@as(usize, 1), ov.get("topics").?.map.len);
     try testing.expectEqualStrings("color-topic", ov.get("topics").?.getText("tm_color").?);
     const ls = ov.get("lookups").?;
-    try testing.expectEqual(@as(usize, 2), ls.map.len);
+    try testing.expectEqual(@as(usize, 1), ls.map.len);
     try testing.expectEqualStrings("color-lookup", ls.get("ls_color").?.getText("program").?);
-    try testing.expect(ls.get("ls_color").?.get("topics") == null);
-    try testing.expectEqualStrings("color-lookup", ls.get("ls_color_deploys").?.getText("program").?);
-    try testing.expectEqualStrings("tm_color", ls.get("ls_color_deploys").?.getArray("topics").?[0].text);
+    try testing.expectEqual(@as(usize, 1), ls.get("ls_color").?.getArray("topics").?.len);
+    try testing.expectEqualStrings("tm_color", ls.get("ls_color").?.getArray("topics").?[0].text);
+    try testing.expect(ls.get("ls_color_deploys") == null);
     try testing.expectEqualStrings("discovery", (try discovery.handleBody(a)).getText("handle").?);
     // shruggr/skein#137: the create and a start name the topics the host routes to it; a stop does not.
     for ([_]Value{ c, try discovery.startBody(a) }) |b| {
         const ts = b.getArray("topics").?;
         try testing.expectEqual(@as(usize, 2), ts.len);
         try testing.expectEqualStrings("tm_color", ts[0].text);
-        try testing.expectEqualStrings("ls_color_deploys", ts[1].text);
+        try testing.expectEqualStrings("ls_color", ts[1].text);
     }
     try testing.expectEqualStrings("discovery", (try discovery.startBody(a)).getText("handle").?);
     try testing.expect((try discovery.handleBody(a)).get("topics") == null);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DISCOVERY_LOOKUP,
+  colorLookupOf,
   outpointText,
   parseOutpoint,
   parseTokenId,
@@ -100,5 +102,13 @@ describe("outpoints are shown <txid>.<vout> (David 2026-10-08)", () => {
     expect(shortId(TX, "txid")).toBe(`${TX.slice(0, 8)}…${TX.slice(-8)}`);
     expect(shortId(`tm_color_${TX}_1`, "topic")).toBe(`tm_color_${TX.slice(0, 8)}…${TX.slice(-8)}_1`);
     expect(fullId(`tm_color_${TX}_0`, "topic")).toBe(`tm_color_${TX}_0`);
+  });
+
+  it("0.20.0: a token instance's 1Color lookup is ls_color_<tokenId> (any id form); the discovery lookup is ls_color", () => {
+    expect(colorLookupOf(`${TX}_0`)).toBe(`ls_color_${TX}_0`);
+    expect(colorLookupOf(TX)).toBe(`ls_color_${TX}_0`);
+    expect(colorLookupOf(`${TX}.3`)).toBe(`ls_color_${TX}_3`);
+    expect(() => colorLookupOf("nope")).toThrow(/not a token id/);
+    expect(DISCOVERY_LOOKUP).toBe("ls_color");
   });
 });

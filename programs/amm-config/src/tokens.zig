@@ -37,10 +37,11 @@ pub const admin_box = "amm/admin";
 /// `$SKEIN_IMAGES_DIR/amm-token` (the repository's image/token).
 pub const default_token_image = "amm-token";
 
-/// The lookups every token instance serves beside its own (the token manifest's
+/// The lookups every token instance serves beside its own `ls_color_<id>` (the token manifest's
 /// `config.overlay.lookups`, which a create's `lookups` replaces: skein's config merge is per
-/// program, so the three are named again).
-pub const manifest_lookups = [_][2][]const u8{ .{ "ls_color", "color-lookup" }, .{ "ls_color_deploys", "color-lookup" }, .{ "ls_amm", "amm-lookup" } };
+/// program, so it is named again). 0.20.0: `ls_color` and `ls_color_deploys` dropped (David,
+/// 2026-10-29: one lookup per topic; `ls_color_<id>` answers the token's outputs by outpoint).
+pub const manifest_lookups = [_][2][]const u8{.{ "ls_amm", "amm-lookup" }};
 
 pub const Status = enum { creating, enabled, failed, stopped, starting };
 
@@ -133,8 +134,8 @@ fn map(a: Allocator, es: []const cbor.Entry) !Value {
 }
 
 /// The token instance's config at birth: `{amm: {overlay: {topics: {<topic>: "color-topic"},
-/// lookups: {ls_color, ls_color_deploys, ls_amm, <lookup>: {program: "color-lookup", topics:
-/// [<topic>]}}, terms?}, "amm-p2p": {market?}}}` — `terms` and `market` the defaults' when set.
+/// lookups: {ls_amm, <lookup>: {program: "color-lookup", topics: [<topic>]}}, terms?}, "amm-p2p":
+/// {market?}}}` — `terms` and `market` the defaults' when set.
 pub fn createConfig(a: Allocator, d: Deploy, defaults: ?Value) !Value {
     var lookups: std.ArrayList(cbor.Entry) = .empty;
     for (manifest_lookups) |l| try lookups.append(a, .{ .key = l[0], .value = try map(a, &.{.{ .key = "program", .value = .{ .text = l[1] } }}) });

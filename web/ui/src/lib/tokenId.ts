@@ -49,6 +49,24 @@ export function parseOutpoint(text: string): TokenRef | null {
   return parse(text, true);
 }
 
+/**
+ * A token instance's 1Color lookup (0.20.0): `ls_color_<tokenId>`, color-lookup over the token's topic
+ * `tm_color_<tokenId>`, answering its outputs by outpoint `{txid, outputIndex}` (skein-1color
+ * 0.12.0) as well as BRC-207's queries. A token instance serves no `ls_color`.
+ */
+export function colorLookupOf(tokenId: string): string {
+  const ref = parseTokenId(tokenId);
+  if (!ref) throw new Error(`not a token id: ${tokenId}`);
+  return `ls_color_${tokenIdText(ref)}`;
+}
+
+/**
+ * The discovery lookup (0.20.0): `ls_color` over `tm_color`, a deploy asked by its outpoint
+ * `{txid, outputIndex}` (the token id `<txid>_<vout>` IS it) at the host root; `ls_color_deploys`
+ * is gone.
+ */
+export const DISCOVERY_LOOKUP = "ls_color";
+
 /** The token id of a deploy outpoint: `<txid>_<vout>`, `_0` included (BRC-162 "Token identification"). */
 export function tokenIdText(ref: TokenRef): string {
   return `${ref.txid.toLowerCase()}_${ref.vout}`;

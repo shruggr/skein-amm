@@ -27,7 +27,7 @@
  *   3. `internalizeAction`: the pool's current output, basket insertion into
  *      `amm-pools`, tag `amm-pool`, customInstructions `poolCustomInstructions`
  *      (symbol and decimals as the deploy takes them: the token list, else
- *      `ls_color_deploys`), label `amm-pool-deploy` (the deploy's own: the
+ *      the discovery lookup `ls_color`), label `amm-pool-deploy` (the deploy's own: the
  *      manifest carries no other for it).
  *
  * A pool the wallet already files (the pasted outpoint, its current output,
@@ -150,9 +150,9 @@ export interface RecoverInput {
   rows: BasketRow[];
   /** `GET <base>/spends` (src/lib/skein.ts `readSpend`). */
   spendOf: (outpoint: string) => Promise<Spend>;
-  /** `ls_color {txid, outputIndex}` (src/lp/positions.ts `colorOutput`). */
+  /** `ls_color_<tokenId> {txid, outputIndex}` (src/lp/positions.ts `colorOutput`). */
   outputOf: (outpoint: string) => Promise<LookupOutput>;
-  /** Symbol and decimals: the token list, else `ls_color_deploys`. */
+  /** Symbol and decimals: the token list, else the discovery lookup `ls_color` at the host root. */
   metaOf: (tokenId: string) => Promise<{ sym?: string; dec?: number } | null>;
   /** Layout 2: the LP keyIDs this browser kept (default: `PendingDeployStore`). */
   pending?: PendingDeployStore;

@@ -4,6 +4,39 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.20.0 (2026-10-29)
+
+One lookup name per topic (David, 2026-10-29: "There should be no
+difference between what these things are looking up. The only difference
+is which topic the instance has got access to."; plan
+ls-color-rename-2026-10-29).
+
+- skein-1color v0.11.4 → v0.12.0 (tag URL and hash; `bin/color-lookup.wasm`
+  copied from it: `ls_color_deploys` gone, `ls_color` answers a deploy
+  `tm_color` admitted at its outpoint `{txid, outputIndex}`, spent or not,
+  and `ls_color_<assetId>` answers `ls_color`'s queries besides BRC-207's);
+  `scripts/color-pages.sh` at v0.12.0 (sha256 8b0bc80c…39ec), the 1Color
+  pages in `apps/config/www/color/`.
+- amm-config: a token's create names the lookups `{ls_amm,
+  ls_color_<id>: {program: color-lookup, topics: [tm_color_<id>]}}` (no
+  `ls_color`, no `ls_color_deploys`); create/start `topics` unchanged.
+  Discovery's create: `{topics: {tm_color: color-topic}, lookups:
+  {ls_color: {program: color-lookup, topics: [tm_color]}}}`, create/start
+  `topics: [tm_color, ls_color]`.
+- Token app `etc/app.json`: `config.overlay.lookups` is `ls_amm` alone;
+  descriptions of both manifests; version 0.20.0.
+- Pages: a deploy's metadata (`deployMeta`, Your tokens for a token the list
+  does not carry) asks `ls_color {txid, outputIndex}` at the HOST ROOT (the
+  pages' origin, plain fetch), not `/@<tokenId>` (a token not enabled here
+  has no instance: the lookup threw and Your tokens showed ids only). A
+  token instance's outputs by outpoint (positions, recover, the move back's
+  admission wait) ask `ls_color_<tokenId>` there instead of `ls_color`
+  (`colorLookupOf`). The Discovery card's text.
+- zig build test 79; vitest 159; `apps/config/bin/amm-config.wasm`,
+  `bin/color-lookup.wasm` and `apps/config/www/` rebuilt.
+- Running instances keep the lookups their create named until their config
+  is reinstalled (README "Discovery").
+
 ## 0.19.0 (2026-10-29)
 
 The holders' "request to list a token" is removed (David Case 2026-10-29:

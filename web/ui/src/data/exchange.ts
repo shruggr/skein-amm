@@ -64,7 +64,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthFetch, Beef, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
 import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
-import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
+import { DISCOVERY_LOOKUP, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { readBeats, readDefaults, readDiscovery, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
@@ -430,13 +430,25 @@ async function tokenMeta(): Promise<Map<string, ListedToken>> {
 }
 
 /**
- * A token's metadata from its deploy (`ls_color_deploys {tokenId}`, the
- * discovery lookup: the deploy output with its BEEF), for a token the list
- * does not carry; null when the lookup has none.
+ * The host root (0.20.0): the pages' origin, where the host routes a bare `/lookup` by its service to
+ * the instance that declares it (skein#137) — `ls_color` to the discovery instance.
+ */
+function hostRoot(): string {
+  return new URL(context.base).origin;
+}
+
+/**
+ * A token's metadata from its deploy (0.20.0: the discovery lookup `ls_color {txid, outputIndex}`
+ * at the deploy's outpoint — the token id `<txid>_<vout>` IS it — POSTed to the HOST ROOT, plain
+ * `fetch`: the deploy output with its BEEF), for a token the list does not carry; null when the
+ * lookup has none. Until 0.19.0 it asked `ls_color_deploys {tokenId}` at the token's own instance,
+ * which a token not enabled here does not have.
  */
 async function deployMeta(tokenId: string): Promise<{ sym?: string; dec?: number; icon?: string } | null> {
   try {
-    const out = parseOutputList(await lookup(context.af, await tokenBaseOf(tokenId), "ls_color_deploys", { tokenId: sdkTokenId(tokenId) }))[0];
+    const ref = parseTokenId(tokenId);
+    if (!ref) return null;
+    const out = parseOutputList(await lookup(null, hostRoot(), DISCOVERY_LOOKUP, { txid: ref.txid, outputIndex: ref.vout }))[0];
     if (!out) return null;
     const tx = Transaction.fromAtomicBEEF(out.beef);
     const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${out.outputIndex}`, lockingScript: tx.outputs[out.outputIndex]?.lockingScript.toHex() });
@@ -1043,13 +1055,13 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
 export async function recoverPosition(outpoint: string): Promise<RecoverResult> {
   const { wallet, af } = needWallet();
   const [rows, meta] = await Promise.all([basketRows(wallet, POOLS_BASKET), tokenMeta()]);
-  const base = await baseHolding(outpoint);
+  const { base, tokenId } = await baseHolding(outpoint);
   const r = await recoverPoolRow({
     wallet,
     outpoint,
     rows,
     spendOf: (o) => readSpend(base, o),
-    outputOf: (o) => colorOutput(af, base, o),
+    outputOf: (o) => colorOutput(af, base, tokenId, o),
     metaOf: async (tokenId) => meta.get(tokenId) ?? (await deployMeta(tokenId)),
   });
   emit();
@@ -1061,12 +1073,12 @@ export async function recoverPosition(outpoint: string): Promise<RecoverResult> 
  * enabled token's instance whose chain state follows it as a pool (`/spends`: a current output, a
  * spender or a close); refused when none does.
  */
-async function baseHolding(outpoint: string): Promise<string> {
+async function baseHolding(outpoint: string): Promise<{ base: string; tokenId: string }> {
   for (const t of await enabledTokens()) {
     const base = tokenBase(t);
     if (!base) continue;
     const s = await readSpend(base, outpoint).catch(() => null);
-    if (s && (s.current || s.spentBy || s.closed)) return base;
+    if (s && (s.current || s.spentBy || s.closed)) return { base, tokenId: t.tokenId };
   }
   throw new Error(`no token instance on this exchange knows ${outpoint}`);
 }
@@ -1080,7 +1092,7 @@ async function baseHolding(outpoint: string): Promise<string> {
  * assets `p color assets` lists, each balance `p color balance <assetTag>`,
  * and what the active swap basket (`amm-swap`) holds of each; symbol,
  * decimals and icon from the token list, else the token's deploy
- * (`ls_color_deploys`), else a deploy the wallet holds. Each marked on this
+ * (the discovery lookup `ls_color` at the host root, 0.20.0), else a deploy the wallet holds. Each marked on this
  * exchange (registered) or not.
  */
 export async function myTokens(): Promise<WalletToken[]> {
@@ -1286,8 +1298,8 @@ export async function discoveryState(): Promise<Discovery> {
 /**
  * Turns the 1Color discovery topic on or off (0.18.0, shruggr/skein#137): root's `{fn:
  * "discovery", args: {on}}` to the config instance's `<app>/admin`. On: the host creates (or
- * starts) the instance `discovery`, serving `tm_color` and its lookups `ls_color` /
- * `ls_color_deploys`; a deploy POSTed to this origin's `/submit` with `X-Topics: tm_color` is
+ * starts) the instance `discovery`, serving `tm_color` and its lookup `ls_color` (0.20.0;
+ * `ls_color_deploys` gone); a deploy POSTed to this origin's `/submit` with `X-Topics: tm_color` is
  * routed to it. Off: its instance stopped. Enabling a token does not submit its deploy there.
  */
 export async function setDiscovery(on: boolean): Promise<void> {

@@ -50,7 +50,7 @@ own except the active swap basket. `src/wallet/color.ts` holds the names.
   each balance `listOutputs({basket: "p color balance <assetTag>"})`
   (`totalOutputs`, an exact decimal string; `<assetTag>` = `<txid>v<vout>`,
   the module's `assetTag`); symbol, decimals and icon from the token list
-  (`/color/tokens`), else the deploy lookup (`ls_color_deploys {tokenId}`),
+  (`/color/tokens`), else the deploy lookup (`ls_color {txid, outputIndex}` at the host root, 0.20.0),
   else a deploy the wallet holds. Beside the balance, what the active swap
   basket holds of the token, with **Move back**.
 - **Pool deploy** (`src/lp/poolDeploy.ts` `deployPool`): `amm.pool.terms`,

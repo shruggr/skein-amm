@@ -58,7 +58,7 @@ describe("the config instance's reads", () => {
     expect(discoveryText({ on: false })).toMatch(/^Off: no discovery instance/);
     expect(discoveryText({ on: true, status: "creating" })).toMatch(/being created/);
     expect(discoveryText({ on: true, status: "starting" })).toMatch(/starting/);
-    expect(discoveryText({ on: true, status: "enabled" })).toMatch(/^On: .*tm_color.*ls_color_deploys/);
+    expect(discoveryText({ on: true, status: "enabled" })).toMatch(/^On: .*tm_color.*\(ls_color\)/);
     expect(discoveryText({ on: false, status: "stopping" })).toBe("Turning off…");
     expect(discoveryText({ on: false, status: "stopped", reason: "x" })).toBe("Off: its instance is stopped (x).");
     expect(discoveryText({ on: true, status: "failed", reason: "no image" })).toBe("Could not turn on: no image.");

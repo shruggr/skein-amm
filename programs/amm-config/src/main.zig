@@ -16,8 +16,8 @@
 //!     {fn: "disable", args: {tokenId}}        `stop {handle}`; on the answer the row `stopped`.
 //!     {fn: "defaults", args: {terms?, market?}}   the head `amm/defaults` (tokens.zig `withDefaults`).
 //!     {fn: "discovery", args: {on}}   (0.18.0, shruggr/skein#137) the discovery instance — handle
-//!                       `discovery`, from the token image, serving `tm_color`, `ls_color` and
-//!                       `ls_color_deploys` (discovery.zig `createBody`) — created, started or
+//!                       `discovery`, from the token image, serving `tm_color` and `ls_color`
+//!                       over it (0.20.0; discovery.zig `createBody`) — created, started or
 //!                       stopped (discovery.zig `decide`); the head `amm/discovery` follows the
 //!                       manager's answer as the enable list does.
 //!     Each answered to the sender in that box: `{fn, request, replyTo, result | error}`. A body

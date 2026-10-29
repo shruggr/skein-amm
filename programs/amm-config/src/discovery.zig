@@ -1,5 +1,5 @@
 //! The discovery toggle (0.18.0, shruggr/skein#137), pure: the 1Color discovery topic `tm_color`
-//! (every token's deploy, BRC-207) and its lookups `ls_color` / `ls_color_deploys` served by an
+//! (every token's deploy, BRC-207) and its lookup `ls_color` (0.20.0; `ls_color_deploys` gone) served by an
 //! instance of their own, `discovery`, created from the token image with a config that names them
 //! and nothing else (no beef, no terms, no market: a market-only instance of the deploys topic).
 //! main.zig wires the VM.
@@ -29,9 +29,11 @@ pub const kind = "amm-discovery";
 /// The instance's handle (fixed).
 pub const handle = "discovery";
 pub const topic = "tm_color";
+/// Its lookup (0.20.0): color-lookup as `ls_color` over `tm_color`; a deploy by its outpoint.
+pub const lookup = "ls_color";
 /// The names the host routes to the instance at the bare host (shruggr/skein#137): the create's and
 /// a start's `topics`.
-pub const topics = [_][]const u8{ topic, "ls_color_deploys" };
+pub const topics = [_][]const u8{ topic, lookup };
 
 pub const Status = enum { creating, enabled, failed, stopping, stopped, starting };
 
@@ -40,13 +42,11 @@ fn map(a: Allocator, es: []const cbor.Entry) !Value {
 }
 
 /// The instance manager's `create` body: `{handle: "discovery", image, config: {amm: {overlay:
-/// {topics: {tm_color: "color-topic"}, lookups: {ls_color: {program: "color-lookup"},
-/// ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}}, topics: ["tm_color",
-/// "ls_color_deploys"]}` — no beef.
+/// {topics: {tm_color: "color-topic"}, lookups: {ls_color: {program: "color-lookup", topics:
+/// ["tm_color"]}}}}}, topics: ["tm_color", "ls_color"]}` — no beef.
 pub fn createBody(a: Allocator, image: []const u8) !Value {
     const lookups = try map(a, &.{
-        .{ .key = "ls_color", .value = try map(a, &.{.{ .key = "program", .value = .{ .text = "color-lookup" } }}) },
-        .{ .key = "ls_color_deploys", .value = try map(a, &.{
+        .{ .key = lookup, .value = try map(a, &.{
             .{ .key = "program", .value = .{ .text = "color-lookup" } },
             .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = topic }}) } },
         }) },
