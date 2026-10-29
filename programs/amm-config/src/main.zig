@@ -1,6 +1,6 @@
 //! amm-config: the Open Exchange's config instance (0.17.0, shruggr/skein-amm#4), as one skein
-//! program (Zig, wasm32-wasi). The decisions are tokens.zig's and requests.zig's; this file wires
-//! them to the VM.
+//! program (Zig, wasm32-wasi). The decisions are tokens.zig's and discovery.zig's; this file
+//! wires them to the VM.
 //!
 //! **Stepped** (mailbox routes):
 //!
@@ -23,21 +23,17 @@
 //!     Each answered to the sender in that box: `{fn, request, replyTo, result | error}`. A body
 //!     that is itself an answer (`request` / `replyTo` in it: this program's answer looped back
 //!     when root's key is the instance's own, a one-key host) is not a request: nothing runs.
-//!   box `amm/requests` (anyone): {fn: "request", args: {tokenId}}, a holder's listing request
-//!                       (requests.zig), recorded under the head `amm/requests`.
 //!
 //! **Called** (read routes; their filters: anyone, nothing logged):
 //!
 //!   tokens    `/tokens`: the enable list, newest first (tokens.zig `tokensJson`)
 //!   defaults  `/defaults`: the defaults, `{terms?, market?}` (tokens.zig `defaultsJson`)
-//!   requests  `/requests`: the holders' requests, less the tokens on the list
 //!   discovery `/discovery`: the discovery record (discovery.zig `json`), or `{on: false}`
 //!   serve     `/` (prefix): the Swap pages, www/ of the app's own tree (skein-sdk `files.serve`)
 const std = @import("std");
 const w = @import("chain");
 const vm = @import("overlay_sk");
 const tokens = @import("tokens.zig");
-const requests = @import("requests.zig");
 const discovery = @import("discovery.zig");
 const sk = @import("sk");
 const app = @import("app");
@@ -93,8 +89,6 @@ fn call(a: Allocator, in: Value) !void {
         try httpJson(a, 200, try tokens.tokensJson(a, tokens.rowsOf(try headRecord(a, tokens.tokens_head))))
     else if (eql(u8, func, "defaults"))
         try httpJson(a, 200, try tokens.defaultsJson(a, try headRecord(a, tokens.defaults_head)))
-    else if (eql(u8, func, "requests"))
-        try requestsRead(a)
     else if (eql(u8, func, "discovery"))
         try httpJson(a, 200, try discovery.json(a, try headRecord(a, discovery.head)))
     else if (eql(u8, func, "serve"))
@@ -102,18 +96,6 @@ fn call(a: Allocator, in: Value) !void {
     else
         return error.UnknownFunction;
     return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, ans) else ans);
-}
-
-/// `/requests`: the holders' requests, newest first, less the tokens on the enable list (enabled,
-/// creating or starting: an enable settles a request).
-fn requestsRead(a: Allocator) !Value {
-    var settled: std.ArrayList([]const u8) = .empty;
-    for (tokens.rowsOf(try headRecord(a, tokens.tokens_head))) |r| {
-        const st = tokens.statusOf(r) orelse continue;
-        if (st == .enabled or st == .creating or st == .starting) try settled.append(a, r.getText("topic") orelse continue);
-    }
-    const rs = try requests.list(a, vm.store(), try headRecord(a, requests.requests_head), settled.items);
-    return httpJson(a, 200, try requests.requestsJson(a, rs));
 }
 
 fn toSdk(a: Allocator, v: Value) !scbor.Value {
@@ -148,7 +130,6 @@ fn step(a: Allocator, in: Value) !void {
     const args = in.get("args") orelse return error.BadInput;
     const box = args.getText("box") orelse "";
     const body = try s.getValue(a, args.getCid("body") orelse return error.BadInput);
-    if (eql(u8, box, requests.requests_box)) return listingRequest(a, in, args, body);
     if (!eql(u8, box, tokens.admin_box)) return error.BadInput;
     // The instance manager's answer this thread awaited.
     if (in.get("reply")) |r| if (r == .map) return managerAnswered(a, args, body, try s.getValue(a, r.getCid("body") orelse return error.BadInput));
@@ -282,18 +263,6 @@ fn defaults(a: Allocator, args: Value, body: Value) !void {
             return answerRoot(a, args, "defaults", try tokens.answer(a, "defaults", message, rec));
         },
     }
-}
-
-/// A holder's listing request, `{fn: "request", args: {tokenId}}` in the box `amm/requests`.
-fn listingRequest(a: Allocator, in: Value, args: Value, body: Value) !void {
-    const s = vm.store();
-    if (!eql(u8, body.getText("fn") orelse "", "request")) return error.BadMessage;
-    const token = (body.get("args") orelse return error.BadMessage).getText("tokenId") orelse return error.BadMessage;
-    const sender = args.getBytes("sender") orelse return error.BadInput;
-    const at: u64 = in.getUint("at") orelse in.getUint("now") orelse 0;
-    const rec = try requests.record(a, s, try headRecord(a, requests.requests_head), token, sender, at);
-    try vm.advance(requests.requests_head, try s.putValue(a, rec));
-    _ = try vm.finish(a, s, try resultRecord(a, "request", &.{.{ .key = "tokenId", .value = .{ .text = try requests.tokenIdText(a, token) } }}));
 }
 
 /// `discovery {on}` (0.18.0, shruggr/skein#137): the discovery instance created, started or stopped.

@@ -128,7 +128,7 @@ button.id-text code { border-bottom: 1px dotted var(--line); }
 .mark img { width: 100%; height: 100%; object-fit: cover; }
 .mark-md { width: 36px; height: 36px; font-size: 15px; }
 .mark-sm { width: 24px; height: 24px; font-size: 11px; }
-.reg-row .mark-sm, .reqs .mark-sm { width: 32px; height: 32px; font-size: 13px; }
+.reg-row .mark-sm { width: 32px; height: 32px; font-size: 13px; }
 .token-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .token-name-text { display: flex; flex-direction: column; min-width: 0; }
 .sym { font-weight: 600; font-size: 16px; }
@@ -244,7 +244,7 @@ button.id-text code { border-bottom: 1px dotted var(--line); }
 .status-cell { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 
 /* ---- settings */
-.regs, .reqs { display: flex; flex-direction: column; }
+.regs { display: flex; flex-direction: column; }
 .reg-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
 .reg-row > .notice { grid-column: 1 / -1; }
 .req-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

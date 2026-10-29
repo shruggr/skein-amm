@@ -1,6 +1,6 @@
 //! The pages' reads (skein-amm 0.9.0, David Case 2026-10-09). Pure: over a store, the chain state
-//! (main.zig wires the VM). (The holders' listing requests moved to the config app, 0.17.0:
-//! programs/amm-config/src/requests.zig.)
+//! (main.zig wires the VM). (The holders' listing requests moved to the config app in 0.17.0
+//! and were removed in 0.19.0.)
 //!
 //! - **Spends** (`/spends?outpoint=<txid>.<vout>`, filter `spends`): what the chain state says of
 //!   an outpoint — the LP page follows its pool from the deploy's outpoint to the current pool

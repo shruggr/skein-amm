@@ -53,13 +53,13 @@ describe("the skein's doors", () => {
     expect(instanceBase("http://127.0.0.1:8100/@alice/amm")).toBe("http://127.0.0.1:8100/@alice");
     const seen: { url: string; init: { headers?: Record<string, string>; body?: unknown } }[] = [];
     const af = { fetch: async (url: string, init?: { headers?: Record<string, string>; body?: unknown }) => (seen.push({ url, init: init! }), new Response(encode({ id: "m1" }) as BodyInit, { status: 200 })) };
-    expect(await sendMessage(af, "https://alice.skein.nexus/amm", A, "amm/requests", { fn: "request", args: { tokenId: T } })).toBe("m1");
+    expect(await sendMessage(af, "https://alice.skein.nexus/amm", A, "amm/admin", { fn: "disable", args: { tokenId: T } })).toBe("m1");
     expect(seen[0]!.url).toBe("https://alice.skein.nexus/sendMessage");
     expect(seen[0]!.init.headers).toEqual({ "content-type": "application/cbor" });
     const m = (decode(seen[0]!.init.body as Uint8Array) as { message: { recipient: Uint8Array; messageBox: string; body: Uint8Array } }).message;
     expect(Utils.toHex(Array.from(m.recipient))).toBe(A);
-    expect(m.messageBox).toBe("amm/requests");
-    expect(Array.from(m.body)).toEqual(Array.from(dagCbor({ fn: "request", args: { tokenId: T } })));
+    expect(m.messageBox).toBe("amm/admin");
+    expect(Array.from(m.body)).toEqual(Array.from(dagCbor({ fn: "disable", args: { tokenId: T } })));
     const no = { fetch: async () => new Response(encode({ code: "ERR_DENIED", description: "not root" }) as BodyInit, { status: 403 }) };
     await expect(sendMessage(no, "https://x/amm", A, "amm/register", {})).rejects.toThrow(/403 ERR_DENIED not root/);
   });

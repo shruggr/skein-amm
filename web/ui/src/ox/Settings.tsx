@@ -1,11 +1,11 @@
 /**
  * Settings, root of the config instance only (0.17.0, shruggr/skein-amm#4;
  * 0.18.0 the Discovery switch, shruggr/skein#137):
- * Enable a token — a token id typed or picked from the holders' requests,
+ * Enable a token — a token id typed,
  * the deploy's BEEF from the connected wallet's module basket (or pasted when
  * the wallet does not hold it): root's `enable` to `<app>/admin`, the host
  * creating the token's own instance; the enabled list with Disable, and Enable
- * again for a stopped one; the holders' requests; and the defaults a new token
+ * again for a stopped one; and the defaults a new token
  * instance is created with — its initial validator terms and market minimum
  * (root's `defaults`). A token's own terms are root's message to
  * `/@<tokenId>` (not on this page). Topic and lookup names are derived from
@@ -27,7 +27,6 @@ import {
   topicOf,
   useDefaults,
   useDiscovery,
-  useListingRequests,
   useRegisteredTokens,
   type Data,
   type Defaults,
@@ -35,7 +34,6 @@ import {
   type RegisteredToken,
   type Session,
 } from "../data/exchange";
-import { ago } from "./format";
 import { NeedWallet, Notice, TokenName } from "./bits";
 
 function useAct(): [string | null, boolean, (f: () => Promise<void>) => void] {
@@ -51,7 +49,8 @@ function useAct(): [string | null, boolean, (f: () => Promise<void>) => void] {
   return [error, busy, run];
 }
 
-function EnableCard({ pick, setPick }: { pick: string; setPick: (s: string) => void }) {
+function EnableCard() {
+  const [pick, setPick] = useState("");
   const [paste, setPaste] = useState("");
   const [needPaste, setNeedPaste] = useState(false);
   const [error, busy, run] = useAct();
@@ -397,46 +396,11 @@ function EnabledRow({ t }: { t: RegisteredToken }) {
   );
 }
 
-function Requests({ onPick }: { onPick: (tokenId: string) => void }) {
-  const reqs = useListingRequests(true);
-  if (reqs.data === null) return null; // loading, or the skein offers no such read
-  return (
-    <section className="panel stack-sm" aria-labelledby="req-h">
-      <h2 id="req-h" className="h2 h2-sm">
-        Requests to list
-      </h2>
-      {reqs.data.length === 0 ? (
-        <p className="muted small">No holder has asked to list a token.</p>
-      ) : (
-        <>
-          <p className="fg2 small">Holders who pressed “Add to this exchange”. Enabling a token lists it.</p>
-          <ul className="reqs">
-            {reqs.data.map((r) => (
-              <li key={`${r.tokenId}-${r.from}`} className="reg-row">
-                <span className="req-text">
-                  <TokenName tokenId={r.tokenId} sym={r.sym} size="sm" />
-                  <span className="small muted">
-                    from <Id value={r.from} kind="key" label="requester key" /> · {ago(r.at)} ago
-                  </span>
-                </span>
-                <button type="button" className="btn btn-outline" onClick={() => onPick(r.tokenId)} aria-label={`Enable ${r.sym}`}>
-                  Enable…
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </section>
-  );
-}
-
 export function Settings({ session, root }: { session: Session; root: boolean }) {
   const connected = session.status === "connected";
   const reg = useRegisteredTokens(connected && root);
   const defs = useDefaults(connected && root);
   const disc = useDiscovery(connected && root);
-  const [pick, setPick] = useState("");
   return (
     <>
       <div className="stack-xs">
@@ -454,7 +418,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
           <DefaultTermsCard defaults={defs} />
           <DefaultMarketCard defaults={defs} />
           <DiscoveryCard discovery={disc} />
-          <EnableCard pick={pick} setPick={setPick} />
+          <EnableCard />
           <section className="panel stack-sm" aria-labelledby="regd-h">
             <h2 id="regd-h" className="h2">
               Enabled
@@ -471,7 +435,6 @@ export function Settings({ session, root }: { session: Session; root: boolean })
               </ul>
             )}
           </section>
-          <Requests onPick={setPick} />
         </>
       )}
     </>

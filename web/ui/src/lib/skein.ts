@@ -8,13 +8,12 @@
  *   BRC-100 wallet send (skein docs/MESSAGES.md "The messagebox"). `body` is
  *   dag-cbor. The instance is the AMM base's origin (or its `/@<handle>`
  *   prefix); the recipient its identity key. Root's register messages
- *   (`amm/register`) and a holder's listing request (`amm/requests`).
+ *   (`amm/register`).
  * - **The token list** (0.17.0, shruggr/skein-amm#4: `readTokens`): `GET
  *   <config>/tokens`, the config instance's enable list — each token's id,
  *   topic, metadata, status and its own instance's `url`; and the defaults a
  *   new token instance is created with (`readDefaults`, `GET <config>/defaults`).
- * - **The reads** (no signature; nothing logged): `GET <base>/requests` (the
- *   holders' listing requests), `GET <base>/spends?outpoint=` (the chain
+ * - **The reads** (no signature; nothing logged): `GET <base>/spends?outpoint=` (the chain
  *   state of an outpoint), `GET <base>/color/tokens` (the token list), and
  *   the liveness read `GET <base>/.live/<topic>` (each sender's latest beat:
  *   a lookup service's beat body is its own, skein-overlay 0.12.0).
@@ -65,19 +64,6 @@ async function getJson(url: string, fetchFn: typeof fetch = fetch): Promise<unkn
   const res = await fetchFn(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`GET ${url}: ${res.status} ${(await res.text()).slice(0, 200)}`);
   return res.json();
-}
-
-/** A holder's listing request, as `GET <base>/requests` answers it. */
-export interface WireRequest {
-  tokenId: string;
-  /** The requester's identity key, hex. */
-  from: string;
-  at: number;
-}
-
-export async function readRequests(base: string, fetchFn: typeof fetch = fetch): Promise<WireRequest[]> {
-  const a = await getJson(`${base}/requests`, fetchFn);
-  return Array.isArray(a) ? (a as WireRequest[]).filter((r) => typeof r.tokenId === "string") : [];
 }
 
 /** The chain state of an outpoint (amm-p2p reads.zig `spendOf`). */

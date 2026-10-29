@@ -1,10 +1,9 @@
 //! amm-config's decisions, natively (0.17.0, shruggr/skein-amm#4): the deploy check, the create's
-//! body and config, the enable list's rows and its read, the defaults, the listing requests, and
-//! the config app's manifest.
+//! body and config, the enable list's rows and its read, the defaults, and the config
+//! app's manifest.
 const std = @import("std");
 const w = @import("chain");
 const tokens = @import("src/tokens.zig");
-const requests = @import("src/requests.zig");
 const discovery = @import("src/discovery.zig");
 const vec = @import("vectors");
 const dagjson = @import("dagjson");
@@ -183,34 +182,7 @@ test "answers: a body naming its request is an answer, not a request" {
     try testing.expect(!tokens.isAnswer(try dagjsonValue(a, "{\"fn\":\"enable\",\"args\":{\"tokenId\":\"x\"}}")));
 }
 
-test "listing requests (0.9.0, moved here 0.17.0): recorded (the latest per token, any id form), listed newest first, less the tokens on the list" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const s = ms.store();
-    const t1 = "01" ** 32;
-    const t2 = "02" ** 32;
-    const holder: [33]u8 = .{0x02} ++ .{0x11} ** 32;
-    const other: [33]u8 = .{0x03} ++ .{0x22} ** 32;
-    var rec = try requests.record(a, s, null, t1 ++ "_0", &holder, 100);
-    rec = try requests.record(a, s, rec, t2 ++ ".0", &other, 200);
-    rec = try requests.record(a, s, rec, t1, &other, 300);
-    try testing.expectError(error.BadTokenId, requests.record(a, s, rec, "abc", &holder, 400));
-    const all = try requests.list(a, s, rec, &.{});
-    try testing.expectEqual(@as(usize, 2), all.len);
-    try testing.expectEqualStrings(t1 ++ "_0", all[0].token_id);
-    try testing.expectEqual(@as(u64, 300), all[0].at);
-    const left = try requests.list(a, s, rec, &.{"tm_color_" ++ t1 ++ "_0"});
-    try testing.expectEqual(@as(usize, 1), left.len);
-    const json = try requests.requestsJson(a, left);
-    try testing.expect(std.mem.indexOf(u8, json, "\"tokenId\":\"" ++ t2 ++ "_0\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"from\":\"03" ++ "22" ** 32 ++ "\"") != null);
-    try testing.expectEqualStrings(requests.requests_box, requests.requests_head);
-}
-
-test "the config app's manifest: amm; root's enable, disable, defaults, discovery; admin behind kernel.beef; requests; the reads; the pages" {
+test "the config app's manifest: amm; root's enable, disable, defaults, discovery; admin behind kernel.beef; the reads; the pages" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -231,9 +203,9 @@ test "the config app's manifest: amm; root's enable, disable, defaults, discover
             try testing.expectEqualStrings("kernel.beef", scbor.Value.str(r.get("filters").?.array[0]).?);
             seen |= 1;
         }
-        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "requests")) seen |= 2;
+        // 0.19.0: no listing requests (the box amm/requests and /requests are gone).
+        try testing.expect(!std.mem.eql(u8, addr, "requests") and !std.mem.eql(u8, addr, "/requests"));
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/tokens")) seen |= 4;
-        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/requests")) seen |= 8;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) seen |= 16;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/defaults")) seen |= 32;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/discovery")) {
@@ -241,7 +213,8 @@ test "the config app's manifest: amm; root's enable, disable, defaults, discover
             seen |= 64;
         }
     }
-    try testing.expectEqual(@as(u8, 127), seen);
+    try testing.expectEqual(@as(u8, 1 | 4 | 16 | 32 | 64), seen);
+    try testing.expect(m.get("filters").?.get("requests") == null);
     try testing.expectEqualStrings("amm-config.discovery", scbor.Value.str(m.get("filters").?.get("discovery")).?);
     try testing.expectEqualStrings(tokens.admin_box, "amm/admin");
 }

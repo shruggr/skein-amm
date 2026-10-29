@@ -1,7 +1,7 @@
 /**
  * The skein instances this page talks to (0.17.0, shruggr/skein-amm#4): the
  * CONFIG instance that serves it (`AMM_OVERLAY`: the token list `GET
- * <base>/tokens`, the defaults, the holders' requests, root's enable /
+ * <base>/tokens`, the defaults, root's enable /
  * disable / defaults messages) and, per enabled token, that token's own
  * instance (`tokenBase`: its pools, prices, liveness, `/call`, `/submit`,
  * `/spends`). Every request goes to one of those (a GET by plain `fetch`; every POST through

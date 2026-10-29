@@ -1,7 +1,7 @@
 /**
  * src/data/exchange.ts, wired (skein-amm 0.9.0; 0.17.0: a config instance and
  * one instance per token): each function against fake instances (one route
- * table: the config instance's /tokens, /defaults, /requests and a token
+ * table: the config instance's /tokens, /defaults and a token
  * instance's liveness reads, /lookup, /spends, /call, /sendMessage, at
  * `/@<tokenId>/amm/…`) and a fake wallet, over the Go fixtures
  * (src/fixtures/vectors.zig's copy).
@@ -33,14 +33,12 @@ import {
   executeSwap,
   hostedTokens,
   isRoot,
-  listingRequests,
   lookupOf,
   myPositions,
   myTokens,
   onDataChange,
   quoteSwap,
   registeredTokens,
-  requestListing,
   setExchangeContext,
   subscribePrices,
   swapPools,
@@ -97,7 +95,6 @@ interface Instance {
   tokens: unknown[];
   live: Record<string, unknown[]>;
   pools: Record<string, unknown[]>;
-  requests: unknown[];
   spends: Record<string, unknown>;
   color: Record<string, unknown>;
   sent: { url: string; body: Record<string, unknown> }[];
@@ -129,10 +126,6 @@ function instance(): Instance {
       [`${TOPIC}-live`]: [{ sender: SKEIN, at: Date.now(), from: PEER, body: "" }],
     },
     pools: { [TOKEN]: [wirePool(poolDeploy.id("hex"), v.pool0)] },
-    requests: [
-      { tokenId: OTHER, from: ME, at: 300 },
-      { tokenId: `${"ef".repeat(32)}_0`, from: V2, at: 400 },
-    ],
     spends: {},
     color: {},
     sent: [],
@@ -160,7 +153,6 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     const t = decodeURIComponent(path.slice(7));
     return t in inst.live ? json(inst.live[t]) : json({}, 404);
   }
-  if (path === "/requests") return json(inst.requests);
   if (path === "/spends") return json(inst.spends[u.searchParams.get("outpoint")!] ?? { outpoint: u.searchParams.get("outpoint"), hops: 0, closed: false });
   if (path === "/lookup") {
     const q = JSON.parse(String(init!.body)) as { service: string; query: Record<string, unknown> };
@@ -496,34 +488,18 @@ describe("exchange.ts, wired", () => {
     expect(inst.calls.filter((c) => c.fn === "amm.pool.affirm")).toEqual([]);
   });
 
-  it("myTokens (0.12.0): the module's assets (p color assets), each balance the module's (p color balance <assetTag>), what the swap basket holds; on this exchange (registered) and requested (by this wallet)", async () => {
+  it("myTokens (0.12.0): the module's assets (p color assets), each balance the module's (p color balance <assetTag>), what the swap basket holds; on this exchange (registered) or not", async () => {
     const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
     const swapRow = { outpoint: `${poolDeploy.id("hex")}.1`, satoshis: 1, lockingScript: poolDeploy.outputs[1]!.lockingScript.toHex(), customInstructions: JSON.stringify({ assetId: TOKEN, amount: "50000", protocolID: [2, "amm swap"], keyID: "amm-swap-1", counterparty: "self" }) };
     connect({ held: [held], balances: { [`p color balance ${DEPLOY}v0`]: "9999999" }, swaps: [swapRow] });
     const ts = await myTokens();
     expect(ts).toHaveLength(1);
     // The balance is the module's exact decimal string, not the scripts' sum.
-    expect(ts[0]).toMatchObject({ tokenId: TOKEN, sym: "TST", dec: 0, balance: 9_999_999n, outputs: 1, onExchange: true, requested: false });
+    expect(ts[0]).toMatchObject({ tokenId: TOKEN, sym: "TST", dec: 0, balance: 9_999_999n, outputs: 1, onExchange: true });
     expect(ts[0]!.inSwaps).toBe(50_000n); // the swap basket's output carries 50,000 (pool_deploy:1)
     // Only what the swap basket holds: still listed, with "Move back".
     connect({ swaps: [swapRow] });
     expect(await myTokens()).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: 0n, outputs: 0, inSwaps: 50_000n })]);
-  });
-
-  it("requestListing: a message {fn: request, args: {tokenId}} to <app>/requests, BRC-104-signed, the skein's identity the recipient", async () => {
-    connect();
-    let changed = 0;
-    const off = onDataChange(() => changed++);
-    await requestListing(OTHER);
-    off();
-    expect(changed).toBe(1);
-    expect(inst.sent).toHaveLength(1);
-    const m = inst.sent[0]!;
-    expect(m.url).toBe(`${ORIGIN}/sendMessage`);
-    const msg = m.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
-    expect(Utils.toHex(Array.from(msg.recipient))).toBe(SKEIN);
-    expect(msg.messageBox).toBe("amm/requests");
-    expect(decode(msg.body)).toEqual({ fn: "request", args: { tokenId: OTHER } });
   });
 
   it("enableToken / disableToken (0.17.0): root's {fn: enable, args: {tokenId, beef}} to the config instance's <app>/admin, the deploy's Atomic BEEF from the wallet's module basket (p color <txid>v<vout>), else pasted (hex), else refused; disable {tokenId}; a stopped token enabled again without a BEEF", async () => {
@@ -559,15 +535,11 @@ describe("exchange.ts, wired", () => {
     expect(decode((inst.sent.at(-1)!.body.message as { body: Uint8Array }).body)).toEqual({ fn: "enable", args: { tokenId: TOKEN } });
   });
 
-  it("registeredTokens, listingRequests (0.17.0): the config instance's enable list, every status; the requests newest first", async () => {
+  it("registeredTokens (0.17.0): the config instance's enable list, every status", async () => {
     inst.enabled.push({ tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, status: "failed", reason: "handle taken", since: 1 });
     expect(await registeredTokens()).toEqual([
       { tokenId: TOKEN, sym: "TST", status: "enabled", url: `${ORIGIN}/@${TOKEN}` },
       { tokenId: OTHER, sym: "OTH", status: "failed", reason: "handle taken" },
-    ]);
-    expect(await listingRequests()).toEqual([
-      { tokenId: `${"ef".repeat(32)}_0`, sym: "efefefef", from: V2, at: 400 },
-      { tokenId: OTHER, sym: "OTH", from: ME, at: 300 },
     ]);
   });
 

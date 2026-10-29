@@ -7,7 +7,7 @@
 //   amm-validator   the validator: swap (a libp2p direct call), affirm; root's close         programs/amm-validator
 //   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the read /spends      programs/amm-p2p
 //   amm-config      the config app (0.17.0, shruggr/skein-amm#4): enable/disable/defaults,   programs/amm-config
-//                   the token list, the listing requests, the pages; built into apps/config/bin/
+//                   the token list, the pages; built into apps/config/bin/
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the
 // `1color` module's parser and rules) and its generated fixtures (src/fixtures, gen/).

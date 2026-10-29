@@ -15,7 +15,7 @@ topic per token, registered by root at runtime.
 | `color-lookup` | skein-1color 0.10.0 (copied) | `ls_color`, `ls_color_deploys`, each token's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
-| `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the holders' listing requests, the reads `/requests` and `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
+| `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the read `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
 | | `src/pool.zig` | the pool library (module `pool`), over `1color`'s parser and rules |
 | | `pool/Pool.runar.go` | the contract |
 | | `web/ui` → `www/` | the AMM pages; `www/color/` the 1Color pages |
@@ -377,7 +377,7 @@ topic manager's beat carries no prices.
 |---|---|
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
 | `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); `ls_color`, `ls_color_deploys` (skein-1color README) |
-| `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read |
+| `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read. The config app's in 0.17.0; removed in 0.19.0 |
 | `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): the chain state of an outpoint, a pool followed to its current output, `{outpoint, spentBy?, current?, hops, closed}`; a read |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
 | `GET /.live/tm_color_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` the topic's view digest; the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (the topic not registered) |
@@ -422,6 +422,8 @@ to the sender in this box.
 "request", args: {tokenId}}` from anyone → amm-p2p, recorded under the head
 `amm/requests` (the latest per token); nothing else runs. Settings reads
 them with `GET /requests`; registering the token settles its request.
+Removed in 0.19.0 (David Case 2026-10-29: a holder's request to list a
+token is not part of Open Exchange; a marketplace host adds its own).
 
 **Box `amm`** (derived): the engine's own `watch`, `resume`, `wait` (from
 the instance itself) and, as an event route, the libp2p routes' admits.
@@ -519,7 +521,8 @@ initial values in its config at birth, "The config instance" below);
 `registerLookup`, `deregisterLookup` (the engine's functions remain; no
 route reaches them; topics registered by an earlier version stay served);
 no pages (the `/` read, the filter `page`); no holders' requests (the box
-`requests`, the read `/requests`, the filter `requests`: the config app's).
+`requests`, the read `/requests`, the filter `requests`: the config app's
+in 0.17.0, removed in 0.19.0).
 `config.overlay.topics` and the per-token lookup come from the create's
 config; `config.overlay.terms` (skein-overlay 0.17.0) and
 `config["amm-p2p"].market` are the initial terms and market minimum, read
@@ -566,7 +569,7 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    relay took its own box.
 4. `validator` → `amm-validator` (0.13.0: root's `rescind`, and the steps
    of its thread; 0.11.0–0.12.x: `close`; 0.9.0–0.10.2: the claim's `rescind`)
-5. `requests` → `amm-p2p` (0.9.0: a holder's listing request, anyone) — the config app's in 0.17.0
+5. `requests` → `amm-p2p` (0.9.0: a holder's listing request, anyone) — the config app's in 0.17.0, removed in 0.19.0
 6. http `/call`, `kernel.brc104` → `amm-p2p.call` (a signed request; the
    caller is its key)
 7. libp2p `/amm-validator/1/swap` → `amm-validator.swap` (refused
@@ -607,7 +610,7 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/getDocumentationForTopicManager`, `/getDocumentationForLookupServiceProvider` | read | `topicDocumentation`, `lookupDocumentation` → `overlay.<the same>` | 0.5.0 (http rows before) |
 | `/` (prefix) | read, `root: "www"`, `index: "index.html"` | `page` → `amm-p2p.serve` | 0.5.0 (an http row before); the config app's in 0.17.0 |
 | `/color/tokens` | read | `tokens` → `color-lookup.tokens` | 0.6.0 |
-| `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0 |
+| `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0; removed in 0.19.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
 | `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
@@ -634,8 +637,8 @@ libp2p node); the handle is the token id (`/@<tokenId>`), its topic
 one `create` of the host's instance manager carrying the deploy's BEEF
 (skein's `create {handle, image, config, beef}` → `{handle, identity, url,
 delivered}`). The config instance owns the enable list, emits the creates,
-starts and stops, holds the defaults and the holders' requests, and serves
-the pages.
+starts and stops, holds the defaults, and serves the pages. (The holders'
+listing requests it held in 0.17.0–0.18.x are removed in 0.19.0.)
 
 `apps/config/etc/app.json`: the program `amm-config`
 (`programs/amm-config`, Zig over skein-overlay's `sk`, as the other
@@ -647,15 +650,13 @@ door's `kernel.beef` on `admin` reads `chain/state`); `config["amm-config"]
 | route | what |
 |---|---|
 | mailbox `admin`, `kernel.beef` → `amm-config` | root's `enable {tokenId, beef}`, `disable {tokenId}`, `defaults {terms?, market?}`, each answered in `amm/admin` `{fn, request, replyTo, result \| error}` |
-| mailbox `requests` → `amm-config` | a holder's `request {tokenId}` (as before, moved from amm-p2p) |
 | http `/tokens`, read (`tokens`) | the enable list `[{tokenId, topic, sym, dec, icon?, status, url?, since, reason?, delivered?}]`, newest first |
 | http `/defaults`, read (`defaults`) | `{terms?, market?}` |
-| http `/requests`, read (`requests`) | the requests less the tokens on the list (enabled, creating, starting) |
 | http `/` prefix, read (`page`), `root: "www"` | the pages |
 
 State: `amm/tokens` (`{kind: "amm-tokens", tokens: [<row>]}`, status
 `creating` → `enabled` / `failed`; `stopped`; `starting`), `amm/defaults`
-(`{kind: "amm-defaults", terms?, market?}`), `amm/requests` (as before).
+(`{kind: "amm-defaults", terms?, market?}`).
 A message whose body names a `request` or `replyTo` is an answer (amm-config's
 own, looped back when root's key is the instance's own on a one-key host):
 nothing runs. amm-validator does the same with its answers to root (0.17.0).
@@ -664,8 +665,7 @@ The pages (served by the config instance): the token list from `GET
 <config>/amm/tokens`; everything per token at `<url>/amm` of that token's
 row (`tokenBase`): its pools, prices (one `ls_amm-live` read per token
 instance), liveness, `/call`, `/submit`, `/spends`. No read crosses
-instances. Settings: Enable a token (a token id typed or picked from the
-holders' requests; the deploy's BEEF from the connected wallet's module
+instances. Settings: Enable a token (a token id typed; the deploy's BEEF from the connected wallet's module
 basket, else pasted), the enabled list with Disable / Enable again, the
 Default validator terms and Default market minimum cards; a token's own
 terms are root's message to `/@<tokenId>` (no page for it).

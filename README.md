@@ -5,8 +5,11 @@ Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
 `amm`: the **token app** (this repository's root: the overlay engine, the
 1Color components and the AMM's programs), run as one instance per token
 id, and the **config app** (`apps/config/`: the enable list, the defaults,
-the holders' requests and the pages), run as one instance that creates the
-token instances. Version **0.18.1** (2026-10-29, shruggr/skein#137: the
+and the pages), run as one instance that creates the
+token instances. Version **0.19.0** (2026-10-29, David Case: the holders'
+"request to list a token" is not part of Open Exchange, removed: the box
+`amm/requests`, the read `/requests`, the pages' "Add to this exchange"
+and Settings' requests list). 0.18.1 (2026-10-29, shruggr/skein#137: the
 create/start ask names the topics the host routes to the instance). 0.18.0 (2026-10-28, shruggr/skein#137; David
 Case: discovery is its own instance, "the Open Exchange's Settings page gets
 an option to turn it on and off"): root's `{fn: "discovery", args: {on}}`
@@ -135,7 +138,7 @@ were.
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (an affirmed deploy's pool and its continuations, unspent) of every token topic the overlay serves, each query naming its token; its beat, the prices |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last and submits it to its own overlay by message, answering on the engine's answer (`swap`, a libp2p direct call); affirms an LP's proposed pool at its terms (`affirm`, called in-VM by amm-p2p, 0.11.0); both only while terms are set (0.15.0); root's `terms` (box `amm/validator`: the record `amm/terms`, set or cleared); root's `close` (box `amm/validator`): the contract's Close on the validator's path, the pool a caller input of the instance's wallet |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1` with `terms`: a transaction carried to the validator the caller names), the read `/spends`; the market minimum (`amm/market`, else the config's `config["amm-p2p"].market`, 0.17.0) |
-| `amm-config` | `programs/amm-config`, built into `apps/config/bin/` | the config app (0.17.0): root's `enable` / `disable` / `defaults` (box `amm/admin`), the creates, starts and stops it asks of the host's instance manager, the enable list (`/tokens`), the defaults (`/defaults`), the holders' listing requests (box `amm/requests`, the read `/requests`) and the pages (`apps/config/www/`) |
+| `amm-config` | `programs/amm-config`, built into `apps/config/bin/` | the config app (0.17.0): root's `enable` / `disable` / `defaults` (box `amm/admin`), the creates, starts and stops it asks of the host's instance manager, the enable list (`/tokens`), the defaults (`/defaults`), and the pages (`apps/config/www/`) |
 | | `src/pool.zig` | the Pool contract as the overlay sees it: recognising a pool, its state, the pool checks (module `pool`, over the `1color` module's parser) |
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
@@ -233,7 +236,7 @@ grant`; no page does that). The flow, each step one message:
    commissionBps} | null, market?: {minCommissionBps} | null}}`: the head
    `amm/defaults` (partial; `null` clears one), applied to the creates
    after it.
-7. `GET <config>/amm/tokens` (newest first), `/defaults`, `/requests`:
+7. `GET <config>/amm/tokens` (newest first), `/defaults`:
    anyone, nothing logged.
 
 A token instance's terms are its own (`amm/terms`, root's `{fn: "terms"}`
@@ -387,15 +390,15 @@ wildcard DNS, `<host>/@<handle>/amm`).
    from the app's own tree (`www/`): the Open Exchange — Landing (the
    hosted tokens, their prices from the beats), Swap, Liquidity (deploy a
    position at the terms; close one, `bsvFee` the miner fee left from the
-   pool), Your tokens ("Add to this exchange": a listing request), Settings
-   (root: the validator's terms, 0.15.0; the market's terms, 0.16.0; register and deregister a token,
-   the requests); the 1Color pages
+   pool), Your tokens, Settings
+   (root: the validator's terms, 0.15.0; the market's terms, 0.16.0; register and deregister a token);
+   the 1Color pages
    at `<base>/color/`. They read `<base>/listTopicManagers`,
    `<base>/color/tokens`, `<base>/.live/<topic>` (the beats),
-   `<base>/lookup` (`ls_amm`, `ls_color`), `<base>/requests`,
+   `<base>/lookup` (`ls_amm`, `ls_color`),
    `<base>/spends?outpoint=`, and call `<base>/call` (the relay),
-   `<base>/submit` (a Close) and `<origin>/sendMessage` (a listing request,
-   root's registers). Settings is shown to every connected wallet (`isRoot`
+   `<base>/submit` (a Close) and `<origin>/sendMessage` (root's
+   registers). Settings is shown to every connected wallet (`isRoot`
    is a stub: skein has no read of a key's grants); the skein refuses a
    non-root's register messages.
 
@@ -485,7 +488,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.18.1 |
+| this app | 0.19.0 |
 | skein | main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.17.0 (9d72eca) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.11.4 (53973f1; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |

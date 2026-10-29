@@ -131,7 +131,7 @@ this skein's validator at its terms (`amm.pool.terms`; `src/lp/poolDeploy.ts`:
 every input SIGHASH_SINGLE over its own output, one unit left for the
 claim; accepted, the claimed deploy filed); a Close (`src/lp/close.ts`:
 `bsvFee` from the pool, or 0 and a broadcast funding; submitted to
-`/submit`); a listing request and root's registers as messages
+`/submit`); root's registers as messages
 (`src/lib/skein.ts`, `POST <origin>/sendMessage`). `isRoot` is a stub (no
 read of a key's grants): every connected wallet sees Settings. The
 `?fixture=` switch and the fixtures are gone; so are 0.8.1's tab pages

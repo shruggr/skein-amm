@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.19.0 (2026-10-29)
+
+The holders' "request to list a token" is removed (David Case 2026-10-29:
+it is not part of Open Exchange as a product; a marketplace host adds its
+own mechanism).
+
+- amm-config: the box `amm/requests` (`{fn: "request"}` from anyone), the
+  head `amm/requests`, the read route `/requests` (filter `requests`) and
+  `programs/amm-config/src/requests.zig` are gone. A request recorded by
+  an earlier version stays in the instance's state, unread.
+- Pages: Your tokens drops "Add to this exchange" (`requestListing`) and
+  the "Requested" mark; a token not on the list reads "Not on this
+  exchange". Settings drops "Requests to list" and its "Enable…" pick;
+  Enable a token takes a typed token id. `listingRequests`,
+  `useListingRequests`, `readRequests`, `WireRequest` gone.
+- zig build test 79 (amm-config 8); vitest 157; `apps/config/bin/amm-config.wasm`
+  and `apps/config/www/` rebuilt.
+
 ## 0.18.1 (2026-10-29)
 
 The create/start ask names the topics the host routes to the instance

@@ -1,39 +1,16 @@
 /**
- * Your tokens: the wallet's own 1Color tokens with balance (the BRC-207 module's), each on this
- * exchange or with "Add to this exchange"; beside the balance, what the swap basket holds of it,
+ * Your tokens: the wallet's own 1Color tokens with balance (the BRC-207 module's), each marked on
+ * this exchange or not; beside the balance, what the swap basket holds of it,
  * with "Move back" (0.12.0: the recovery path for a stuck swap, and a closed position's tokens).
  */
 import { useState } from "react";
-import { COLOR_DEPLOY_HREF, moveBackTokens, requestListing, useMyTokens, type Session, type WalletToken } from "../data/exchange";
+import { COLOR_DEPLOY_HREF, moveBackTokens, useMyTokens, type Session, type WalletToken } from "../data/exchange";
 import { fmtAmount } from "./format";
 import { NeedWallet, Notice, TokenName } from "./bits";
 
 function Status({ t }: { t: WalletToken }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   if (t.onExchange) return <span className="ok small">On this exchange</span>;
-  if (t.requested) return <span className="muted small">Requested</span>;
-  return (
-    <span className="status-cell">
-      <button
-        type="button"
-        className="btn btn-outline"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true);
-          setError(null);
-          requestListing(t.tokenId).catch((e: unknown) => {
-            setError(e instanceof Error ? e.message : String(e));
-            setBusy(false);
-          });
-        }}
-        aria-label={`Add ${t.sym} to this exchange`}
-      >
-        {busy ? "Asking…" : "Add to this exchange"}
-      </button>
-      {error && <span className="bad small">{error}</span>}
-    </span>
-  );
+  return <span className="muted small">Not on this exchange</span>;
 }
 
 function SwapBasket({ t }: { t: WalletToken }) {
@@ -84,7 +61,7 @@ export function YourTokens({ session }: { session: Session }) {
         </a>
       </div>
       <p className="lead lead-tight">
-        1Color tokens in your wallet. Add one to ask this exchange to list it. The swap basket holds tokens on their way into a swap; Move back
+        1Color tokens in your wallet. The swap basket holds tokens on their way into a swap; Move back
         returns them to your wallet.
       </p>
       {!connected ? (
@@ -120,7 +97,6 @@ export function YourTokens({ session }: { session: Session }) {
               </ul>
             )}
           </section>
-          <p className="footnote">Listing is free for now. Root registers a requested token in Settings.</p>
         </>
       )}
     </>

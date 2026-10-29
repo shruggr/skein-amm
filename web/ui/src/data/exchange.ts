@@ -5,8 +5,8 @@
  *
  * Where each comes from (0.17.0, shruggr/skein-amm#4): the pages are served by
  * the CONFIG instance (`context.base`): its token list (`GET <config>/tokens`:
- * each enabled token with its own instance's url), its defaults, the holders'
- * requests and root's enable / disable / defaults messages. Everything per
+ * each enabled token with its own instance's url), its defaults and root's
+ * enable / disable / defaults messages. Everything per
  * token — pools, prices, liveness, `/call`, `/submit`, `/spends` — goes to
  * that token's own instance (`tokenBaseOf`: `<url>/amm`). No read crosses
  * instances.
@@ -37,19 +37,18 @@
  *   (src/lp/close.ts, `POST /submit`).
  * - **Your tokens**: the wallet's BRC-207 module (`p color assets`, `p color
  *   balance <assetTag>`; src/wallet/color.ts) and the active swap basket
- *   (`moveBackTokens`); `requestListing` a message to the box
- *   `<app>/requests`.
+ *   (`moveBackTokens`).
  * - **Settings** (root of the config instance, 0.17.0): the enable list
  *   (`GET <config>/tokens`) with Disable / Enable again; Enable a token —
  *   root's `{fn: "enable", args: {tokenId, beef}}` to `<app>/admin`, the
- *   deploy's BEEF from the wallet's module basket or pasted; the holders'
- *   requests (`GET <config>/requests`); the defaults a new token instance is
+ *   deploy's BEEF from the wallet's module basket or pasted; the defaults a
+ *   new token instance is
  *   created with (`GET <config>/defaults`; root's `{fn: "defaults"}`): its
  *   initial validator terms and market minimum (a token's own terms are root's
  *   message to `/@<tokenId>`: not on this page). `isRoot` is a stub (no grants read).
  * - **The instance's identity** (0.15.0, `instanceIdentity`): the key its
- *   signed answers carry, the recipient of root's messages and a listing
- *   request (a market-only skein refuses `amm.pool.terms`, which named it
+ *   signed answers carry, the recipient of root's messages (a market-only
+ *   skein refuses `amm.pool.terms`, which named it
  *   before).
  *
  * Ids (David, 2026-10-09): every token id is the BRC-207 assetId
@@ -68,7 +67,7 @@ import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { outpointText, parseOutpoint, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readDefaults, readDiscovery, readRequests, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
+import { readBeats, readDefaults, readDiscovery, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -302,8 +301,6 @@ export interface WalletToken {
   inSwaps: bigint;
   /** Registered on this exchange. */
   onExchange: boolean;
-  /** The user asked this exchange to list it. */
-  requested: boolean;
 }
 
 /** A token seen on the discovery topic (`tm_color`). */
@@ -329,15 +326,6 @@ export interface RegisteredToken {
 }
 
 export type { EnabledToken, Defaults, Discovery };
-
-/** A holder's "Add to this exchange". */
-export interface ListingRequest {
-  tokenId: TokenId;
-  sym: string;
-  /** The requester's identity key. */
-  from: string;
-  at: number;
-}
 
 export interface Session {
   status: "disconnected" | "connecting" | "connected";
@@ -970,8 +958,7 @@ export async function validatorTerms(tokenId: TokenId): Promise<ValidatorTerms |
  * (web/src/tokens/instance.ts `identity`). A token instance's (`base` a token
  * base) off a signed `amm.swap.terms`, which every token instance answers,
  * validator or market only; the config instance's (0.17.0, no `base`) off a
- * signed read of its token list. The recipient of root's messages and of a
- * listing request.
+ * signed read of its token list. The recipient of root's messages.
  */
 export async function instanceIdentity(base?: string): Promise<string> {
   const { af } = needWallet();
@@ -1094,22 +1081,19 @@ async function baseHolding(outpoint: string): Promise<string> {
  * and what the active swap basket (`amm-swap`) holds of each; symbol,
  * decimals and icon from the token list, else the token's deploy
  * (`ls_color_deploys`), else a deploy the wallet holds. Each marked on this
- * exchange (registered) and requested.
+ * exchange (registered) or not.
  */
 export async function myTokens(): Promise<WalletToken[]> {
   const { wallet } = needWallet();
-  const [held, swaps, topics, meta, requests] = await Promise.all([
+  const [held, swaps, topics, meta] = await Promise.all([
     heldOutputs(wallet),
     swapTotals(wallet).catch(() => new Map<string, { amount: bigint; outputs: number }>()),
     enabledTokens().catch(() => [] as EnabledToken[]),
     tokenMeta(),
-    readRequests(context.base).catch(() => []),
   ]);
   const inv = buildInventory(held.filter((h) => h.available));
   const ids = [...new Set([...inv.tokens.filter((t) => t.valueOutputs > 0).map((t) => t.tokenId), ...swaps.keys()])];
   const registered = new Set(topics.map((t) => t.tokenId));
-  const me = context.identityKey;
-  const asked = new Set(requests.filter((r) => r.from === me).map((r) => r.tokenId));
   const out = await Promise.all(
     ids.map(async (tokenId): Promise<WalletToken> => {
       const t = inv.tokens.find((x) => x.tokenId === tokenId);
@@ -1128,7 +1112,6 @@ export async function myTokens(): Promise<WalletToken[]> {
         outputs: t?.valueOutputs ?? 0,
         inSwaps: swaps.get(tokenId)?.amount ?? 0n,
         onExchange: registered.has(tokenId),
-        requested: asked.has(tokenId),
       };
     }),
   );
@@ -1148,14 +1131,6 @@ export async function moveBackTokens(tokenId: TokenId): Promise<{ txid: string; 
   const r = await moveBack({ wallet, af, base: await tokenBaseOf(tokenId), tokenId, meta: { sym: symOf(meta, tokenId) }, satsPerKb: FEE_RATE_SATS_PER_KB, payouts: context.payouts });
   emit();
   return { txid: r.txid, amount: r.amount, internalized: r.internalized, errors: r.errors };
-}
-
-/** "Add to this exchange": a message `{fn: "request", args: {tokenId}}` to the config instance's box `<app>/requests` (anyone may send; recorded for root). */
-export async function requestListing(tokenId: TokenId): Promise<void> {
-  const { af } = needWallet();
-  const me = await instanceIdentity();
-  await sendMessage(af, context.base, me, `${app()}/requests`, { fn: "request", args: { tokenId: sdkTokenId(tokenId) } });
-  emit();
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,18 +1297,6 @@ export async function setDiscovery(on: boolean): Promise<void> {
   emit();
 }
 
-/** Holders' requests to list a token, newest first (`GET <config>/requests`: the ones not on the list yet). */
-export async function listingRequests(): Promise<ListingRequest[] | null> {
-  const [rs, meta] = await Promise.all([readRequests(context.base), tokenMeta()]);
-  return rs
-    .map((r) => {
-      const id = parseOutpoint(r.tokenId.replace("_", "."));
-      const tokenId = id ? tokenIdText(id) : r.tokenId;
-      return { tokenId, sym: symOf(meta, tokenId), from: r.from, at: r.at };
-    })
-    .sort((a, b) => b.at - a.at);
-}
-
 // ---------------------------------------------------------------------------
 // Hooks over the functions above
 // ---------------------------------------------------------------------------
@@ -1389,7 +1352,6 @@ export const useValidatorTerms = (tokenId: TokenId | undefined) =>
   useData(() => (tokenId ? validatorTerms(tokenId) : Promise.resolve(null)), [tokenId]);
 export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabled);
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
-export const useListingRequests = (enabled: boolean) => useData(listingRequests, [], enabled);
 export const useDefaults = (enabled: boolean) => useData(defaults, [], enabled);
 export const useDiscovery = (enabled: boolean) => useData(discoveryState, [], enabled);
 /** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
