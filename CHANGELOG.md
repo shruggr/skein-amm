@@ -4,6 +4,17 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.21.1 (2026-10-29)
+
+0.21.0's token manifest dropped `config` entirely; skein derives the
+overlay engine's routes (the box `amm` as `event` and `mailbox`,
+`/submit`, `/lookup`) from the MANIFEST's own `config.overlay` (skein
+`src/host/manifest.ts` `overlayWiring`; an install's `--config` is merged
+after), so an in-place install of 0.21.0 removed those four rows from the
+instance. `etc/app.json` carries `config: {overlay: {}}` again (no lookup,
+no topic); the amm-p2p/amm-validator manifest tests back as in 0.20.1
+(they read `config.overlay`). Manifests 0.21.1.
+
 ## 0.21.0 (2026-10-29)
 
 The AMM lookup named per asset (David, 2026-10-29: a lookup service name is
@@ -17,7 +28,8 @@ pools; plan ls-amm-per-asset-2026-10-29).
   create's and start's `topics` are `[tm_color_<id>, ls_color_<id>,
   ls_amm_<id>]`. Discovery unchanged.
 - Token app `etc/app.json`: no `config` (its default lookup `ls_amm`
-  removed: a token instance's lookups are its create's); descriptions of
+  removed: a token instance's lookups are its create's; 0.21.1 puts
+  `config.overlay: {}` back); descriptions of
   both manifests; version 0.21.0.
 - amm-lookup: comments and `documentation` name `ls_amm_<assetId>` and its
   beat `ls_amm_<assetId>-live`; the INDEX name stays `ls_amm` (the head

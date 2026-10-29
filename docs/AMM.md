@@ -525,8 +525,10 @@ no pages (the `/` read, the filter `page`); no holders' requests (the box
 in 0.17.0, removed in 0.19.0).
 `config.overlay.topics` and the per-token lookups (`ls_amm_<assetId>`,
 `ls_color_<assetId>`) come from the create's config; 0.21.0: the manifest
-declares no lookup (no `config` at all; `ls_amm` was its default until
-0.20.1); `config.overlay.terms` (skein-overlay 0.17.0) and
+declares no lookup (`config.overlay` is `{}`: skein derives the engine's
+routes — the box `amm` as event and mailbox, `/submit`, `/lookup` — from
+the manifest's own `config.overlay`, so it stays, empty, 0.21.1; `ls_amm`
+was its default lookup until 0.20.1); `config.overlay.terms` (skein-overlay 0.17.0) and
 `config["amm-p2p"].market` are the initial terms and market minimum, read
 when the heads `amm/terms` / `amm/market` are unset (a record there, its
 `null` included, wins). amm-validator signs for every topic the engine

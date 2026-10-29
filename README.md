@@ -6,7 +6,9 @@ Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
 1Color components and the AMM's programs), run as one instance per token
 id, and the **config app** (`apps/config/`: the enable list, the defaults,
 and the pages), run as one instance that creates the
-token instances. Version **0.21.0** (2026-10-29, David: a lookup name is
+token instances. Version **0.21.1** (2026-10-29; 0.21.1 keeps the token
+manifest's `config.overlay`, empty, from which skein derives the engine's
+routes; 0.21.0 David: a lookup name is
 advertised network-wide, so two providers under one name must answer over
 the same data): the AMM lookup is named per token, `ls_amm_<assetId>`,
 paired with `tm_color_<assetId>` as `ls_color_<assetId>` is, its beat on
@@ -509,7 +511,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.21.0 |
+| this app | 0.21.1 |
 | skein | main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.17.0 (9d72eca) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.12.1 (16b0d4b; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (0.12.0: `color-lookup.wasm` rebuilt, `ls_color_deploys` gone; 0.12.1: `ls_color` answers BRC-207's query over `tm_color`), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |

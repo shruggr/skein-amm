@@ -1128,14 +1128,14 @@ test "market and validator are the engine's (0.6.0, shruggr/skein#120), root's s
         try testing.expect(!std.mem.eql(u8, scbor.Value.str(row.get("address")) orelse "", "validate"));
     }
     try testing.expect(m.get("start") == null and m.get("stop") == null);
-    // 0.21.0: the token manifest carries no config at all (its lookups are the create's).
-    const config = m.get("config") orelse return;
+    const config = m.get("config").?;
     if (if (config.get("amm")) |c| c.get("ammP2p") else null) |p2p| {
         try testing.expect(p2p.get("market") == null and p2p.get("heartbeatSeconds") == null and p2p.get("offlineSeconds") == null);
     }
     // "this shouldn't have been a config in the manifest. This should be a setting that the user is
     // configuring": root turns a role on at install (--config) or by the engine's switch.
-    if (config.get("overlay")) |ov_cfg| try testing.expect(ov_cfg.get("market") == null and ov_cfg.get("validator") == null);
+    const ov_cfg = config.get("overlay").?;
+    try testing.expect(ov_cfg.get("market") == null and ov_cfg.get("validator") == null);
 }
 
 test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token app): no dispatch, reads or senders; the box amm is the engine's (derived), amm-p2p's box amm/amm-p2p; no register, no pages, no requests; the reads read routes" {
@@ -1261,7 +1261,7 @@ test "amm.pool.terms (0.15.0): the record root set, with this validator's identi
     try testing.expectEqualStrings("no validator here", terms.no_validator);
     // The manifest ships no terms: config.amm has no ammValidator; amm.pool.terms is still declared.
     const m = try dagjson.decode(a, manifest_json);
-    if (m.get("config")) |c| try testing.expect(c.get("amm") == null); // 0.16.0: no config.amm at all (commission gone too); 0.21.0: no config
+    try testing.expect(m.get("config").?.get("amm") == null); // 0.16.0: no config.amm at all (commission gone too)
     try testing.expect((try app.declOf(a, m, relay.fn_pool_terms)) != null);
 }
 
@@ -1277,7 +1277,7 @@ test "market terms (0.16.0, David 2026-10-24): a runtime record root sets — fn
         if (eql(u8, scbor.Value.str(g).?, market.fn_market)) break true;
     } else false;
     try testing.expect(gated);
-    if (m.get("config")) |c| try testing.expect(c.get("amm") == null);
+    try testing.expect(m.get("config").?.get("amm") == null);
     try testing.expectEqualStrings("amm/amm-p2p", names.own_box);
     try testing.expectEqualStrings("amm/market", try market.headName(a, relay.app_name));
 
