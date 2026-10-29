@@ -660,6 +660,12 @@ enters only if its BEEF checks against `chain/state` (skein #164, docs/VM.md
 
 ## The config instance (0.17.0)
 
+**0.23.0: moved.** The config app (`apps/config`, `programs/amm-config`,
+`image/config`) is now shruggr/open-exchange's swap app, changed there:
+root's decisions are facts emitted as events the Open Exchange host reacts
+to (shruggr/open-exchange#1, shruggr/skein#164); no instance manager. This
+section describes 0.17.0–0.22.1 as they were.
+
 shruggr/skein-amm#4 (David Case 2026-10-27/28): one token instance per
 token id, from one token image, all on one one-key host (one key, one
 libp2p node); the handle is the token id (`/@<tokenId>`), its topic

@@ -2,7 +2,7 @@
 # Builds the market UI into ../../www/ and serves it as a plain static site on
 # :4800, for opening against a skein instance: set VITE_AMM_OVERLAY to the AMM
 # app's base URL first (a page at a dev server's root names no app). Do not
-# commit a www/ built this way (it bakes the base URL in): scripts/www.sh.
+# commit a www/ built this way (it bakes the base URL in): shruggr/open-exchange's scripts/www.sh.
 #
 # No proxy: the instance's router already sends permissive CORS headers
 # (access-control-allow-origin: *, see README.md "The instance").

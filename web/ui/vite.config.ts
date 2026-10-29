@@ -12,12 +12,10 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 // tsconfig.json's `paths` mirror these aliases for the type checker.
 const runarDir = resolve(here, process.env.RUNAR_DIR ?? "../../../../bsv/runar");
 
-// Build output (`npm run build` -> ../../apps/config/www/; 0.17.0: the config
-// app's, which serves the pages) is that app's `www/`, committed:
-// the tree a skein serves under /<app>/ (nothing is built on the skein). The
-// 1Color pages are copied into its www/color/ afterwards
-// (../../scripts/color-pages.sh), so a build empties www/ and the whole
-// sequence is ../../scripts/www.sh. Relative base so the pages work under
+// Build output (`npm run build` -> dist/, not committed; 0.23.0): the pages are
+// served by shruggr/open-exchange's swap app, whose scripts/www.sh builds them
+// from this library at a tag into its apps/swap/www/ (--outDir) and copies the
+// 1Color pages beside them. Relative base so the pages work under
 // /<app>/ on any instance, and under a host's "/@<handle>/<app>/" dev form.
 export default defineConfig({
   base: "./",
@@ -40,7 +38,7 @@ export default defineConfig({
     dedupe: ["@bsv/sdk", "cbor2", "@ipld/dag-cbor", "cborg"],
   },
   build: {
-    outDir: resolve(here, "../../apps/config/www"),
+    outDir: resolve(here, "dist"),
     emptyOutDir: true,
     assetsDir: "assets",
   },

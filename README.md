@@ -1,12 +1,14 @@
 # skein-amm
 
-A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162), the Open
-Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
-`amm`: the **token app** (this repository's root: the overlay engine, the
-1Color components and the AMM's programs), run as one instance per token
-id, and the **config app** (`apps/config/`: the enable list, the defaults,
-and the pages), run as one instance that creates the
-token instances. Version **0.22.0** (2026-10-30, shruggr/skein-amm#5): the
+A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162): the AMM
+LIBRARY of the Open Exchange. It holds the **token app** `amm` (this
+repository's root: the overlay engine, the 1Color components and the AMM's
+programs), run as one instance per token id, and the page library
+(`web/ui`). The distributable — the host program, the swap app (formerly
+`apps/config` here), the images and the setup — is
+[shruggr/open-exchange](https://github.com/shruggr/open-exchange) (0.23.0,
+shruggr/open-exchange#1: `apps/config`, `image/config`, `programs/amm-config`
+and the pages build moved there). Version **0.22.0** (2026-10-30, shruggr/skein-amm#5): the
 token app takes its token as an event — `{kind: "deploy", beef}` in the box
 `amm/deploy` (`kernel.beef`), the program `amm-setup` writes the head
 `amm/token` and registers the token's topic and lookups with the engine in
@@ -164,14 +166,12 @@ were.
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last and submits it to its own overlay by message, answering on the engine's answer (`swap`, a libp2p direct call); affirms an LP's proposed pool at its terms (`affirm`, called in-VM by amm-p2p, 0.11.0); both only while terms are set (0.15.0); root's `terms` (box `amm/validator`: the record `amm/terms`, set or cleared); root's `close` (box `amm/validator`): the contract's Close on the validator's path, the pool a caller input of the instance's wallet |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1` with `terms`: a transaction carried to the validator the caller names), the read `/spends`; the market minimum (`amm/market`, else the config's `config["amm-p2p"].market`, 0.17.0) |
 | `amm-setup` | `programs/amm-setup` | the token's setup (0.22.0): the deploy event in `amm/deploy` → the head `amm/token` and the token's `tm_color_<id>`, `ls_color_<id>`, `ls_amm_<id>` registered with the engine by call; the read `/token` |
-| `amm-config` | `programs/amm-config`, built into `apps/config/bin/` | the config app (0.17.0): root's `enable` / `disable` / `defaults` (box `amm/admin`), the creates, starts and stops it asks of the host's instance manager, the enable list (`/tokens`), the defaults (`/defaults`), and the pages (`apps/config/www/`) |
-| | `src/deploy.zig` | a 1Color deploy read from a BEEF (0.22.0; module `deploy`): amm-config's enable, amm-setup's event |
+| | `src/deploy.zig` | a 1Color deploy read from a BEEF (0.22.0; module `deploy`): amm-setup's event, open-exchange's swap app's enable |
 | | `src/pool.zig` | the Pool contract as the overlay sees it: recognising a pool, its state, the pool checks (module `pool`, over the `1color` module's parser) |
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
-| | `web/ui`, `web/engine` | the pages (the Open Exchange: Landing, Swap, Liquidity, Your tokens, Settings) and the matching engine, built into `apps/config/www/` |
-| | `apps/config/www/color/` | skein-1color 0.12.1's pages: deploy a token (through the wallet's BRC-207 `color` module), root's token topics (kept beside the pages: the deploy page is linked from Your tokens) |
-| | `image/token/`, `image/config/` | the two skein images (shruggr/skein#152): each the chain app and its app installed at birth (below, "The images") |
+| | `web/ui`, `web/engine` | the pages (the Open Exchange: Landing, Swap, Liquidity, Your tokens, Settings) and the matching engine; the pages are built by shruggr/open-exchange (its `scripts/www.sh`, into its swap app's `www/`) |
+| | `image/token/` | the token image (shruggr/skein#152): the chain app and the token app installed at birth (below, "The images"); Open Exchange installs the token app by tarball from its own `image/token` |
 
 docs/AMM.md has the pieces, the pool rule, the interfaces, the rows and
 what is not wired.
@@ -182,10 +182,9 @@ Zig 0.16.0 (`mise.toml`), Go 1.27 for `pool/` and `gen/`, Node 22 or later
 and npm for the pages.
 
 ```
-zig build test     # the pool library and the five programs, natively
-zig build bin      # bin/: the token app's four programs, built (amm-config into apps/config/bin/); overlay.wasm and color-*.wasm, copied
+zig build test     # the pool library and the four programs, natively
+zig build bin      # bin/: the token app's four programs, built; overlay.wasm and color-*.wasm, copied
 go test ./pool/...
-scripts/www.sh     # apps/config/www/: the pages from web/ui, then the 1Color pages into its color/
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**

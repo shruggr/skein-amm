@@ -4,6 +4,21 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.23.0 (2026-10-30)
+
+The config app leaves (shruggr/open-exchange#1): skein-amm is the AMM
+library, Open Exchange the distributable.
+
+- Removed: `apps/config` (its manifest, `bin/amm-config.wasm`, `www/`),
+  `programs/amm-config`, `image/config`, `scripts/www.sh`,
+  `scripts/color-pages.sh`. The swap app (shruggr/open-exchange `apps/swap`,
+  program `config`) is amm-config 0.22.0 moved and changed there; its pages
+  are built there from this repository's `web/ui` at a tag.
+- `web/ui`'s build writes `dist/` (not committed); `--outDir` for a caller.
+- The token app's tree no longer carries the config app's pages (about
+  4.6 MB less in each token instance installed from this tag).
+- zig: 79 (the pool library and four programs); vitest 159.
+
 ## 0.22.1 (2026-10-30)
 
 The page library (`web/ui`) reads the Open Exchange's swap instance
