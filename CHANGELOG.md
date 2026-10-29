@@ -4,6 +4,25 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.22.1 (2026-10-30)
+
+The page library (`web/ui`) reads the Open Exchange's swap instance
+(shruggr/open-exchange#1; skein #164; skein-amm#5): root's decisions are
+facts, the host makes the instances. The pages themselves are built by
+shruggr/open-exchange (its `apps/swap/www`); the token app is unchanged.
+
+- `/tokens` rows: `status` is `enabled` or `disabled`; no `url`, `reason`
+  or `delivered`. A token's instance is computed: `tokenBase(tokenId,
+  base)` = `<origin>/@<tokenId>/amm` (`src/lib/config.ts`).
+- `/discovery`: `{on, since?}`; no status machine, no `url`.
+- Settings: each token enabled or disabled (Disable; Enable again for a
+  disabled one, with no BEEF: the swap instance keeps its deploy); the
+  Discovery switch on or off; the "being created…", "starting…" and
+  "failed" texts gone.
+- `apps/config` (still here, with its 0.22.0 pages) is left as it was; it
+  goes in the next release, now that open-exchange carries the swap app.
+- vitest: 159.
+
 ## 0.22.0 (2026-10-30)
 
 The token app's setup on the deploy event (shruggr/skein-amm#5; David

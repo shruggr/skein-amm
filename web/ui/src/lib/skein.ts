@@ -143,25 +143,22 @@ export async function readBeats(base: string, topic: string, fetchFn: typeof fet
     }));
 }
 
-/** A token on the config instance's enable list (0.17.0, `GET <config>/tokens`, amm-config tokens.zig). */
+/**
+ * A token on the swap instance's enable list (`GET <swap>/tokens`; Open Exchange, shruggr/open-exchange#1:
+ * root's decision as a fact, enabled or disabled; the host makes its instance, `<origin>/@<tokenId>`).
+ */
 export interface EnabledToken {
   tokenId: string;
   topic: string;
   sym: string;
   dec: number;
   icon?: string;
-  status: "creating" | "enabled" | "failed" | "stopped" | "starting";
-  /** The token instance's origin path (`<host>/@<tokenId>`), once created. */
-  url?: string;
-  /** When it was enabled, ms. */
+  status: "enabled" | "disabled";
+  /** When root last enabled or disabled it, ms. */
   since: number;
-  /** Why it failed (the instance manager's error), or why a disable or start was refused. */
-  reason?: string;
-  /** The create's delivery of the deploy into the instance: the host's verdict. */
-  delivered?: { verdict: string; reason?: string };
 }
 
-const STATUSES = new Set(["creating", "enabled", "failed", "stopped", "starting"]);
+const STATUSES = new Set(["enabled", "disabled"]);
 
 /** The config instance's enable list, newest first as the read lists it. */
 export async function readTokens(base: string, fetchFn: typeof fetch = fetch): Promise<EnabledToken[]> {
@@ -175,12 +172,7 @@ export async function readTokens(base: string, fetchFn: typeof fetch = fetch): P
       dec: typeof t.dec === "number" ? t.dec : 0,
       ...(typeof t.icon === "string" ? { icon: t.icon } : {}),
       status: t.status as EnabledToken["status"],
-      ...(typeof t.url === "string" ? { url: t.url } : {}),
       since: typeof t.since === "number" ? t.since : 0,
-      ...(typeof t.reason === "string" ? { reason: t.reason } : {}),
-      ...(t.delivered && typeof t.delivered === "object" && typeof (t.delivered as { verdict?: unknown }).verdict === "string"
-        ? { delivered: t.delivered as { verdict: string; reason?: string } }
-        : {}),
     }));
 }
 
@@ -190,33 +182,17 @@ export interface Defaults {
   market?: { minCommissionBps: number };
 }
 
-/**
- * The discovery instance (0.18.0, shruggr/skein#137; `GET <config>/discovery`, amm-config
- * discovery.zig): `on` root's last ask, `status` its progress, `url` the instance's once created.
- */
+/** Discovery (`GET <swap>/discovery`): root's last decision, on or off, and since when (ms); the host starts or stops the discovery instance. */
 export interface Discovery {
   on: boolean;
-  status?: "creating" | "enabled" | "failed" | "stopping" | "stopped" | "starting";
-  url?: string;
-  reason?: string;
   since?: number;
 }
 
-const DISCOVERY_STATUS = new Set(["creating", "enabled", "failed", "stopping", "stopped", "starting"]);
-
-/** `GET <config>/discovery`: the record, or `{on: false}` (none, or another shape). */
+/** `GET <swap>/discovery`: `{on, since?}`, or `{on: false}` (none, or another shape). */
 export async function readDiscovery(base: string, fetchFn: typeof fetch = fetch): Promise<Discovery> {
   const a = (await getJson(`${base}/discovery`, fetchFn)) as Record<string, unknown> | null;
   if (!a || typeof a.on !== "boolean") return { on: false };
-  if (a.status === undefined) return { on: a.on };
-  if (typeof a.status !== "string" || !DISCOVERY_STATUS.has(a.status)) return { on: false };
-  return {
-    on: a.on,
-    status: a.status as Discovery["status"],
-    ...(typeof a.url === "string" ? { url: a.url } : {}),
-    ...(typeof a.reason === "string" ? { reason: a.reason } : {}),
-    ...(typeof a.since === "number" ? { since: a.since } : {}),
-  };
+  return { on: a.on, ...(typeof a.since === "number" ? { since: a.since } : {}) };
 }
 
 export async function readDefaults(base: string, fetchFn: typeof fetch = fetch): Promise<Defaults> {

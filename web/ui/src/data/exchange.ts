@@ -313,16 +313,12 @@ export interface DiscoveryToken {
   seenAt?: number;
 }
 
-/** A token on this exchange's list (0.17.0: the config instance's enable list), as Settings lists it. */
+/** A token on this exchange's list (the swap instance's enable list), as Settings lists it. */
 export interface RegisteredToken {
   tokenId: TokenId;
   sym: string;
   icon?: string;
   status: EnabledToken["status"];
-  /** The token instance's origin, once created. */
-  url?: string;
-  reason?: string;
-  delivered?: EnabledToken["delivered"];
 }
 
 export type { EnabledToken, Defaults, Discovery };
@@ -402,20 +398,19 @@ async function enabledList(): Promise<EnabledToken[]> {
   });
 }
 
-/** The tokens up on this exchange: enabled, with their instance's url. */
+/** The tokens up on this exchange: enabled on the swap instance's list. */
 async function enabledTokens(): Promise<EnabledToken[]> {
-  return (await enabledList()).filter((t) => t.status === "enabled" && t.url);
+  return (await enabledList()).filter((t) => t.status === "enabled");
 }
 
 /**
- * A token's own instance's AMM base (0.17.0): `<url>/amm` from the config instance's list. Refused
- * for a token that is not enabled here.
+ * A token's own instance's AMM base: `<origin>/@<tokenId>/amm` (Open Exchange: the host makes the
+ * instance of every enabled token there). Refused for a token that is not enabled here.
  */
 export async function tokenBaseOf(tokenId: TokenId): Promise<string> {
   const t = (await enabledTokens()).find((x) => x.tokenId === tokenId);
-  const b = t ? tokenBase(t) : undefined;
-  if (!b) throw new Error(`${tokenId.slice(0, 8)}… is not enabled on this exchange`);
-  return b;
+  if (!t) throw new Error(`${tokenId.slice(0, 8)}… is not enabled on this exchange`);
+  return tokenBase(t.tokenId, context.base);
 }
 
 /** The token list's metadata by token id (0.17.0: the config instance's list); empty when the read fails. */
@@ -525,8 +520,7 @@ async function hostedTopics(): Promise<HostedTopic[]> {
   const out: HostedTopic[] = [];
   for (const t of await enabledTokens()) {
     const topic = parseTokenTopic(t.topic);
-    const base = tokenBase(t);
-    if (topic && base) out.push({ ...topic, base });
+    if (topic) out.push({ ...topic, base: tokenBase(t.tokenId, context.base) });
   }
   return out;
 }
@@ -1076,8 +1070,7 @@ export async function recoverPosition(outpoint: string): Promise<RecoverResult> 
  */
 async function baseHolding(outpoint: string): Promise<{ base: string; tokenId: string }> {
   for (const t of await enabledTokens()) {
-    const base = tokenBase(t);
-    if (!base) continue;
+    const base = tokenBase(t.tokenId, context.base);
     const s = await readSpend(base, outpoint).catch(() => null);
     if (s && (s.current || s.spentBy || s.closed)) return { base, tokenId: t.tokenId };
   }
@@ -1160,9 +1153,6 @@ export async function registeredTokens(): Promise<RegisteredToken[]> {
     sym: t.sym || t.tokenId.slice(0, 8),
     ...(t.icon ? { icon: t.icon } : {}),
     status: t.status,
-    ...(t.url ? { url: t.url } : {}),
-    ...(t.reason ? { reason: t.reason } : {}),
-    ...(t.delivered ? { delivered: t.delivered } : {}),
   }));
 }
 
@@ -1213,12 +1203,12 @@ export interface EnableSent {
 }
 
 /**
- * Enables a token (0.17.0, shruggr/skein-amm#4): root's message `{fn: "enable", args: {tokenId,
- * beef}}` to the config instance's `<app>/admin`. The deploy's BEEF from the connected wallet's
- * module basket, else `pasted` (hex); with neither, refused here ("this wallet does not hold the
- * deploy; paste its BEEF"). The config instance asks the host for the token instance, created
- * with the deploy; the list shows it `creating`, then `enabled` (or `failed`). A stopped token is
- * started again (its BEEF not needed).
+ * Enables a token (Open Exchange, shruggr/open-exchange#1): root's message `{fn: "enable", args:
+ * {tokenId, beef}}` to the swap instance's `<app>/admin`. The deploy's BEEF from the connected
+ * wallet's module basket, else `pasted` (hex); with neither, refused here ("this wallet does not
+ * hold the deploy; paste its BEEF"). The swap instance records the token enabled (a fact) and the
+ * host makes its instance at `<origin>/@<tokenId>`. A token already on the list (disabled) is
+ * enabled again with no BEEF (the swap instance keeps its deploy).
  */
 export async function enableToken(tokenId: TokenId, pasted?: string): Promise<EnableSent> {
   const { af, wallet } = needWallet();
@@ -1228,7 +1218,7 @@ export async function enableToken(tokenId: TokenId, pasted?: string): Promise<En
   const row = (await enabledList().catch(() => [] as EnabledToken[])).find((t) => t.tokenId === canonical);
   let beef: number[] | undefined;
   let from: EnableSent["beefFrom"] = "wallet";
-  if (row?.status !== "stopped") {
+  if (row?.status !== "disabled") {
     beef = pasted && pasted.trim() ? pastedBeef(pasted) : await walletDeployBeef(wallet, canonical);
     if (pasted && pasted.trim()) from = "pasted";
     if (!beef) throw new Error("this wallet does not hold the deploy; paste its BEEF");
@@ -1299,11 +1289,11 @@ export async function discoveryState(): Promise<Discovery> {
 }
 
 /**
- * Turns the 1Color discovery topic on or off (0.18.0, shruggr/skein#137): root's `{fn:
- * "discovery", args: {on}}` to the config instance's `<app>/admin`. On: the host creates (or
- * starts) the instance `discovery`, serving `tm_color` and its lookup `ls_color` (0.20.0;
- * `ls_color_deploys` gone); a deploy POSTed to this origin's `/submit` with `X-Topics: tm_color` is
- * routed to it. Off: its instance stopped. Enabling a token does not submit its deploy there.
+ * Turns the 1Color discovery topic on or off: root's `{fn: "discovery", args: {on}}` to the swap
+ * instance's `<app>/admin` (Open Exchange: a fact; the host starts or stops the instance
+ * `discovery` it made at setup, serving `tm_color` and its lookup `ls_color`); a deploy POSTed to
+ * this origin's `/submit` with `X-Topics: tm_color` is routed to it. Enabling a token does not
+ * submit its deploy there.
  */
 export async function setDiscovery(on: boolean): Promise<void> {
   const { af } = needWallet();

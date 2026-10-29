@@ -1,16 +1,15 @@
 /**
- * Settings, root of the config instance only (0.17.0, shruggr/skein-amm#4;
- * 0.18.0 the Discovery switch, shruggr/skein#137):
- * Enable a token — a token id typed,
- * the deploy's BEEF from the connected wallet's module basket (or pasted when
- * the wallet does not hold it): root's `enable` to `<app>/admin`, the host
- * creating the token's own instance; the enabled list with Disable, and Enable
- * again for a stopped one; and the defaults a new token
- * instance is created with — its initial validator terms and market minimum
- * (root's `defaults`). A token's own terms are root's message to
- * `/@<tokenId>` (not on this page). Topic and lookup names are derived from
- * the token id. Discovery: one switch, root's `discovery {on}` — the
- * 1Color discovery topic `tm_color` served by an instance of its own.
+ * Settings, root of the swap instance only (Open Exchange, shruggr/open-exchange#1):
+ * Enable a token — a token id typed, the deploy's BEEF from the connected
+ * wallet's module basket (or pasted when the wallet does not hold it): root's
+ * `enable` to `<app>/admin`, recorded as a fact (the host makes the token's
+ * own instance at `/@<tokenId>`); the list, each enabled or disabled, with
+ * Disable, and Enable again for a disabled one; and the defaults a new token
+ * instance is given — its initial validator terms and market minimum (root's
+ * `defaults`). A token's own terms are root's message to `/@<tokenId>` (not on
+ * this page). Topic and lookup names are derived from the token id.
+ * Discovery: one switch, root's `discovery {on}` — the 1Color discovery topic
+ * `tm_color` served by an instance of its own, started or stopped by the host.
  */
 import { useState } from "react";
 import { Id } from "../components/Id";
@@ -68,7 +67,7 @@ function EnableCard() {
         run(async () => {
           try {
             const r = await enableToken(tokenId, needPaste ? paste : undefined);
-            setDone(`Enabling ${shortTokenId(tokenId)} is sent (its deploy from ${r.beefFrom === "wallet" ? "this wallet" : "the pasted BEEF"}). The list shows it once its instance is up.`);
+            setDone(`Enabling ${shortTokenId(tokenId)} is sent (its deploy from ${r.beefFrom === "wallet" ? "this wallet" : "the pasted BEEF"}). The list shows it once this skein has taken it; its instance is at /@${tokenId}.`);
             setPaste("");
             setNeedPaste(false);
           } catch (e) {
@@ -279,30 +278,16 @@ function DefaultMarketCard({ defaults }: { defaults: Data<Defaults> }) {
 
 /** What the discovery record says, in a few words. */
 export function discoveryText(d: Discovery): string {
-  switch (d.status) {
-    case undefined:
-      return "Off: no discovery instance here.";
-    case "creating":
-      return "Turning on: its instance is being created…";
-    case "starting":
-      return "Turning on: its instance is starting…";
-    case "enabled":
-      return "On: deploys submitted to this exchange under tm_color are kept and looked up by their outpoint (ls_color).";
-    case "stopping":
-      return "Turning off…";
-    case "stopped":
-      return `Off: its instance is stopped${d.reason ? ` (${d.reason})` : ""}.`;
-    case "failed":
-      return `Could not turn on${d.reason ? `: ${d.reason}` : ""}.`;
-  }
+  return d.on
+    ? "On: deploys submitted to this exchange under tm_color are kept and looked up by their outpoint (ls_color)."
+    : "Off: the discovery instance is stopped.";
 }
 
-/** Discovery (0.18.0, root only): the 1Color discovery topic `tm_color`, its own instance; one switch. */
+/** Discovery (root only): the 1Color discovery topic `tm_color`, its own instance; one switch. */
 function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
   const [error, busy, run] = useAct();
   const d = discovery.data;
-  const settling = d?.status === "creating" || d?.status === "starting" || d?.status === "stopping";
-  const on = d?.on === true && d.status !== "failed";
+  const on = d?.on === true;
   return (
     <section className="panel stack-sm" aria-labelledby="disc-h">
       <div className="row row-wrap">
@@ -315,7 +300,7 @@ function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
             type="checkbox"
             role="switch"
             checked={on}
-            disabled={busy || d === null || settling}
+            disabled={busy || d === null}
             aria-checked={on}
             onChange={(e) => {
               const want = e.target.checked;
@@ -333,12 +318,6 @@ function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
       ) : (
         <p className="fg2">{discoveryText(d)}</p>
       )}
-      {d?.url && (
-        <dl className="kv kv-left small">
-          <dt>Instance</dt>
-          <dd className="mono">{d.url}</dd>
-        </dl>
-      )}
       <span className="help">
         The 1Color discovery topic (tm_color): every token&apos;s deploy, looked up by its outpoint under ls_color, in an instance of its own. Enabling a token does not submit its deploy here; the 1Color deploy page submits each new deploy.
       </span>
@@ -350,23 +329,13 @@ function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
 function EnabledRow({ t }: { t: RegisteredToken }) {
   const [confirm, setConfirm] = useState(false);
   const [error, busy, run] = useAct();
-  const status =
-    t.status === "enabled"
-      ? "enabled"
-      : t.status === "creating"
-        ? "being created…"
-        : t.status === "starting"
-          ? "starting…"
-          : t.status === "stopped"
-            ? "stopped"
-            : `failed${t.reason ? `: ${t.reason}` : ""}`;
+  const status = t.status === "enabled" ? "enabled" : "disabled";
   return (
     <li className="reg-row">
       <span className="req-text">
         <TokenName tokenId={t.tokenId} sym={t.sym} {...(t.icon ? { icon: t.icon } : {})} size="sm" />
         <span className="small muted">
           {status}
-          {t.delivered && t.delivered.verdict !== "accept" ? ` · its deploy was not admitted (${t.delivered.verdict}${t.delivered.reason ? `: ${t.delivered.reason}` : ""}): resubmit it to its instance` : ""}
           {t.status === "enabled" ? " · its own terms are root's message to its instance, /@<tokenId>" : ""}
         </span>
       </span>
@@ -386,7 +355,7 @@ function EnabledRow({ t }: { t: RegisteredToken }) {
             Disable
           </button>
         )
-      ) : t.status === "stopped" || t.status === "failed" ? (
+      ) : t.status === "disabled" ? (
         <button type="button" className="btn btn-outline" disabled={busy} onClick={() => run(async () => void (await enableToken(t.tokenId)))} aria-label={`Enable ${t.sym} again`}>
           {busy ? "Enabling…" : "Enable again"}
         </button>

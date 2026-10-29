@@ -111,7 +111,7 @@ interface Instance {
   minCommissionBps: number;
 }
 
-const enabledRow = (tokenId: string, sym: string, dec: number, since: number) => ({ tokenId, topic: `tm_color_${tokenId}`, sym, dec, status: "enabled", url: `${ORIGIN}/@${tokenId}`, since });
+const enabledRow = (tokenId: string, sym: string, dec: number, since: number) => ({ tokenId, topic: `tm_color_${tokenId}`, sym, dec, status: "enabled", since });
 
 function instance(): Instance {
   return {
@@ -439,9 +439,9 @@ describe("exchange.ts, wired", () => {
     expect(inst.sent).toHaveLength(4);
   });
 
-  it("discovery (0.18.0): the config instance's GET /discovery; setDiscovery: root's {fn: discovery, args: {on}} to <app>/admin, the config instance's identity the recipient", async () => {
+  it("discovery: the swap instance's GET /discovery; setDiscovery: root's {fn: discovery, args: {on}} to <app>/admin, the swap instance's identity the recipient", async () => {
     expect(await discoveryState()).toEqual({ on: false });
-    inst.discovery = { on: true, status: "enabled", since: 3, url: `${ORIGIN}/@discovery` };
+    inst.discovery = { on: true, since: 3 };
     expect(await discoveryState()).toEqual(inst.discovery);
     await expect(setDiscovery(true)).rejects.toThrow(/Connect a wallet/);
     connect();
@@ -459,10 +459,10 @@ describe("exchange.ts, wired", () => {
     ]);
   });
 
-  it("tokenBaseOf (0.17.0): an enabled token's own instance, <url>/amm from the config instance's list; any other refused", async () => {
+  it("tokenBaseOf: an enabled token's own instance, <origin>/@<tokenId>/amm; a token not enabled on the swap instance's list refused", async () => {
     expect(await tokenBaseOf(TOKEN)).toBe(`${ORIGIN}/@${TOKEN}/amm`);
     await expect(tokenBaseOf(OTHER)).rejects.toThrow(/not enabled on this exchange/);
-    inst.enabled.push({ ...enabledRow(OTHER, "OTH", 2, 3), status: "stopped" });
+    inst.enabled.push({ ...enabledRow(OTHER, "OTH", 2, 3), status: "disabled" });
     await expect(tokenBaseOf(OTHER)).rejects.toThrow(/not enabled on this exchange/);
   });
 
@@ -557,20 +557,20 @@ describe("exchange.ts, wired", () => {
     expect(await enableToken(OTHER, Utils.toHex(full))).toEqual({ beefFrom: "pasted" });
     expect(Array.from(beefOf(inst.sent.at(-1)!.body))).toEqual(full);
     await expect(enableToken(OTHER, "zz")).rejects.toThrow(/not hex/);
-    // Disable; a stopped token enabled again names no BEEF.
+    // Disable; a token on the list enabled again names no BEEF (the swap instance keeps its deploy).
     await disableToken(TOKEN);
     msg = inst.sent.at(-1)!.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
     expect(decode(msg.body)).toEqual({ fn: "disable", args: { tokenId: TOKEN } });
-    inst.enabled[0] = { ...inst.enabled[0], status: "stopped" };
+    inst.enabled[0] = { ...inst.enabled[0], status: "disabled" };
     await enableToken(TOKEN);
     expect(decode((inst.sent.at(-1)!.body.message as { body: Uint8Array }).body)).toEqual({ fn: "enable", args: { tokenId: TOKEN } });
   });
 
-  it("registeredTokens (0.17.0): the config instance's enable list, every status", async () => {
-    inst.enabled.push({ tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, status: "failed", reason: "handle taken", since: 1 });
+  it("registeredTokens: the swap instance's enable list, enabled and disabled", async () => {
+    inst.enabled.push({ tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, status: "disabled", since: 1 });
     expect(await registeredTokens()).toEqual([
-      { tokenId: TOKEN, sym: "TST", status: "enabled", url: `${ORIGIN}/@${TOKEN}` },
-      { tokenId: OTHER, sym: "OTH", status: "failed", reason: "handle taken" },
+      { tokenId: TOKEN, sym: "TST", status: "enabled" },
+      { tokenId: OTHER, sym: "OTH", status: "disabled" },
     ]);
   });
 
