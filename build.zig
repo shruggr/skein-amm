@@ -6,16 +6,19 @@
 //   amm-lookup      ls_amm_<assetId>: the listed pools of a token instance; the prices beat programs/amm-lookup
 //   amm-validator   the validator: swap (a libp2p direct call), affirm; root's close         programs/amm-validator
 //   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the read /spends      programs/amm-p2p
+//   amm-setup       the token's setup (0.22.0, shruggr/skein-amm#5): the deploy event       programs/amm-setup
+//                   (box amm/deploy) → the head amm/token and the token's topic and lookups
+//                   registered with the engine by call; the read /token
 //   amm-config      the config app (0.17.0, shruggr/skein-amm#4): enable/disable/defaults,   programs/amm-config
 //                   the token list, the pages; built into apps/config/bin/
 //
 // over the pool library (src/pool.zig: the Pool contract as the overlay sees it, over the
 // `1color` module's parser and rules) and its generated fixtures (src/fixtures, gen/).
 //
-//   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
-//   zig build bin          the three, written to bin/ (amm-config to apps/config/bin/), with bin/overlay.wasm (skein-overlay v0.17.0)
+//   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p,amm-setup}.wasm
+//   zig build bin          the four, written to bin/ (amm-config to apps/config/bin/), with bin/overlay.wasm (skein-overlay v0.18.0)
 //                          and bin/color-{topic,lookup}.wasm (skein-1color v0.12.1) copied beside
-//   zig build test         the pool library and the three programs' tests, natively
+//   zig build test         the pool library and the programs' tests, natively
 //
 // The 1Color pages (skein-1color v0.12.1's www/) are copied into www/color/ by
 // scripts/color-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
@@ -39,6 +42,8 @@ const Mods = struct {
     pool: *std.Build.Module,
     /// The validator's terms record (0.15.0, src/terms.zig, over the pool library's Terms).
     terms: *std.Build.Module,
+    /// A 1Color deploy read from a BEEF (0.22.0, src/deploy.zig): amm-config's enable, amm-setup's deploy event.
+    deploy: *std.Build.Module,
     /// skein-overlay's engine sources (src/state.zig, src/submit.zig, src/engine_vm.zig, …), which
     /// it does not export as modules: the validator submits through the engine's own
     /// `submit.route` and reads its state, as amm-poc did with skein-overlay 0.2.0.
@@ -83,6 +88,12 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .optimize = optimize,
         .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "pool", .module = pool_mod } },
     });
+    const deploy_mod = b.createModule(.{
+        .root_source_file = b.path("src/deploy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "chain", .module = chain }, .{ .name = "1color", .module = color } },
+    });
     return .{
         .chain = chain,
         .wallet = sdk.module("wallet"),
@@ -98,6 +109,7 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .color = color,
         .pool = pool_mod,
         .terms = terms_mod,
+        .deploy = deploy_mod,
         .engine = engine,
     };
 }
@@ -109,6 +121,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "1color", .module = m.color },
         .{ .name = "pool", .module = m.pool },
         .{ .name = "terms", .module = m.terms },
+        .{ .name = "deploy", .module = m.deploy },
     };
     const more: []const std.Build.Module.Import = if (std.mem.eql(u8, program, "amm-lookup")) &.{
         .{ .name = "lookup", .module = m.lookup },
@@ -119,6 +132,8 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "topic", .module = m.topic },
         .{ .name = "overlay_sk", .module = m.overlay_sk },
         .{ .name = "skein_overlay", .module = m.engine },
+    } else if (std.mem.eql(u8, program, "amm-setup")) &.{
+        .{ .name = "overlay_sk", .module = m.overlay_sk },
     } else if (std.mem.eql(u8, program, "amm-config")) &.{
         .{ .name = "sk", .module = m.sk },
         .{ .name = "app", .module = m.app },
@@ -140,7 +155,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
     return std.mem.concat(b.allocator, std.Build.Module.Import, &.{ &common, more }) catch @panic("OOM");
 }
 
-const programs = [_][]const u8{ "amm-lookup", "amm-validator", "amm-p2p" };
+const programs = [_][]const u8{ "amm-lookup", "amm-validator", "amm-p2p", "amm-setup" };
 /// The config app's program (0.17.0, shruggr/skein-amm#4): built into the config app's own tree,
 /// apps/config/bin/, not the token app's bin/.
 const config_program = "amm-config";
@@ -187,15 +202,16 @@ pub fn build(b: *std.Build) void {
     bin.addCopyFileToSource(ov.path("bin/overlay.wasm"), "bin/overlay.wasm");
     bin.addCopyFileToSource(cd.path("bin/color-topic.wasm"), "bin/color-topic.wasm");
     bin.addCopyFileToSource(cd.path("bin/color-lookup.wasm"), "bin/color-lookup.wasm");
-    b.step("bin", "write the app's modules into bin/: this repo's three, and the engine and the 1Color components copied from their tags").dependOn(&bin.step);
+    b.step("bin", "write the app's modules into bin/: this repo's four, and the engine and the 1Color components copied from their tags").dependOn(&bin.step);
 
     const nm = mods(b, target, .Debug);
-    const test_step = b.step("test", "The pool library and the three programs' tests, natively");
+    const test_step = b.step("test", "The pool library and the programs' tests, natively");
     const roots = [_][2][]const u8{
         .{ "pool", "test.zig" },
         .{ "amm-lookup", "programs/amm-lookup/test.zig" },
         .{ "amm-validator", "programs/amm-validator/test.zig" },
         .{ "amm-p2p", "programs/amm-p2p/test.zig" },
+        .{ "amm-setup", "programs/amm-setup/test.zig" },
         .{ "amm-config", "programs/amm-config/test.zig" },
     };
     for (roots) |r| {

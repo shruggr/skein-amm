@@ -21,6 +21,7 @@
 const std = @import("std");
 const w = @import("chain");
 const color = @import("1color");
+const deploy = @import("deploy");
 
 const cbor = w.cbor;
 const Value = cbor.Value;
@@ -37,99 +38,21 @@ pub const admin_box = "amm/admin";
 /// `$SKEIN_IMAGES_DIR/amm-token` (the repository's image/token).
 pub const default_token_image = "amm-token";
 
-/// The AMM lookup's service name for a token (0.21.0, David 2026-10-29): `ls_amm_<assetId>`, paired
-/// with `tm_color_<assetId>` as `ls_color_<assetId>` is — a lookup name is advertised network-wide,
-/// so two providers under one name answer over the same data, and each token instance's AMM lookup
-/// indexes a different token's pools. Served by the program `amm-lookup`; its beat on
-/// `ls_amm_<assetId>-live` (skein-overlay's rule). `token_id` canonical (`<txid>_<vout>`).
-/// 0.20.0: `ls_color` and `ls_color_deploys` dropped (one lookup per topic).
-pub fn ammLookupName(a: Allocator, token_id: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "ls_amm_{s}", .{token_id});
-}
+/// The AMM lookup's service name for a token, `ls_amm_<assetId>` (src/deploy.zig, 0.22.0: shared
+/// with amm-setup).
+pub const ammLookupName = deploy.ammLookupName;
 
 pub const Status = enum { creating, enabled, failed, stopped, starting };
 
 // ---------------------------------------------------------------- token ids and deploys
 
-pub const Deploy = struct {
-    /// `<txid>_<vout>`, canonical (`_0` included).
-    token_id: []const u8,
-    topic: []const u8,
-    lookup: []const u8,
-    sym: []const u8 = "",
-    dec: u8 = 0,
-    icon: ?[]const u8 = null,
-};
-
-pub const DeployCheck = union(enum) { ok: Deploy, refused: []const u8 };
-
-/// A token id in any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`) → its canonical text, or null.
-pub fn canonicalId(a: Allocator, text: []const u8) !?[]const u8 {
-    const id = color.name.tokenIdOfString(text) orelse return null;
-    var buf: [color.name.max_suffix_len]u8 = undefined;
-    return try a.dupe(u8, color.name.tokenIdText(&buf, id));
-}
-
-/// The deploy `beef` (its wire bytes) carries for token `token_id`: refused unless the BEEF parses,
-/// its subject is the token id's transaction, and that transaction's output `<vout>` is a deploy.
-pub fn deployOf(a: Allocator, token_id: []const u8, beef_bytes: []const u8) !DeployCheck {
-    const nid = color.name.tokenIdOfString(token_id) orelse return .{ .refused = "tokenId: want <txid>_<vout>" };
-    const b = w.beef.parse(a, beef_bytes) catch return .{ .refused = "beef: not a BEEF" };
-    const subject = b.subject() orelse return .{ .refused = "beef: no transaction" };
-    if (!eql(u8, &subject, &nid.txid)) return .{ .refused = "beef: its subject is not the token id's transaction (want the deploy's Atomic BEEF)" };
-    const e = b.find(subject) orelse return .{ .refused = "beef: the subject is not in it" };
-    const raw = e.raw orelse return .{ .refused = "beef: the subject's transaction is not in it" };
-    const tx = w.bsvz.transaction.Transaction.parse(a, raw) catch return .{ .refused = "beef: the subject does not parse" };
-    if (nid.vout >= tx.outputs.len) return .{ .refused = "tokenId: the deploy transaction has no such output" };
-    const id: color.bsv21.TokenId = .{ .txid = nid.txid, .vout = nid.vout, .kind = if (nid.vout == 0) .native else .legacy };
-    const t = (try color.bsv21.tokenOf(a, id, nid.txid, nid.vout, tx.outputs[nid.vout].locking_script.bytes)) orelse return .{ .refused = "not a deploy: the output carries no 1Color token" };
-    if (t.role != .deploy) return .{ .refused = "not a deploy: the output is a token transfer, not its deploy" };
-    var tb: [color.name.max_suffix_len]u8 = undefined;
-    var nb: [color.name.max_topic_len]u8 = undefined;
-    var lb: [color.name.max_lookup_len]u8 = undefined;
-    var out: Deploy = .{
-        .token_id = try a.dupe(u8, color.name.tokenIdText(&tb, nid)),
-        .topic = try a.dupe(u8, color.name.topicName(&nb, nid)),
-        .lookup = try a.dupe(u8, color.name.lookupName(&lb, nid)),
-    };
-    switch (t.form) {
-        .binary => {
-            const m = color.brc162.metadataOf(t.binary.?.payload orelse "");
-            out.sym = m.sym orelse "";
-            out.dec = m.dec orelse 0;
-            if (m.icon) |ic| out.icon = try dataUrlOf(a, ic);
-        },
-        .json => {
-            const j = t.json.?;
-            out.sym = j.sym orelse "";
-            out.dec = j.dec orelse 0;
-            out.icon = j.icon;
-        },
-    }
-    return .{ .ok = out };
-}
-
-/// An embedded icon as a data URL, as skein-1color's token list writes it (color_lookup.zig
-/// `dataUrlOf`); null when the media type is not an RFC 6838 `type/subtype`.
-pub fn dataUrlOf(a: Allocator, ic: color.brc162.Icon) !?[]const u8 {
-    if (!isMediaType(ic.media_type)) return null;
-    const enc = std.base64.standard.Encoder;
-    const out = try a.alloc(u8, "data:".len + ic.media_type.len + ";base64,".len + enc.calcSize(ic.bytes.len));
-    const head = try std.fmt.bufPrint(out, "data:{s};base64,", .{ic.media_type});
-    _ = enc.encode(out[head.len..], ic.bytes);
-    return out;
-}
-
-fn isMediaType(t: []const u8) bool {
-    const slash = std.mem.indexOfScalar(u8, t, '/') orelse return false;
-    return restrictedName(t[0..slash]) and restrictedName(t[slash + 1 ..]);
-}
-
-fn restrictedName(n: []const u8) bool {
-    if (n.len == 0 or n.len > 127 or !std.ascii.isAlphanumeric(n[0])) return false;
-    for (n[1..]) |ch| if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "!#$&-^_.+", ch) == null) return false;
-    return true;
-}
+// The deploy read from a BEEF: src/deploy.zig (0.22.0: moved there, shared with amm-setup's deploy
+// event; unchanged).
+pub const Deploy = deploy.Deploy;
+pub const DeployCheck = deploy.DeployCheck;
+pub const canonicalId = deploy.canonicalId;
+pub const deployOf = deploy.deployOf;
+pub const dataUrlOf = deploy.dataUrlOf;
 
 // ---------------------------------------------------------------- the create
 

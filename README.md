@@ -6,7 +6,11 @@ Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
 1Color components and the AMM's programs), run as one instance per token
 id, and the **config app** (`apps/config/`: the enable list, the defaults,
 and the pages), run as one instance that creates the
-token instances. Version **0.21.1** (2026-10-29; 0.21.1 keeps the token
+token instances. Version **0.22.0** (2026-10-30, shruggr/skein-amm#5): the
+token app takes its token as an event — `{kind: "deploy", beef}` in the box
+`amm/deploy` (`kernel.beef`), the program `amm-setup` writes the head
+`amm/token` and registers the token's topic and lookups with the engine in
+the same step ("The token's setup", below). 0.21.1 (2026-10-29) keeps the token
 manifest's `config.overlay`, empty, from which skein derives the engine's
 routes; 0.21.0 David: a lookup name is
 advertised network-wide, so two providers under one name must answer over
@@ -159,7 +163,9 @@ were.
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm_<assetId>` (0.21.0; its index stays `<app>/ls_amm`): the listed pools (an affirmed deploy's pool and its continuations, unspent) of the token topic its instance serves, each query naming its token; its beat on `ls_amm_<assetId>-live`, the prices |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always): signs a taker's swap last and submits it to its own overlay by message, answering on the engine's answer (`swap`, a libp2p direct call); affirms an LP's proposed pool at its terms (`affirm`, called in-VM by amm-p2p, 0.11.0); both only while terms are set (0.15.0); root's `terms` (box `amm/validator`: the record `amm/terms`, set or cleared); root's `close` (box `amm/validator`): the contract's Close on the validator's path, the pool a caller input of the instance's wallet |
 | `amm-p2p` | `programs/amm-p2p` | the marketplace relay (`amm.swap/1`, `amm.pool/1` with `terms`: a transaction carried to the validator the caller names), the read `/spends`; the market minimum (`amm/market`, else the config's `config["amm-p2p"].market`, 0.17.0) |
+| `amm-setup` | `programs/amm-setup` | the token's setup (0.22.0): the deploy event in `amm/deploy` → the head `amm/token` and the token's `tm_color_<id>`, `ls_color_<id>`, `ls_amm_<id>` registered with the engine by call; the read `/token` |
 | `amm-config` | `programs/amm-config`, built into `apps/config/bin/` | the config app (0.17.0): root's `enable` / `disable` / `defaults` (box `amm/admin`), the creates, starts and stops it asks of the host's instance manager, the enable list (`/tokens`), the defaults (`/defaults`), and the pages (`apps/config/www/`) |
+| | `src/deploy.zig` | a 1Color deploy read from a BEEF (0.22.0; module `deploy`): amm-config's enable, amm-setup's event |
 | | `src/pool.zig` | the Pool contract as the overlay sees it: recognising a pool, its state, the pool checks (module `pool`, over the `1color` module's parser) |
 | | `pool/` | the Rúnar contract (`Pool.runar.go`) and its Go tests |
 | | `gen/` | the fixture generators (`src/fixtures/`) |
@@ -176,14 +182,14 @@ Zig 0.16.0 (`mise.toml`), Go 1.27 for `pool/` and `gen/`, Node 22 or later
 and npm for the pages.
 
 ```
-zig build test     # the pool library and the four programs, natively
-zig build bin      # bin/: the token app's three programs, built (amm-config into apps/config/bin/); overlay.wasm and color-*.wasm, copied
+zig build test     # the pool library and the five programs, natively
+zig build bin      # bin/: the token app's four programs, built (amm-config into apps/config/bin/); overlay.wasm and color-*.wasm, copied
 go test ./pool/...
 scripts/www.sh     # apps/config/www/: the pages from web/ui, then the 1Color pages into its color/
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.17.0 and skein-1color v0.12.1 by tag
+`build.zig.zon` names skein-overlay v0.18.0 and skein-1color v0.12.1 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/color-topic.wasm`, `bin/color-lookup.wasm`
 from the skein-1color package, byte for byte. skein-1color's pages are
@@ -215,6 +221,50 @@ root: `go run ./gen/vectors` (0.9.0: it also writes the pages' compiled
 artifact, `web/ui/src/pool/pool.artifact.json`, and their copy of the
 transactions, `web/ui/test/fixtures/amm-topic-vectors.json`;
 `gen/addliquidity` is gone with AddLiquidity).
+
+## The token's setup (0.22.0)
+
+shruggr/skein-amm#5 (David 2026-10-29/30): a token instance takes its
+token as one event, with no config at birth. The host (shruggr/open-exchange#1's
+program) creates the instance from `image/token` born owned (skein #164,
+`Router.createInstance(handle, owner, {image, owned: true})`) and admits
+`Router.admitEvent(handle, "amm/deploy", {kind: "deploy", beef})`:
+
+1. The door (`kernel.beef` on the event route `deploy`): the BEEF decoded,
+   its BUMPs checked against `chain/state`, the bytes replaced by the
+   envelope; a bad BUMP or no BEEF: no entry (`DoorAnswered`).
+2. `amm-setup.deploy`, one step: the deploy is the subject's first output
+   that deploys (output 0 for a BRC-162 deploy; a legacy BRC-161 deploy
+   where it is); the head `amm/token` ← `{tokenId, topic, lookup,
+   ammLookup, sym, dec, icon?, txid, vout}`; then, called in-VM,
+   the engine's `register {topic: tm_color_<id>, program: "color-topic",
+   seed: [<txid>]}`, `registerLookup {service: ls_color_<id>, program:
+   "color-lookup", topics: [tm_color_<id>]}`, `registerLookup {service:
+   ls_amm_<id>, program: "amm-lookup", topics: [tm_color_<id>]}` (with them
+   the subscriptions, liveness and beacons on `tm_color_<id>-live`,
+   `ls_amm_<id>-live`). A refused registration fails the step: nothing
+   is written.
+3. The seed judges only what the chain app holds; a freshly delivered
+   deploy is not held (the door stores the blocks, the chain app holds what
+   is ingested), so the step also sends the deploy to the engine as the
+   validator submits: `{fn: "submit", args: {beef, topics:
+   [tm_color_<id>]}}` from the instance to itself in `amm/submit`; the
+   engine admits it under `tm_color_<id>` once the chain app accepts it.
+4. Refused, logged (the step's result record `refused`), nothing written:
+   the head `amm/token` exists ("this instance has its token": the token is
+   immutable), the record is not a deploy event or has no door envelope,
+   the subject deploys no 1Color token.
+5. `GET <instance>/amm/token`: the record as JSON (404 before the event).
+
+The config app's create (its configured names, "The config instance"
+below) still works and is unchanged; it is superseded by
+shruggr/open-exchange#1, where the config app and `apps/config` move.
+
+The event route needs a skein whose host takes an app manifest's event
+route naming `kernel.beef`: skein main a5c1897's kernel does, but its
+`src/host/manifest.ts` (`routeProblem`) and `src/runtime/records.ts`
+(`isDispatchRow`) still refuse it ("an event route has no filters"), so
+this manifest does not install on a5c1897 (Versions, below).
 
 ## The config instance (0.17.0)
 
@@ -511,9 +561,9 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.21.1 |
-| skein | main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
-| skein-overlay | v0.17.0 (9d72eca) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
+| this app | 0.22.0 |
+| skein | 0.22.0: a host whose manifest and dispatch-row checks take an event route naming `kernel.beef` (NOT a5c1897: its kernel takes it, `src/host/manifest.ts` and `src/runtime/records.ts` refuse it), and a5c1897 or later for the event door and born-owned instances (shruggr/skein#164); main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
+| skein-overlay | v0.18.0 (f66ee73) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.18.0: register / registerLookup callable in-VM from a program of the instance, skein-overlay#10; 0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.12.1 (16b0d4b; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (0.12.0: `color-lookup.wasm` rebuilt, `ls_color_deploys` gone; 0.12.1: `ls_color` answers BRC-207's query over `tm_color`), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.12.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |
 | skein | the wallet program's caller inputs (shruggr/skein#93, main 2231398: the validator's Rescind, 0.11.0–0.12.x its Close, createAction / signAction); log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); routes-roles e3f50fe (format 9: routes, filters, roles, shruggr/skein#143); before, main f45c887 (the liveness tool and `GET /<app>/.live/<topic>`, docs/MESSAGES.md "Liveness (#138)"; the beacon's signed frame, "Beacons"; the node's key from the instance root, signer.ts `peerKey`) |

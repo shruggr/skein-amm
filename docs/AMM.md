@@ -15,6 +15,7 @@ topic per token, registered by root at runtime.
 | `color-lookup` | skein-1color 0.10.0 (copied) | a token instance's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), the discovery instance's `ls_color` (a deploy by BRC-207's `color-admission` with `topic: "tm_color"`; 0.20.1, skein-1color 0.12.1: `ls_color_deploys` gone), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm_<assetId>` (0.21.0; `ls_amm` before, its index still `<app>/ls_amm`): the listed pools (below, "The listing"), per token; its beat on `ls_amm_<assetId>-live`, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
+| `amm-setup` | `programs/amm-setup` | the token's setup (0.22.0): the deploy event in `amm/deploy` (`kernel.beef`) → the head `amm/token`, the token's topic and lookups registered with the engine by call (skein-overlay 0.18.0), the deploy submitted when the seed did not take it; the read `/token` ("The token's setup", below) |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the read `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
 | | `src/pool.zig` | the pool library (module `pool`), over `1color`'s parser and rules |
 | | `pool/Pool.runar.go` | the contract |
@@ -589,7 +590,10 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    Atomic BEEF a catch-up fetches to this row, as from the serving peer;
    without it the puller refused every one ("no route for
    libp2p:/skein/overlay/beef/1.0.0")
-10. the read routes, below
+10. event `deploy`, `kernel.beef` → `amm-setup.deploy` (0.22.0,
+    shruggr/skein-amm#5, skein #164): the token's deploy, the door's
+    envelope in the record ("The token's setup")
+11. the read routes, below
 
 then, derived by the install from `config.overlay`: the box `amm` as an
 `event` route and a `mailbox` route → `overlay` (gossiped submissions,
@@ -616,6 +620,7 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/color/tokens` | read | `tokens` → `color-lookup.tokens` | 0.6.0 |
 | `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0; removed in 0.19.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
+| `/token` | read | `token` → `amm-setup.token` | 0.22.0 |
 | `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm_<txid>_0-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
 
@@ -631,6 +636,27 @@ needed:
 ```
 skein routes add --transport http --prefix --filters amm.page --settings '{"root":"www","index":"index.html"}' / <origin>
 ```
+
+## The token's setup (0.22.0)
+
+shruggr/skein-amm#5 (David 2026-10-29/30): the token instance's token is
+an event, not a config at birth. The event route `deploy` (box
+`amm/deploy`) names `kernel.beef`, so the record `{kind: "deploy", beef}`
+enters only if its BEEF checks against `chain/state` (skein #164, docs/VM.md
+"The door"); the step reads the bytes back from the envelope
+(`chain.record.wireOf`).
+
+`amm-setup.deploy`, in one step:
+
+| | |
+|---|---|
+| the deploy | the subject's first output that deploys (`src/deploy.zig` `deployIn`, over `color.bsv21.tokenOf`): output 0 for a BRC-162 deploy, the first deploying inscription for a BRC-161 one |
+| `amm/token` | `{tokenId, topic, lookup, ammLookup, sym, dec, icon?, txid, vout}`, written once |
+| the registrations | the engine called in-VM: `register {topic: tm_color_<id>, program: "color-topic", seed: [<txid>]}`, `registerLookup {service: ls_color_<id>, program: "color-lookup", topics: [tm_color_<id>]}`, `registerLookup {service: ls_amm_<id>, program: "amm-lookup", topics: [tm_color_<id>]}`; a refused one fails the step |
+| the deploy admitted | the seed judges what the chain app holds; a deploy not held (`missing`) is sent to the engine, `{fn: "submit", args: {beef, topics: [tm_color_<id>]}}` in `amm/submit`, from the instance to itself |
+| refused, nothing written | `amm/token` exists; not a deploy event; no door envelope; no deploy in the subject |
+
+`GET /amm/token` answers the record (404 before the event).
 
 ## The config instance (0.17.0)
 

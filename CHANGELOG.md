@@ -4,6 +4,46 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.22.0 (2026-10-30)
+
+The token app's setup on the deploy event (shruggr/skein-amm#5; David
+2026-10-29/30; skein #164; plan amm-setup-on-deploy-2026-10-30).
+
+- New program `amm-setup` (programs/amm-setup): the step on the event
+  route `deploy` (box `amm/deploy`, filter `kernel.beef`, handler
+  `amm-setup.deploy`). The event `{kind: "deploy", beef}` after the door:
+  the BEEF read back from the envelope (`chain.record.wireOf`), the deploy
+  its subject's first output that deploys (`src/deploy.zig` `deployIn`:
+  output 0 for a BRC-162 deploy, the first deploying inscription for a
+  legacy BRC-161 one). In one step: the head `amm/token` = `{tokenId,
+  topic, lookup, ammLookup, sym, dec, icon?, txid, vout}`; the engine
+  called in-VM (skein-overlay 0.18.0): `register {topic: tm_color_<id>,
+  program: "color-topic", seed: [<txid>]}`, `registerLookup {service:
+  ls_color_<id>, program: "color-lookup", topics: [tm_color_<id>]}`,
+  `registerLookup {service: ls_amm_<id>, program: "amm-lookup", topics:
+  [tm_color_<id>]}`; a refused registration fails the step. A deploy the
+  seed does not take (the register's `missing`: the door stores the
+  blocks, the chain app holds only what is ingested) is submitted to the
+  engine by message, `{fn: "submit", args: {beef, topics:
+  [tm_color_<id>]}}` from the instance to itself in `amm/submit` (the
+  validator's form). Refused, logged, nothing written: the head
+  `amm/token` exists ("this instance has its token"), not a deploy event,
+  no door envelope, no deploy in the subject.
+- The read `GET /amm/token` (filter `token` → `amm-setup.token`): the
+  record as JSON, 404 before the event.
+- `src/deploy.zig`: the deploy read from a BEEF, moved out of
+  programs/amm-config/src/tokens.zig (`deployOf`, `canonicalId`,
+  `dataUrlOf`, `ammLookupName`, re-exported there; behaviour unchanged) and
+  `deployIn` added; `Deploy` carries `txid` and `vout`.
+- skein-overlay v0.18.0 (f66ee73) by tag URL and hash; `bin/overlay.wasm`
+  copied from it. `config.overlay` stays `{}`.
+- The config app (amm-config, apps/config) unchanged in behaviour: its
+  create still passes the configured names; that path is superseded by
+  shruggr/open-exchange#1.
+- REQUIRES a skein whose app manifest check and dispatch-row check take an
+  event route naming `kernel.beef` (skein a5c1897's kernel does; its
+  `src/host/manifest.ts` and `src/runtime/records.ts` refuse it).
+
 ## 0.21.1 (2026-10-29)
 
 0.21.0's token manifest dropped `config` entirely; skein derives the
