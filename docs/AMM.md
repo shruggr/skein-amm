@@ -12,7 +12,7 @@ topic per token, registered by root at runtime.
 |---|---|---|
 | `overlay` | skein-overlay 0.16.0 (`bin/overlay.wasm`, copied; 0.16.0: the beat's `terms` from the head `amm/terms`) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
-| `color-lookup` | skein-1color 0.10.0 (copied) | a token instance's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`; and the outputs by token id and outpoint), the discovery instance's `ls_color` (a deploy by its outpoint; 0.20.0, skein-1color 0.12.0: `ls_color_deploys` gone), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
+| `color-lookup` | skein-1color 0.10.0 (copied) | a token instance's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), the discovery instance's `ls_color` (a deploy by BRC-207's `color-admission` with `topic: "tm_color"`; 0.20.1, skein-1color 0.12.1: `ls_color_deploys` gone), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
 | `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the read `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
@@ -219,7 +219,7 @@ counterparty}`).
 
 - **Your tokens.** The assets `p color assets` lists, each balance `p color
   balance <tag>` (an exact decimal string); symbol, decimals and icon from
-  the token list (`/color/tokens`), else `ls_color {txid, outputIndex}` at the host root (0.20.0), else
+  the token list (`/color/tokens`), else `ls_color` BRC-207 `color-admission` (`topic: "tm_color"`) at the host root (0.20.1), else
   a deploy the wallet holds. Beside it, what `amm-swap` holds, with Move
   back.
 - **Deploy a position** (0.13.0). The LP key: a BRC-29 key to self under a
@@ -256,7 +256,7 @@ counterparty}`).
   Liquidity's Recover takes the pool's outpoint (`<txid>.<vout>` or
   `<txid>_<vout>`, the deploy's or a later continuation), follows it to its
   current output (`GET <base>/spends`), reads that output's BEEF from
-  `ls_color {txid, outputIndex}` and decodes the pool. A pool before
+  BRC-207's `color-spendability` at `ls_color_<tokenId>` (0.20.1; `ls_color {txid, outputIndex}` before) and decodes the pool. A pool before
   0.13.0: walks the BEEF back to the deploy (the transaction whose pool
   output carries the affirmation as its payload) and derives the LP key
   from the deploy's input 0 (`lpKeyId`, else the pre-BRC-29
@@ -344,8 +344,8 @@ wallet program (amm-validator `rescind.zig`).
 the read `GET <base>/spends?outpoint=<txid>.<vout>` (amm-p2p, the chain
 app's `spent` as the overlay reads it) follows the pool from its deploy to
 its current output (each spender's output 0 while it is a pool — a
-Rescind's included; `closed` once a Close spent it). The current output's BEEF comes from `ls_color
-{txid, outputIndex}`.
+Rescind's included; `closed` once a Close spent it). The current output's BEEF comes from BRC-207's
+`color-spendability` at `ls_color_<tokenId>` (0.20.1; `ls_color {txid, outputIndex}` before).
 
 ## Prices (0.9.0)
 

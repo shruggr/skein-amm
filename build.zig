@@ -14,10 +14,10 @@
 //
 //   zig build              → zig-out/bin/{amm-lookup,amm-validator,amm-p2p}.wasm
 //   zig build bin          the three, written to bin/ (amm-config to apps/config/bin/), with bin/overlay.wasm (skein-overlay v0.17.0)
-//                          and bin/color-{topic,lookup}.wasm (skein-1color v0.12.0) copied beside
+//                          and bin/color-{topic,lookup}.wasm (skein-1color v0.12.1) copied beside
 //   zig build test         the pool library and the three programs' tests, natively
 //
-// The 1Color pages (skein-1color v0.12.0's www/) are copied into www/color/ by
+// The 1Color pages (skein-1color v0.12.1's www/) are copied into www/color/ by
 // scripts/color-pages.sh (the tag's tarball by URL and sha256): they are not in the Zig package.
 // The AMM pages are built from web/ui into apps/config/www/ (scripts/www.sh runs both): the config app serves them.
 const std = @import("std");

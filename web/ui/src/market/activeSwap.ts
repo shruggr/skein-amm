@@ -242,7 +242,7 @@ export async function moveBack(i: {
 
   // The module takes in only an admitted, unspent output.
   const took = steak.steak?.[topic]?.outputsToAdmit.includes(0) ?? false;
-  const admitted = took || (await (i.admitted ?? ((t: string, v: number) => awaitAdmitted(i.af, i.base, `ls_color_${assetId}`, t, v)))(txid, 0).catch(() => false));
+  const admitted = took || (await (i.admitted ?? ((t: string, v: number) => awaitAdmitted(i.af, i.base, assetId, t, v)))(txid, 0).catch(() => false));
   const pending = {
     id: payoutId(txid, 0),
     kind: "move-back" as const,

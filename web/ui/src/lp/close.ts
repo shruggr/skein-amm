@@ -50,7 +50,7 @@ import { Utils } from "@bsv/sdk";
 import type { BasketFiling } from "./poolDeploy";
 import type { LpKeyRef } from "./positions";
 import { WALLET_PAYMENT, identityKeyOf, isBrc29Protocol, splitBrc29KeyID, type Brc29Payout, type PaymentRemittance } from "../wallet/brc29";
-import { sdkTokenId } from "../lib/tokenId";
+import { colorQuery, sdkTokenId } from "../lib/tokenId";
 import { POOLS_BASKET, SWAP_BASKET, newReceivingKey, receiptOutput, swapInstructions, type ColorReceipt } from "../wallet/color";
 import { tokenP2pkhScript } from "./poolDeploy";
 import { payoutId, type PendingPayoutStore } from "../wallet/pendingPayouts";
@@ -330,15 +330,15 @@ export function steakText(r: { steak?: Steak }): string {
 }
 
 /**
- * Whether the overlay admitted `txid`: the token instance's `ls_color_<tokenId> {txid, outputIndex}`
- * (`service`; one 1Color output, if unspent; skein-1color 0.12.0 docs/1COLOR.md) asked until it
- * answers the output or `timeoutMs` passes.
+ * Whether the overlay admitted output `outputIndex` of `txid`: BRC-207's `color-admission` at the
+ * token instance's `ls_color_<tokenId>` (0.20.1; `ls_color {txid, outputIndex}` until 0.19.0)
+ * asked until it answers the output or `timeoutMs` passes.
  * The engine admits once the chain app accepts the transaction (its broadcast succeeded).
  */
 export async function awaitAdmitted(
   af: SignedFetch | null,
   base: string,
-  service: string,
+  tokenId: string,
   txid: string,
   outputIndex: number,
   o: { timeoutMs?: number; intervalMs?: number } = {},
@@ -349,7 +349,7 @@ export async function awaitAdmitted(
     const res = await signed.fetch(`${base}/lookup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ service, query: { txid, outputIndex } }),
+      body: JSON.stringify(colorQuery("color-admission", tokenId, [`${txid}.${outputIndex}`])),
     });
     if (res.ok) {
       const a = (await res.json()) as { outputs?: unknown[] };

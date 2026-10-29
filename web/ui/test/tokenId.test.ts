@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DISCOVERY_LOOKUP,
-  colorLookupOf,
+  colorQuery,
+  deployQuery,
   outpointText,
   parseOutpoint,
   parseTokenId,
@@ -104,11 +105,15 @@ describe("outpoints are shown <txid>.<vout> (David 2026-10-08)", () => {
     expect(fullId(`tm_color_${TX}_0`, "topic")).toBe(`tm_color_${TX}_0`);
   });
 
-  it("0.20.0: a token instance's 1Color lookup is ls_color_<tokenId> (any id form); the discovery lookup is ls_color", () => {
-    expect(colorLookupOf(`${TX}_0`)).toBe(`ls_color_${TX}_0`);
-    expect(colorLookupOf(TX)).toBe(`ls_color_${TX}_0`);
-    expect(colorLookupOf(`${TX}.3`)).toBe(`ls_color_${TX}_3`);
-    expect(() => colorLookupOf("nope")).toThrow(/not a token id/);
+  it("0.20.1: BRC-207's query shape exactly — a token instance's ls_color_<assetId> over tm_color_<assetId>; a deploy at the discovery lookup ls_color over tm_color", () => {
+    expect(colorQuery("color-spendability", TX, [`${TX}_2`])).toEqual({
+      service: `ls_color_${TX}_0`,
+      query: { type: "color-spendability", version: 1, assetId: `${TX}_0`, topic: `tm_color_${TX}_0`, outpoints: [`${TX}.2`] },
+    });
+    expect(colorQuery("color-admission", `${TX}.3`, [`${TX}.1`]).service).toBe(`ls_color_${TX}_3`);
+    expect(() => colorQuery("color-admission", "nope", [])).toThrow(/not a token id/);
     expect(DISCOVERY_LOOKUP).toBe("ls_color");
+    expect(deployQuery(`${TX}_1`)).toEqual({ service: "ls_color", query: { type: "color-admission", version: 1, assetId: `${TX}_1`, topic: "tm_color", outpoints: [`${TX}.1`] } });
+    expect(deployQuery(TX).query.outpoints).toEqual([`${TX}.0`]);
   });
 });

@@ -150,7 +150,7 @@ export interface RecoverInput {
   rows: BasketRow[];
   /** `GET <base>/spends` (src/lib/skein.ts `readSpend`). */
   spendOf: (outpoint: string) => Promise<Spend>;
-  /** `ls_color_<tokenId> {txid, outputIndex}` (src/lp/positions.ts `colorOutput`). */
+  /** BRC-207 `color-spendability` at `ls_color_<tokenId>` (src/lp/positions.ts `colorOutput`). */
   outputOf: (outpoint: string) => Promise<LookupOutput>;
   /** Symbol and decimals: the token list, else the discovery lookup `ls_color` at the host root. */
   metaOf: (tokenId: string) => Promise<{ sym?: string; dec?: number } | null>;

@@ -64,7 +64,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthFetch, Beef, Transaction, Utils, type WalletInterface } from "@bsv/sdk";
 import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
-import { DISCOVERY_LOOKUP, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
+import { deployQuery, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { readBeats, readDefaults, readDiscovery, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
@@ -438,17 +438,18 @@ function hostRoot(): string {
 }
 
 /**
- * A token's metadata from its deploy (0.20.0: the discovery lookup `ls_color {txid, outputIndex}`
- * at the deploy's outpoint — the token id `<txid>_<vout>` IS it — POSTed to the HOST ROOT, plain
- * `fetch`: the deploy output with its BEEF), for a token the list does not carry; null when the
- * lookup has none. Until 0.19.0 it asked `ls_color_deploys {tokenId}` at the token's own instance,
- * which a token not enabled here does not have.
+ * A token's metadata from its deploy (0.20.1: the discovery lookup `ls_color`, BRC-207's
+ * `color-admission` of the deploy's outpoint over `tm_color` — the token id `<txid>_<vout>` IS it
+ * (`deployQuery`) — POSTed to the HOST ROOT, plain `fetch`: the deploy output with its BEEF), for a
+ * token the list does not carry; null when the lookup has none. Until 0.19.0 it asked
+ * `ls_color_deploys {tokenId}` at the token's own instance, which a token not enabled here does
+ * not have.
  */
 async function deployMeta(tokenId: string): Promise<{ sym?: string; dec?: number; icon?: string } | null> {
   try {
-    const ref = parseTokenId(tokenId);
-    if (!ref) return null;
-    const out = parseOutputList(await lookup(null, hostRoot(), DISCOVERY_LOOKUP, { txid: ref.txid, outputIndex: ref.vout }))[0];
+    if (!parseTokenId(tokenId)) return null;
+    const { service, query } = deployQuery(tokenId);
+    const out = parseOutputList(await lookup(null, hostRoot(), service, query))[0];
     if (!out) return null;
     const tx = Transaction.fromAtomicBEEF(out.beef);
     const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${out.outputIndex}`, lockingScript: tx.outputs[out.outputIndex]?.lockingScript.toHex() });
@@ -1092,7 +1093,7 @@ async function baseHolding(outpoint: string): Promise<{ base: string; tokenId: s
  * assets `p color assets` lists, each balance `p color balance <assetTag>`,
  * and what the active swap basket (`amm-swap`) holds of each; symbol,
  * decimals and icon from the token list, else the token's deploy
- * (the discovery lookup `ls_color` at the host root, 0.20.0), else a deploy the wallet holds. Each marked on this
+ * (the discovery lookup `ls_color`, BRC-207 `color-admission`, at the host root, 0.20.1), else a deploy the wallet holds. Each marked on this
  * exchange (registered) or not.
  */
 export async function myTokens(): Promise<WalletToken[]> {

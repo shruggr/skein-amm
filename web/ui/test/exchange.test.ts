@@ -96,9 +96,9 @@ interface Instance {
   live: Record<string, unknown[]>;
   pools: Record<string, unknown[]>;
   spends: Record<string, unknown>;
-  /** A token instance's `ls_color_<tokenId> {txid, outputIndex}` answers (0.20.0), by outpoint. */
+  /** A token instance's `ls_color_<tokenId>` BRC-207 answers (0.20.1), by outpoint `<txid>.<vout>`. */
   color: Record<string, unknown>;
-  /** The host root's `ls_color {txid, outputIndex}` (the discovery instance, 0.20.0), by outpoint. */
+  /** The host root's `ls_color` BRC-207 `color-admission` answers (the discovery instance, 0.20.1), by outpoint. */
   deploys: Record<string, unknown>;
   /** Every lookup asked: its URL and body. */
   lookups: { url: string; service: string; query: Record<string, unknown> }[];
@@ -167,10 +167,11 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     const atHostRoot = u.pathname === "/lookup";
     const empty = { type: "output-list", outputs: [] };
     // 0.20.0: the discovery lookup `ls_color` only at the host root; a token instance has `ls_color_<tokenId>`, no `ls_color`.
-    if (atHostRoot) return q.service === "ls_color" ? json(inst.deploys[`${q.query.txid}.${q.query.outputIndex}`] ?? empty) : json({ status: "error", message: "Lookup service not supported" }, 400);
+    const op = Array.isArray(q.query.outpoints) ? String(q.query.outpoints[0]) : "";
+    if (atHostRoot) return q.service === "ls_color" && q.query.topic === "tm_color" && q.query.type === "color-admission" ? json(inst.deploys[op] ?? empty) : json({ status: "error", message: "Lookup service not supported" }, 400);
     if (q.service === "ls_amm" && q.query.beef) return json({ type: "output-list", outputs: [{ beef: atomic(poolDeploy, [fund, tokenDeploy]), outputIndex: 0 }] });
     if (q.service === "ls_amm") return json({ type: "freeform", result: inst.pools[String(q.query.tokenId)] ?? [] });
-    if (q.service === `ls_color_${TOKEN}`) return json(inst.color[`${q.query.txid}.${q.query.outputIndex}`] ?? empty);
+    if (q.service === `ls_color_${TOKEN}` && q.query.topic === TOPIC && q.query.assetId === TOKEN && q.query.version === 1) return json(inst.color[op] ?? empty);
     return json({ status: "error", message: "Lookup service not supported" }, 400);
   }
   if (path === "/call") {
@@ -350,7 +351,7 @@ describe("exchange.ts, wired", () => {
     expect(await walletSats()).toBe(3_500n);
   });
 
-  it("myPositions: the wallet's pool rows (amm-pools) read from the chain state — followed to the current output (its BEEF from the token instance's ls_color_<tokenId>, 0.20.0); closed ones left out", async () => {
+  it("myPositions: the wallet's pool rows (amm-pools) read from the chain state — followed to the current output (its BEEF from the token instance's ls_color_<tokenId>, BRC-207 color-spendability, 0.20.1); closed ones left out", async () => {
     const pd = poolDeploy.id("hex");
     const row = {
       outpoint: `${pd}.0`,
@@ -375,7 +376,7 @@ describe("exchange.ts, wired", () => {
       },
     ]);
     expect(inst.lookups.filter((l) => l.service.startsWith("ls_color"))).toEqual([
-      { url: `${ORIGIN}/@${TOKEN}/amm/lookup`, service: `ls_color_${TOKEN}`, query: { txid: swap1.id("hex"), outputIndex: 0 } },
+      { url: `${ORIGIN}/@${TOKEN}/amm/lookup`, service: `ls_color_${TOKEN}`, query: { type: "color-spendability", version: 1, assetId: TOKEN, topic: TOPIC, outpoints: [`${swap1.id("hex")}.0`] } },
     ]);
     // Closed: gone from the list; and a close of a position not held is refused.
     inst.spends[`${pd}.0`] = { outpoint: `${pd}.0`, hops: 2, closed: true };
@@ -519,14 +520,14 @@ describe("exchange.ts, wired", () => {
     expect(inst.lookups).toEqual([]); // the list carries its metadata: no deploy lookup
   });
 
-  it("myTokens (0.20.0): a token not enabled here — its metadata from its deploy, the discovery lookup ls_color {txid, outputIndex} at the HOST ROOT (plain fetch), not /@<tokenId>", async () => {
+  it("myTokens (0.20.1): a token not enabled here — its metadata from its deploy, the discovery lookup ls_color (BRC-207 color-admission, topic tm_color) at the HOST ROOT (plain fetch), not /@<tokenId>", async () => {
     inst.enabled = [];
     inst.deploys[`${DEPLOY}.0`] = { type: "output-list", outputs: [{ beef: atomic(tokenDeploy, [fund]), outputIndex: 0 }] };
     const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
     connect({ held: [held], balances: { [`p color balance ${DEPLOY}v0`]: "5" } });
     const ts = await myTokens();
     expect(ts).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: 5n, onExchange: false })]);
-    expect(inst.lookups).toEqual([{ url: `${ORIGIN}/lookup`, service: "ls_color", query: { txid: DEPLOY, outputIndex: 0 } }]);
+    expect(inst.lookups).toEqual([{ url: `${ORIGIN}/lookup`, service: "ls_color", query: { type: "color-admission", version: 1, assetId: TOKEN, topic: "tm_color", outpoints: [`${DEPLOY}.0`] } }]);
   });
 
   it("enableToken / disableToken (0.17.0): root's {fn: enable, args: {tokenId, beef}} to the config instance's <app>/admin, the deploy's Atomic BEEF from the wallet's module basket (p color <txid>v<vout>), else pasted (hex), else refused; disable {tokenId}; a stopped token enabled again without a BEEF", async () => {

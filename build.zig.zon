@@ -1,6 +1,6 @@
 .{
     .name = .skein_amm,
-    .version = "0.20.0",
+    .version = "0.20.1",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
@@ -15,8 +15,8 @@
         // into bin/. (Its pages, www/, are outside the package's paths: scripts/color-pages.sh
         // copies them from the same tag's tarball by URL and sha256.)
         .skein_1color = .{
-            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.12.0.tar.gz",
-            .hash = "skein_1color-0.12.0-_DlbUoD2HgD-SsHFYrKgVNz4msAckwYQJ8vQ2uAC28ic",
+            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.12.1.tar.gz",
+            .hash = "skein_1color-0.12.1-_DlbUtETHwCn_AoYJNr6b5je-azPvDMLIQ2sMQl-aXfq",
         },
     },
     .paths = .{

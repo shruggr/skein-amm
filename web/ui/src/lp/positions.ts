@@ -9,14 +9,15 @@
  * validator, docs/AMM.md "The validator's Close").
  *
  * The current output's BEEF comes from the token's 1Color lookup
- * (`ls_color_<tokenId> {txid, outputIndex}`, skein-1color 0.12.0: an unspent
- * admitted output with its BEEF; `ls_color` until 0.19.0).
+ * (0.20.1: BRC-207's `color-spendability` at `ls_color_<tokenId>`: the
+ * output if admitted and unspent, with its BEEF; `ls_color {txid,
+ * outputIndex}` until 0.19.0).
  */
 import { Transaction, type WalletProtocol } from "@bsv/sdk";
 import { PoolTemplate, type Pool } from "../pool";
 import { lookup, parseOutputList, type LookupOutput, type SignedFetch } from "../lib/overlay";
 import { readSpend, type Spend } from "../lib/skein";
-import { colorLookupOf, parseOutpoint, tokenIdText } from "../lib/tokenId";
+import { colorQuery, parseOutpoint, tokenIdText } from "../lib/tokenId";
 import { isPoolRow } from "./poolRows";
 import type { BasketRow } from "./poolDeploy";
 
@@ -73,12 +74,12 @@ export function positionRowsOf(rows: BasketRow[]): PositionRow[] {
   return out;
 }
 
-/** An unspent 1Color output of token `tokenId` with its BEEF: `ls_color_<tokenId> {txid, outputIndex}` at its instance `base`. */
+/** An unspent 1Color output of token `tokenId` with its BEEF: BRC-207 `color-spendability` at `ls_color_<tokenId>`, its instance `base`. */
 export async function colorOutput(af: SignedFetch | null, base: string, tokenId: string, outpoint: string): Promise<LookupOutput> {
   const op = parseOutpoint(outpoint);
   if (!op) throw new Error(`not an outpoint: ${outpoint}`);
-  const service = colorLookupOf(tokenId);
-  const outs = parseOutputList(await lookup(af, base, service, { txid: op.txid, outputIndex: op.vout }));
+  const { service, query } = colorQuery("color-spendability", tokenId, [`${op.txid}.${op.vout}`]);
+  const outs = parseOutputList(await lookup(af, base, service, query));
   const o = outs.find((x) => x.outputIndex === op.vout) ?? outs[0];
   if (!o) throw new Error(`${service}: no unspent output ${outpoint}`);
   return o;

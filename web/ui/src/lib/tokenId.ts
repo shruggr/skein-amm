@@ -49,23 +49,40 @@ export function parseOutpoint(text: string): TokenRef | null {
   return parse(text, true);
 }
 
-/**
- * A token instance's 1Color lookup (0.20.0): `ls_color_<tokenId>`, color-lookup over the token's topic
- * `tm_color_<tokenId>`, answering its outputs by outpoint `{txid, outputIndex}` (skein-1color
- * 0.12.0) as well as BRC-207's queries. A token instance serves no `ls_color`.
- */
-export function colorLookupOf(tokenId: string): string {
-  const ref = parseTokenId(tokenId);
-  if (!ref) throw new Error(`not a token id: ${tokenId}`);
-  return `ls_color_${tokenIdText(ref)}`;
+/** BRC-207's two lookup queries (wallet/0207.md "Overlay spendability contract"). */
+export type Brc207Type = "color-spendability" | "color-admission";
+
+/** A BRC-24 lookup request: its service and query. */
+export interface LookupRequest {
+  service: string;
+  query: Record<string, unknown>;
 }
 
 /**
- * The discovery lookup (0.20.0): `ls_color` over `tm_color`, a deploy asked by its outpoint
- * `{txid, outputIndex}` (the token id `<txid>_<vout>` IS it) at the host root; `ls_color_deploys`
- * is gone.
+ * A BRC-207 query for outpoints of token `tokenId` at a token instance (0.20.1): service
+ * `ls_color_<assetId>`, topic `tm_color_<assetId>`, exactly BRC-207's shape. A token instance
+ * serves no `ls_color`.
  */
+export function colorQuery(type: Brc207Type, tokenId: string, outpoints: string[]): LookupRequest {
+  const ref = parseTokenId(tokenId);
+  if (!ref) throw new Error(`not a token id: ${tokenId}`);
+  const assetId = tokenIdText(ref);
+  return { service: `ls_color_${assetId}`, query: { type, version: 1, assetId, topic: `tm_color_${assetId}`, outpoints: outpoints.map(outpointText) } };
+}
+
+/** The discovery lookup (0.20.0): `ls_color`, color-lookup over the discovery topic `tm_color`. */
 export const DISCOVERY_LOOKUP = "ls_color";
+
+/**
+ * A token's deploy asked of the discovery lookup (0.20.1; David, 2026-10-29: BRC-207's form):
+ * `{service: "ls_color", query: {type: "color-admission", version: 1, assetId: "<txid>_<vout>",
+ * topic: "tm_color", outpoints: ["<txid>.<vout>"]}}` — the token id IS the deploy's outpoint.
+ */
+export function deployQuery(tokenId: string): LookupRequest {
+  const ref = parseTokenId(tokenId);
+  if (!ref) throw new Error(`not a token id: ${tokenId}`);
+  return { service: DISCOVERY_LOOKUP, query: { type: "color-admission", version: 1, assetId: tokenIdText(ref), topic: "tm_color", outpoints: [`${ref.txid}.${ref.vout}`] } };
+}
 
 /** The token id of a deploy outpoint: `<txid>_<vout>`, `_0` included (BRC-162 "Token identification"). */
 export function tokenIdText(ref: TokenRef): string {

@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.20.1 (2026-10-29)
+
+The lookups in BRC-207's query form, no shape of ours (David, 2026-10-29,
+correcting 0.20.0).
+
+- skein-1color v0.12.0 → v0.12.1 (tag URL and hash; `bin/color-lookup.wasm`
+  copied from it: `ls_color` answers BRC-207's query with `topic:
+  "tm_color"`; 0.12.0's `{txid, outputIndex}` deploy answer and the
+  per-asset name's extra queries withdrawn); `scripts/color-pages.sh` at
+  v0.12.1 (sha256 7d55df85…3674).
+- Pages: `deployMeta` asks the host root `{"service": "ls_color", "query":
+  {"type": "color-admission", "version": 1, "assetId": "<txid>_<vout>", "topic": "tm_color", "outpoints": ["<txid>.<vout>"]}}` (`deployQuery`). A token instance's outputs by outpoint ask
+  `ls_color_<tokenId>` BRC-207's `color-spendability` (positions, recover:
+  `colorOutput`) or `color-admission` (the move back's admission wait,
+  `awaitAdmitted`), topic `tm_color_<tokenId>` (`colorQuery`).
+- zig build test 79; vitest 159; `apps/config/www/` rebuilt; manifests
+  0.20.1.
+
 ## 0.20.0 (2026-10-29)
 
 One lookup name per topic (David, 2026-10-29: "There should be no

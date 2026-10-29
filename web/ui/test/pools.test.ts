@@ -526,7 +526,7 @@ describe("close (0.13.0, layout 2): the LP's outputs — the sats to the LP key,
     expect(b.calls).toEqual([]);
   });
 
-  it("the submit (BRC-22, plain fetch): the STEAK, or nothing decided (503); awaitAdmitted asks the token instance's ls_color_<tokenId> (0.20.0)", async () => {
+  it("the submit (BRC-22, plain fetch): the STEAK, or nothing decided (503); awaitAdmitted asks the token instance's ls_color_<tokenId> BRC-207 color-admission (0.20.1)", async () => {
     const { wallet } = fakeWallet(3, honest((a) => side.privateKey(a)));
     const s = await prepareClose({ wallet, tokenId: TOKEN_ID, poolOutput: poolOutput(), lpKey: lpRef, bsvFee: 1_000n, satsPerKb: RATE });
     const STEAK = { [s.topic]: { outputsToAdmit: [1], coinsToRetain: [], coinsRemoved: [0] } };
@@ -534,9 +534,9 @@ describe("close (0.13.0, layout 2): the LP's outputs — the sats to the LP key,
     const fetchFn = (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
       if (url.endsWith("/submit")) return new Response(JSON.stringify(STEAK), { status: 200 });
-      const q = JSON.parse(init.body as string) as { service: string; query: { txid: string; outputIndex: number } };
-      const found = q.service === `ls_color_${TOKEN_ID}` && q.query.txid === s.txid && seen.length > 2;
-      return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: q.query.outputIndex }] : [] }), { status: 200 });
+      const q = JSON.parse(init.body as string) as { service: string; query: { type: string; topic: string; outpoints: string[] } };
+      const found = q.service === `ls_color_${TOKEN_ID}` && q.query.type === "color-admission" && q.query.topic === `tm_color_${TOKEN_ID}` && q.query.outpoints[0] === `${s.txid}.1` && seen.length > 2;
+      return new Response(JSON.stringify({ type: "output-list", outputs: found ? [{ beef: [], outputIndex: 1 }] : [] }), { status: 200 });
     }) as unknown as SignedFetch["fetch"];
     const r = await submitToOverlay("http://x/amm", s.topic, s.beef, fetchFn as never);
     expect(seen[0]!.url).toBe("http://x/amm/submit");
@@ -545,7 +545,7 @@ describe("close (0.13.0, layout 2): the LP's outputs — the sats to the LP key,
     expect(steakText(r)).toBe(`admitted under ${s.topic} (outputs 1)`);
     const later = (async () => new Response('{"status":"error"}', { status: 503 })) as unknown as SignedFetch["fetch"];
     expect(await submitToOverlay("http://x/amm", s.topic, s.beef, later as never)).toEqual({});
-    expect(await awaitAdmitted({ fetch: fetchFn }, "http://x/amm", `ls_color_${TOKEN_ID}`, s.txid, 1, { intervalMs: 1 })).toBe(true);
+    expect(await awaitAdmitted({ fetch: fetchFn }, "http://x/amm", TOKEN_ID, s.txid, 1, { intervalMs: 1 })).toBe(true);
   });
 });
 
