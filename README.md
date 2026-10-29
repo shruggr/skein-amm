@@ -260,11 +260,9 @@ The config app's create (its configured names, "The config instance"
 below) still works and is unchanged; it is superseded by
 shruggr/open-exchange#1, where the config app and `apps/config` move.
 
-The event route needs a skein whose host takes an app manifest's event
-route naming `kernel.beef`: skein main a5c1897's kernel does, but its
-`src/host/manifest.ts` (`routeProblem`) and `src/runtime/records.ts`
-(`isDispatchRow`) still refuse it ("an event route has no filters"), so
-this manifest does not install on a5c1897 (Versions, below).
+The event route needs skein main fa8077c or later: there the host takes an
+app manifest's event route naming `kernel.beef` (a5c1897's kernel took it,
+its host refused it at install: "an event route has no filters").
 
 ## The config instance (0.17.0)
 
@@ -562,7 +560,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 | | |
 |---|---|
 | this app | 0.22.0 |
-| skein | 0.22.0: a host whose manifest and dispatch-row checks take an event route naming `kernel.beef` (NOT a5c1897: its kernel takes it, `src/host/manifest.ts` and `src/runtime/records.ts` refuse it), and a5c1897 or later for the event door and born-owned instances (shruggr/skein#164); main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
+| skein | 0.22.0: main fa8077c or later (an event route naming `kernel.beef` in a manifest; the event door and born-owned instances, a5c1897, shruggr/skein#164); main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.18.0 (f66ee73) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.18.0: register / registerLookup callable in-VM from a program of the instance, skein-overlay#10; 0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.12.1 (16b0d4b; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (0.12.0: `color-lookup.wasm` rebuilt, `ls_color_deploys` gone; 0.12.1: `ls_color` answers BRC-207's query over `tm_color`), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |
 | skein-sdk | v0.12.0, through skein-overlay (`files` serves the pages; `sk.peerAt` finds the host's providers) |

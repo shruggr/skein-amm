@@ -40,9 +40,9 @@ The token app's setup on the deploy event (shruggr/skein-amm#5; David
 - The config app (amm-config, apps/config) unchanged in behaviour: its
   create still passes the configured names; that path is superseded by
   shruggr/open-exchange#1.
-- REQUIRES a skein whose app manifest check and dispatch-row check take an
-  event route naming `kernel.beef` (skein a5c1897's kernel does; its
-  `src/host/manifest.ts` and `src/runtime/records.ts` refuse it).
+- Needs skein main fa8077c or later (an event route may name `kernel.beef`
+  in an app manifest and a dispatch row; a5c1897's host refused it at
+  install).
 
 ## 0.21.1 (2026-10-29)
 
