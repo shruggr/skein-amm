@@ -13,7 +13,7 @@ topic per token, registered by root at runtime.
 | `overlay` | skein-overlay 0.16.0 (`bin/overlay.wasm`, copied; 0.16.0: the beat's `terms` from the head `amm/terms`) | a submission by message in box `amm/submit`, answered to the submitter's box, or by `POST /submit` (BRC-22, the STEAK); `/lookup`, gossip, the listing and documentation reads; `register` / `deregister` a topic (and `registerLookup` / `deregisterLookup` its lookup), and with it the market's liveness and the validator's beacon on `tm_color_<txid>_0-live` (below, "Market and validator"), and each registered lookup's beacon and liveness on `<service>-live`; hands every admitted BEEF to the chain app |
 | `color-topic` | skein-1color 0.10.0 (copied) | judges `tm_color_<txid>_0` (`tm_color_<assetId>`, `_<vout>` always) by the BRC-162 rules; `tm_color` admits every deploy |
 | `color-lookup` | skein-1color 0.10.0 (copied) | a token instance's `ls_color_<assetId>` (BRC-207: `color-spendability`, `color-admission`), the discovery instance's `ls_color` (a deploy by BRC-207's `color-admission` with `topic: "tm_color"`; 0.20.1, skein-1color 0.12.1: `ls_color_deploys` gone), one index; its fn `tokens`, the token list, the read route `/color/tokens` (0.6.0: the token list is a read of the components) |
-| `amm-lookup` | `programs/amm-lookup` | `ls_amm`: the listed pools (below, "The listing"), per token; its beat, the prices ("Prices") |
+| `amm-lookup` | `programs/amm-lookup` | `ls_amm_<assetId>` (0.21.0; `ls_amm` before, its index still `<app>/ls_amm`): the listed pools (below, "The listing"), per token; its beat on `ls_amm_<assetId>-live`, the prices ("Prices") |
 | `amm-validator` | `programs/amm-validator` | the validator, for every registered token (always, 0.8.1): `swap` (a libp2p direct call; it submits by message to its own overlay), `affirm` (0.11.0; 0.13.0: it picks the nonce; called in-VM by `amm.pool.affirm`), root's `rescind` (0.13.0; 0.11.0–0.12.x: `close`) |
 | `amm-p2p` | `programs/amm-p2p` | the relay (`amm.swap/1`; `amm.pool/1`: `terms`, `affirm`), the read `/spends`, the pages (`www/` from the app's tree); the catch-up utility, unscheduled |
 | | `src/pool.zig` | the pool library (module `pool`), over `1color`'s parser and rules |
@@ -297,7 +297,7 @@ counterparty}`).
 
 ## The listing (0.13.0)
 
-`ls_amm` (programs/amm-lookup `listedAt`) lists a pool output when
+`ls_amm_<assetId>` (programs/amm-lookup `listedAt`) lists a pool output when
 
 - **(a) it attests itself** (src/pool.zig `affirmed`): not rescinded; its
   ValidatorPubKey equals the ValidatorIdentity's child keyed by its Nonce,
@@ -336,7 +336,7 @@ draft; it writes the pool input's Rúnar call of Rescind over the draft
 over the draft's BIP-143 preimage; the wallet's change as Rúnar's
 `_changePKH` / `_changeAmount`); `signAction {reference, spends}`; then
 submits it to its overlay for the token topic (the topic admits the
-rescinded pool; `ls_amm` drops it) and answers root `{fn: "rescind",
+rescinded pool; `ls_amm_<assetId>` drops it) and answers root `{fn: "rescind",
 request, result | error}`. Each wallet call is a thread of the genesis
 wallet program (amm-validator `rescind.zig`).
 
@@ -350,9 +350,9 @@ Rescind's included; `closed` once a Close spent it). The current output's BEEF c
 ## Prices (0.9.0)
 
 David Case, 2026-10-09: "Pricing lives in the AMM LOOKUP's own beacon";
-"beats are libp2p service discovery". `ls_amm`, registered (skein-overlay
-0.12: a registered lookup beats on `<service>-live` and keeps liveness on
-it), beats on `ls_amm-live` a body (dag-cbor) carrying, per token, this
+"beats are libp2p service discovery". `ls_amm_<assetId>`, configured at the
+token instance's create (skein-overlay 0.17.0: a configured lookup beats on
+`<service>-live` and keeps liveness on it), beats on `ls_amm_<assetId>-live` a body (dag-cbor) carrying, per token, this
 skein's per-validator totals of its listed pools:
 
 ```
@@ -361,10 +361,10 @@ skein's per-validator totals of its listed pools:
 
 re-declared by a hook whenever it changes (the lookup keeps the last body's
 record, `beat`; `Service.beat`) and answered by fn `beat` at the beacon's
-declaration. The page reads `GET <base>/.live/ls_amm-live` (each live
+declaration. The page reads `GET <base>/.live/ls_amm_<assetId>-live` (each live
 skein's latest beat) and combines them: a token's price is Σsats / Σtokens
 across the live validators (a validator is live when its own beat is held,
-on `ls_amm-live` or the token's topic); one report per validator (its own
+on `ls_amm_<assetId>-live` or the token's topic); one report per validator (its own
 beat's, else the newest naming it). Polled every `REFRESH_MS`. A token no
 beat reports is priced from this skein's own listing and liveness. The
 topic manager's beat carries no prices.
@@ -376,7 +376,7 @@ topic manager's beat carries no prices.
 | route | what |
 |---|---|
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
-| `POST /lookup` | BRC-24: `ls_amm` `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); a token instance's `ls_color_<assetId>`; the discovery instance's `ls_color` (skein-1color README; 0.20.0) |
+| `POST /lookup` | BRC-24: `ls_amm_<assetId>` (0.21.0) `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); a token instance's `ls_color_<assetId>`; the discovery instance's `ls_color` (skein-1color README; 0.20.0) |
 | `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read. The config app's in 0.17.0; removed in 0.19.0 |
 | `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): the chain state of an outpoint, a pool followed to its current output, `{outpoint, spentBy?, current?, hops, closed}`; a read |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
@@ -385,7 +385,7 @@ topic manager's beat carries no prices.
 | `POST /call` | amm-p2p: `{fn, args}` for the two interfaces below |
 | `GET /…` (prefix `/`) | amm-p2p `serve`: the pages, `www/` of the app's own tree (skein-sdk `files.serve`); a read since 0.5.0 |
 
-A token id in a query is any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`); the pages write every token id as `<txid>_<vout>`, 1Color and legacy BSV-21 alike, `_0` included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and show outpoints as `<txid>.<vout>` (0.6.3, David 2026-10-08), while `ls_amm`'s `outpoint` and the relay's take `<txid>_<vout>`.
+A token id in a query is any form (`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`); the pages write every token id as `<txid>_<vout>`, 1Color and legacy BSV-21 alike, `_0` included (BRC-162 "Token identification"; 0.7.1, David 2026-10-07), and show outpoints as `<txid>.<vout>` (0.6.3, David 2026-10-08), while `ls_amm_<assetId>`'s `outpoint` and the relay's take `<txid>_<vout>`.
 
 Which of these is a read and which a route with a handler is "Read routes",
 below. `GET /live` is gone (0.5.0; it answered 410 from 0.4.0).
@@ -447,8 +447,8 @@ fn `affirm` in-VM, which answers at once.
 `<topic>` (submit and admit messages, one mesh) and `-proof` for each
 registered topic (skein-overlay 0.12.0; `-admit` before); `tm_color_<txid>_0-live`,
 beaconed by a validator's host and subscribed, without admitting anything,
-by a market's liveness tool (below); `ls_amm-live`, the AMM lookup's beat
-(the prices, above), once root registers `ls_amm`; `/skein/overlay/sync/1.0.0`,
+by a market's liveness tool (below); `ls_amm_<assetId>-live`, the AMM lookup's beat
+(the prices, above), its name configured at the create (0.21.0); `/skein/overlay/sync/1.0.0`,
 the overlay sync protocol, answered by the engine's filter `sync` (0.14.0);
 `/skein/overlay/beef/1.0.0`, the engine's receive row, a catch-up's fetched
 Atomic BEEFs (0.14.1).
@@ -499,7 +499,7 @@ intents stand in the log.
 - **The page** reads that endpoint per token, takes each beat's `sender`
   (the validator) and `from` (its peer ID), plans (`market/plan.ts`) only
   over the pools whose validator is there, and names the chosen one in the
-  swap (`validator` and `peerId`); the prices combine the `ls_amm-live`
+  swap (`validator` and `peerId`); the prices combine the `ls_amm_<assetId>-live`
   beats over the live validators (above, "Prices").
 
 Gone in 0.6.0: `validate` / `unvalidate` (the box `amm/validate` and its
@@ -523,8 +523,10 @@ route reaches them; topics registered by an earlier version stay served);
 no pages (the `/` read, the filter `page`); no holders' requests (the box
 `requests`, the read `/requests`, the filter `requests`: the config app's
 in 0.17.0, removed in 0.19.0).
-`config.overlay.topics` and the per-token lookup come from the create's
-config; `config.overlay.terms` (skein-overlay 0.17.0) and
+`config.overlay.topics` and the per-token lookups (`ls_amm_<assetId>`,
+`ls_color_<assetId>`) come from the create's config; 0.21.0: the manifest
+declares no lookup (no `config` at all; `ls_amm` was its default until
+0.20.1); `config.overlay.terms` (skein-overlay 0.17.0) and
 `config["amm-p2p"].market` are the initial terms and market minimum, read
 when the heads `amm/terms` / `amm/market` are unset (a record there, its
 `null` included, wins). amm-validator signs for every topic the engine
@@ -612,7 +614,7 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/color/tokens` | read | `tokens` → `color-lookup.tokens` | 0.6.0 |
 | `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0; removed in 0.19.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
-| `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm-live` | the runtime's liveness read (no program, skein #138) | | |
+| `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm_<txid>_0-live` | the runtime's liveness read (no program, skein #138) | | |
 | `/live` | gone | | 0.5.0 (410 in 0.4.0) |
 
 amm-p2p's `serve` reads only (the head `amm/app` and the tree's blobs);
@@ -663,7 +665,7 @@ nothing runs. amm-validator does the same with its answers to root (0.17.0).
 
 The pages (served by the config instance): the token list from `GET
 <config>/amm/tokens`; everything per token at `<url>/amm` of that token's
-row (`tokenBase`): its pools, prices (one `ls_amm-live` read per token
+row (`tokenBase`): its pools, prices (one `ls_amm_<assetId>-live` read per token
 instance), liveness, `/call`, `/submit`, `/spends`. No read crosses
 instances. Settings: Enable a token (a token id typed; the deploy's BEEF from the connected wallet's module
 basket, else pasted), the enabled list with Disable / Enable again, the
@@ -715,13 +717,12 @@ terms are root's message to `/@<tokenId>` (no page for it).
   0.5.0's body, which the page no longer reads.
 - **Governance per token** (#120 item 4) and the other 1Color queries:
   skein-1color docs/1COLOR.md "Not built".
-- **`ls_amm` beats once registered.** skein-overlay 0.12 declares a
-  lookup's beacon (and keeps liveness on `<service>-live`) at
-  `registerLookup`, not for a service the manifest declares; `ls_amm` is
-  declared (so `/lookup` answers it from install) and root registers it too
-  (the Settings page's register sends `registerLookup ls_amm`,
-  idempotent). Until then there are no prices beats, and the pages price a
-  token from this skein's own listing.
+- **The AMM lookup's beat** (0.21.0): `ls_amm_<assetId>` is named in the
+  token instance's create, a configured lookup, and beats on
+  `ls_amm_<assetId>-live` (skein-overlay 0.17.0). A token instance created
+  before 0.21.0 serves `ls_amm` until its config names the new name (an
+  install with `--config`, then a disable and enable for its `topics`); a
+  token no beat reports is priced from this skein's own listing.
 - **Root, as the page sees it.** No read tells a page a key's grants
   (shruggr/skein#143): `isRoot` is a stub, every connected wallet sees
   Settings, and the skein refuses a non-root's register messages.

@@ -1,6 +1,7 @@
 # amm-lookup
 
-The AMM pool liquidity lookup service, `ls_amm`: a lookup service on
+The AMM pool liquidity lookup service, served as `ls_amm_<assetId>` (skein-amm
+0.21.0, paired with `tm_color_<assetId>` as `ls_color_<assetId>` is): a lookup service on
 skein-overlay 0.6.0's lookup contract (the `lookup` module). One service over
 every 1Color token topic the overlay serves (`tm_color_<txid>_<vout>`, judged by
 skein-1color's topic manager: plain BRC-162 rules, no AMM knowledge). It
@@ -13,7 +14,10 @@ Ported from amm-poc `programs/amm-lookup`, where it was one service per token
 (`ls_amm_<txid>`, its own head per token, a `topics` list in the manifest).
 Here `config.overlay` names it with no `topics` list, so it listens to every
 topic the overlay serves, declared or registered with the engine
-(shruggr/skein#120), and every query names its token.
+(shruggr/skein#120), and every query names its token. Since skein-amm 0.21.0
+the name is per token again, `ls_amm_<assetId>`, given in a token instance's
+create (one token topic per instance); the index stays one head,
+`<app>/ls_amm`, whatever name it is served as.
 
 ```
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
@@ -31,7 +35,7 @@ This supersedes 0.9.0's claim below. A deploy's pool is **listed** only when its
 
 A pool is **listed** only while both its contract output and its claim output are unspent, and only if the claim verifies (src/pool.zig `verifiedClaim`: one unit of the token after output 0, its payload the pool's ValidatorPubKey's signature over the pool's script and the first token input — the topic's first retained coin, else input 0 — that key `validatorKey(ValidatorIdentity, first token input)`, the claim P2PKH to it). Two more maps: `claims` (`tp ‖ claim outpoint → null`, the live verified claims) and `spentClaims` (a claim a spend consumed, for `rejected`). A deploy's pool is indexed with its claim (`claimFor`); a continuation carries the claim of the pool it spends (in `pools` still: `spent` runs after `admitted`); a deploy with no verified claim is not indexed. `spent` of a claim (the validator's rescind) moves it to `spentClaims`: every pool of that deploy is unlisted; `rejected` gives it back. **Every query answers listed pools only** (`{tokenId}`, `{tokenId, validatorIdentityKey}`; `{tokenId, outpoint}` a pool not listed: `NotListed`).
 
-**The beat** (skein-overlay 0.12): the service's body on `ls_amm-live` is dag-cbor `{tokens: {<assetId>: {<validator identity, hex>: {sats, tokens, pools}}}}`, this skein's per-token, per-validator totals of its listed pools (`beatValue`); fn `beat` answers it at the beacon's declaration (`Spec.beat`), and a hook hands a new one to the engine (`Service.beat`) only when it changed (the last body's record kept in the map `beat`). The engine declares a lookup's beacon for a **registered** service: root registers `ls_amm` (`registerLookup {service: "ls_amm", program: "amm-lookup"}`) beside its manifest declaration.
+**The beat** (skein-overlay 0.12): the service's body on `<service>-live` (`ls_amm_<assetId>-live`, 0.21.0) is dag-cbor `{tokens: {<assetId>: {<validator identity, hex>: {sats, tokens, pools}}}}`, this skein's per-token, per-validator totals of its listed pools (`beatValue`); fn `beat` answers it at the beacon's declaration (`Spec.beat`), and a hook hands a new one to the engine (`Service.beat`) only when it changed (the last body's record kept in the map `beat`). The engine declares a lookup's beacon for a **registered** service: root registers `ls_amm` (`registerLookup {service: "ls_amm", program: "amm-lookup"}`) beside its manifest declaration (0.9.0; since skein-overlay 0.17.0 a configured lookup beats too, and skein-amm 0.21.0 configures `ls_amm_<assetId>` at the create).
 
 ## Layout
 
@@ -98,7 +102,7 @@ no time source.
   each pool it had spent from `spentPools` back to `pools`, as it was
   indexed when first admitted.
 
-## Queries (`/lookup`, service `ls_amm`)
+## Queries (`/lookup`, service `ls_amm_<assetId>`)
 
 Every query names its token (`tokenId`, above); a query without one is
 refused.

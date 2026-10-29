@@ -67,11 +67,11 @@ describe("the skein's doors", () => {
   it("the reads: spends, beats (404: none kept)", async () => {
     const f = (async (url: string) => {
       if (url.includes("/spends")) return new Response(JSON.stringify({ outpoint: `${"11".repeat(32)}.0`, spentBy: "ab".repeat(32), hops: 0, closed: false }));
-      if (url.includes("ls_amm-live")) return new Response(JSON.stringify([{ sender: A.toUpperCase(), at: 5, from: "p", body: Utils.toBase64([1, 2]) }]));
+      if (url.includes("ls_amm_aa_0-live")) return new Response(JSON.stringify([{ sender: A.toUpperCase(), at: 5, from: "p", body: Utils.toBase64([1, 2]) }]));
       return new Response("{}", { status: 404 });
     }) as typeof fetch;
     expect(await readSpend("http://x/amm", `${"11".repeat(32)}.0`, f)).toMatchObject({ spentBy: "ab".repeat(32) });
-    const bs = await readBeats("http://x/amm", "ls_amm-live", f);
+    const bs = await readBeats("http://x/amm", "ls_amm_aa_0-live", f);
     expect(bs).toEqual([{ sender: A, at: 5, from: "p", body: Uint8Array.from([1, 2]) }]);
     expect(await readBeats("http://x/amm", "tm_x-live", f)).toEqual([]);
   });

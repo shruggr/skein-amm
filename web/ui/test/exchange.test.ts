@@ -34,6 +34,7 @@ import {
   hostedTokens,
   isRoot,
   lookupOf,
+  ammLookupOf,
   myPositions,
   myTokens,
   onDataChange,
@@ -123,8 +124,8 @@ function instance(): Instance {
       { tokenId: OTHER, topic: `tm_color_${OTHER}`, sym: "OTH", dec: 2, txid: OTHER.slice(0, 64), vout: 0 },
     ],
     live: {
-      // ls_amm's beats: this skein's own (its pools of the token), and another skein naming a validator that is not live.
-      "ls_amm-live": [
+      // ls_amm_<TOKEN>'s beats (0.21.0): this skein's own (its pools of the token), and another skein naming a validator that is not live.
+      [`ls_amm_${TOKEN}-live`]: [
         beat(SKEIN, 2_000, { tokens: { [TOKEN]: { [SKEIN]: { sats: 1_000_000, tokens: 5_000_000, pools: 1 } } } }),
         beat(ME, 1_000, { tokens: { [TOKEN]: { [SKEIN]: { sats: 1, tokens: 1, pools: 1 }, [V2]: { sats: 600, tokens: 300, pools: 1 } } } }),
       ],
@@ -169,8 +170,10 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     // 0.20.0: the discovery lookup `ls_color` only at the host root; a token instance has `ls_color_<tokenId>`, no `ls_color`.
     const op = Array.isArray(q.query.outpoints) ? String(q.query.outpoints[0]) : "";
     if (atHostRoot) return q.service === "ls_color" && q.query.topic === "tm_color" && q.query.type === "color-admission" ? json(inst.deploys[op] ?? empty) : json({ status: "error", message: "Lookup service not supported" }, 400);
-    if (q.service === "ls_amm" && q.query.beef) return json({ type: "output-list", outputs: [{ beef: atomic(poolDeploy, [fund, tokenDeploy]), outputIndex: 0 }] });
-    if (q.service === "ls_amm") return json({ type: "freeform", result: inst.pools[String(q.query.tokenId)] ?? [] });
+    // 0.21.0: the AMM lookup is `ls_amm_<tokenId>`; a plain `ls_amm` is no service here.
+    const ammService = q.service === `ls_amm_${String(q.query.tokenId)}`;
+    if (ammService && q.query.beef) return json({ type: "output-list", outputs: [{ beef: atomic(poolDeploy, [fund, tokenDeploy]), outputIndex: 0 }] });
+    if (ammService) return json({ type: "freeform", result: inst.pools[String(q.query.tokenId)] ?? [] });
     if (q.service === `ls_color_${TOKEN}` && q.query.topic === TOPIC && q.query.assetId === TOKEN && q.query.version === 1) return json(inst.color[op] ?? empty);
     return json({ status: "error", message: "Lookup service not supported" }, 400);
   }
@@ -235,7 +238,7 @@ afterEach(() => {
 const connect = (rows?: WalletRows) => setExchangeContext({ wallet: fakeWallet(rows), af: af as never, identityKey: ME });
 
 describe("exchange.ts, wired", () => {
-  it("hostedTokens: the registered 1Color tokens, priced from ls_amm's beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
+  it("hostedTokens: the registered 1Color tokens, priced from ls_amm_<assetId>'s beats over the live validators (each validator's own report first); a token no beat reports, from this skein's listing", async () => {
     inst.enabled.push(enabledRow(OTHER, "OTH", 2, 1));
     inst.pools[OTHER] = [];
     const ts = await hostedTokens();
@@ -259,7 +262,7 @@ describe("exchange.ts, wired", () => {
     const off = subscribePrices((u) => seen.push(`${u.tokenId}:${u.reserves.sats}`));
     await vi.advanceTimersByTimeAsync(REFRESH_MS);
     expect(seen).toEqual([`${TOKEN}:1000000`]);
-    inst.live["ls_amm-live"] = [beat(SKEIN, 3_000, { tokens: { [TOKEN]: { [SKEIN]: { sats: 2_000_000, tokens: 5_000_000, pools: 1 } } } })];
+    inst.live[`ls_amm_${TOKEN}-live`] = [beat(SKEIN, 3_000, { tokens: { [TOKEN]: { [SKEIN]: { sats: 2_000_000, tokens: 5_000_000, pools: 1 } } } })];
     await vi.advanceTimersByTimeAsync(REFRESH_MS);
     expect(seen.at(-1)).toBe(`${TOKEN}:2000000`);
     off();
@@ -581,6 +584,10 @@ describe("exchange.ts, wired", () => {
     expect(topicOf(`${t}_0`)).toBe(`tm_color_${t}_0`);
     expect(lookupOf(`${t}_0`)).toBe(`ls_color_${t}_0`);
     expect(topicOf(`${t}_2`)).toBe(`tm_color_${t}_2`);
+    // 0.21.0: the AMM lookup per asset, the asset id as colorQuery forms it (`_0` added to a bare txid).
+    expect(ammLookupOf(`${t}_0`)).toBe(`ls_amm_${t}_0`);
+    expect(ammLookupOf(t)).toBe(`ls_amm_${t}_0`);
+    expect(ammLookupOf(`${t.toUpperCase()}.2`)).toBe(`ls_amm_${t}_2`);
   });
 });
 

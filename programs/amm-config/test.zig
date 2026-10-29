@@ -80,12 +80,13 @@ test "the create: {handle: <tokenId>, image, config: {amm: {overlay: {topics, lo
     const ov = plain.get("config").?.get("amm").?.get("overlay").?;
     try testing.expectEqualStrings("color-topic", ov.get("topics").?.getText("tm_color_aa_0").?);
     const ls = ov.get("lookups").?;
-    // 0.20.0: ls_amm and the token's own ls_color_<id> only (no ls_color, no ls_color_deploys).
+    // 0.21.0: the token's own ls_amm_<id> and ls_color_<id> only (no ls_amm, no ls_color, no ls_color_deploys).
     try testing.expectEqual(@as(usize, 2), ls.map.len);
-    for ([_][]const u8{ "ls_amm", "ls_color_aa_0" }) |k| try testing.expect(ls.get(k) != null);
-    for ([_][]const u8{ "ls_color", "ls_color_deploys" }) |k| try testing.expect(ls.get(k) == null);
+    for ([_][]const u8{ "ls_amm_aa_0", "ls_color_aa_0" }) |k| try testing.expect(ls.get(k) != null);
+    for ([_][]const u8{ "ls_amm", "ls_color", "ls_color_deploys" }) |k| try testing.expect(ls.get(k) == null);
     try testing.expectEqualStrings("color-lookup", ls.get("ls_color_aa_0").?.getText("program").?);
-    try testing.expectEqualStrings("amm-lookup", ls.get("ls_amm").?.getText("program").?);
+    try testing.expectEqualStrings("amm-lookup", ls.get("ls_amm_aa_0").?.getText("program").?);
+    try testing.expect(ls.get("ls_amm_aa_0").?.get("topics") == null);
     try testing.expectEqualStrings("tm_color_aa_0", ls.get("ls_color_aa_0").?.getArray("topics").?[0].text);
     try testing.expect(ov.get("terms") == null);
     try testing.expect(plain.get("config").?.get("amm").?.get("amm-p2p") == null);
@@ -104,15 +105,20 @@ test "the create: {handle: <tokenId>, image, config: {amm: {overlay: {topics, lo
     try testing.expectEqualStrings("aa_0", (try tokens.handleBody(a, "aa_0")).getText("handle").?);
     // shruggr/skein#137: the create names the topics the host routes to it; so does a start.
     const ts = plain.getArray("topics").?;
-    try testing.expectEqual(@as(usize, 2), ts.len);
+    try testing.expectEqual(@as(usize, 3), ts.len);
     try testing.expectEqualStrings("tm_color_aa_0", ts[0].text);
     try testing.expectEqualStrings("ls_color_aa_0", ts[1].text);
+    try testing.expectEqualStrings("ls_amm_aa_0", ts[2].text);
     try testing.expect((try tokens.handleBody(a, "aa_0")).get("topics") == null);
     const id = "959bebef" ++ "00" ** 28 ++ "_0";
     const st = (try tokens.startBody(a, id)).?;
     try testing.expectEqualStrings(id, st.getText("handle").?);
     try testing.expectEqualStrings("tm_color_" ++ id, st.getArray("topics").?[0].text);
     try testing.expectEqualStrings("ls_color_" ++ id, st.getArray("topics").?[1].text);
+    try testing.expectEqualStrings("ls_amm_" ++ id, st.getArray("topics").?[2].text);
+    // A start names the canonical id whatever form it was given (`<txid>` alone → `_0`).
+    const bare = (try tokens.startBody(a, "959bebef" ++ "00" ** 28)).?;
+    try testing.expectEqualStrings("ls_amm_" ++ id, bare.getArray("topics").?[2].text);
     try testing.expect((try tokens.startBody(a, "not-a-token")) == null);
 }
 

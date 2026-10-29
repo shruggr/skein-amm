@@ -1,4 +1,4 @@
-//! The AMM pool liquidity index (`ls_amm`): unspent pool outputs that pass
+//! The AMM pool liquidity index (served as `ls_amm_<assetId>`, 0.21.0): unspent pool outputs that pass
 //! the pool checks, maintained through skein-overlay's lookup hooks
 //! (skein-overlay docs/OVERLAY.md, the `lookup` module), and its queries. One
 //! service over every 1Color token topic the overlay serves (`config.overlay`
@@ -27,7 +27,7 @@
 //! Close, or the validator's Rescind.
 //!
 //! The beat (skein-overlay 0.12.0, David Case 2026-10-09: beats are libp2p service discovery):
-//! this service's beat body on `ls_amm-live` carries, per token, this skein's per-validator
+//! this service's beat body on `ls_amm_<assetId>-live` carries, per token, this skein's per-validator
 //! totals of its listed pools, `{tokens: {<assetId>: {<validator identity hex>: {sats, tokens,
 //! pools}}}}` (dag-cbor), re-declared by a hook whenever it changes (`Service.beat`). The page
 //! combines the beats it holds, live validators only.
@@ -47,7 +47,9 @@ const Allocator = std.mem.Allocator;
 const Service = lookup.Service;
 const Chain = lookup.Chain;
 
-/// The service's name (`config.overlay.lookups`).
+/// The program's INDEX name: the head `<app>/ls_amm`, whatever name the service is served as
+/// (skein-overlay 0.11.0). Not the service's name on the wire: that is `config.overlay.lookups`'
+/// key, `ls_amm_<assetId>` (0.21.0, amm-config `tokens.ammLookupName`). Kept as is: no migration.
 pub const service_name = "ls_amm";
 
 /// `pools`: the live (unspent) listed pools: checked, and an affirmed deploy's or the
@@ -329,7 +331,7 @@ pub fn beat(a: Allocator, svc: *Service) anyerror![]const u8 {
 }
 
 /// After a hook: when the body changed since the last beat, keep it (`beat` map) and hand it to
-/// the engine (`Service.beat`, skein-overlay 0.12.0), which re-declares `ls_amm-live`'s beacon.
+/// the engine (`Service.beat`, skein-overlay 0.12.0), which re-declares `<service>-live`'s beacon (`ls_amm_<assetId>-live`).
 fn beatIfChanged(a: Allocator, svc: *Service) !void {
     const v = try beatValue(a, svc);
     const rec = try svc.store.putValue(a, v);
@@ -480,7 +482,7 @@ fn answerOutpoint(a: Allocator, svc: *Service, ch: *Chain, tp: []const u8, start
     }) } };
 }
 
-/// `/lookup` (BRC-24, service `ls_amm`), every query naming its token
+/// `/lookup` (BRC-24, service `ls_amm_<assetId>`), every query naming its token
 /// (`tokenId`, `<txid>_<vout>`): `{tokenId}` every live pool of the token;
 /// `{tokenId, outpoint, beef?}` that pool (README, "Queries");
 /// `{tokenId, validatorIdentityKey}` that validator's pools of the token.

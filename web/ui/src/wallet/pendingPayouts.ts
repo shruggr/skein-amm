@@ -51,7 +51,7 @@ export interface PendingPayout {
    * txid changes once they are in.
    */
   final: boolean;
-  /** The pool's token id (`<txid>_<vout>`): the `ls_amm` query that finds the transaction's BEEF names it. */
+  /** The pool's token id (`<txid>_<vout>`): the `ls_amm_<assetId>` query that finds the transaction's BEEF names it. */
   tokenId: string;
   /** The pool output the transaction creates (`txid_0`), when it has one (not a closing RemoveLiquidity). */
   poolOutpoint?: string;

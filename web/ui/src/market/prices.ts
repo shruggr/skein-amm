@@ -1,7 +1,7 @@
 /**
  * Prices from the beats (skein-amm 0.9.0, David Case 2026-10-09: "Pricing
- * lives in the AMM LOOKUP's own beacon"). Every skein's `ls_amm` beats on
- * `ls_amm-live` a body (dag-cbor) carrying, per token, that skein's
+ * lives in the AMM LOOKUP's own beacon"). Every token instance's `ls_amm_<assetId>` beats on
+ * `ls_amm_<assetId>-live` (0.21.0) a body (dag-cbor) carrying, per token, that skein's
  * per-validator totals of its listed pools:
  *
  *   {tokens: {<assetId>: {<validator identity, hex>: {sats, tokens, pools}}}}
@@ -10,7 +10,7 @@
  * latest beat within the window. The page combines the beats it holds into a
  * token's marginal price, Σsats / Σtokens across the LIVE validators:
  *
- * - a validator is live when its own beat is held — on `ls_amm-live` or on
+ * - a validator is live when its own beat is held — on `ls_amm_<assetId>-live` or on
  *   the token's topic `tm_color_<assetId>-live` (every skein is a
  *   validator, beating its topics);
  * - one report per validator: its own beat's (the sender is the validator),
@@ -72,7 +72,7 @@ export function depthOf(sats: bigint, bps = 200): { bps: number; sats: bigint } 
 }
 
 /**
- * Each token's price from the `ls_amm-live` beats `beats`, counting only the validators in `live`
+ * Each token's price from the `ls_amm_<assetId>-live` beats `beats`, counting only the validators in `live`
  * (identity keys, hex: the senders of the beats held, `liveSenders`). `dec` per token (0 when unknown).
  */
 export function pricesFromBeats(beats: Beat[], live: Set<string>, dec: (tokenId: string) => number = () => 0): Map<string, TokenPrice> {

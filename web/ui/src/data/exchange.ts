@@ -13,10 +13,10 @@
  *
  * - **Prices** (`hostedTokens`, `subscribePrices`): the AMM lookup's beats
  *   (skein-overlay 0.12.0, David Case 2026-10-09: "Pricing lives in the AMM
- *   LOOKUP's own beacon"): `GET <base>/.live/ls_amm-live`, each live skin's
+ *   LOOKUP's own beacon"): `GET <base>/.live/ls_amm_<assetId>-live`, each live skin's
  *   per-token, per-validator totals of its listed pools, combined here over
  *   the live validators (src/market/prices.ts); a token no beat reports
- *   falls back to this skein's own listing (`ls_amm`) and liveness. Polled
+ *   falls back to this skein's own listing (`ls_amm_<assetId>`) and liveness. Polled
  *   every `REFRESH_MS` (the beats live in the host's liveness, not in the
  *   log: no event stream carries them).
  * - **Swap** (`quoteSwap`, `executeSwap`): the matching engine's plan over
@@ -66,7 +66,7 @@ import type { PoolState, Plan } from "@amm-poc/matching-engine";
 import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { deployQuery, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
-import { fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
+import { ammLookupService, fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
 import { readBeats, readDefaults, readDiscovery, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
@@ -531,10 +531,10 @@ async function hostedTopics(): Promise<HostedTopic[]> {
   return out;
 }
 
-/** One token instance's `ls_amm` beats and its token topic's: their live senders (0.17.0: one read per token instance). */
+/** One token instance's `ls_amm_<assetId>` beats and its token topic's: their live senders (0.17.0: one read per token instance; 0.21.0: the per-asset name). */
 async function liveFor(t: HostedTopic): Promise<{ beats: Beat[]; live: Set<string> }> {
   const [beats, tokenBeats] = await Promise.all([
-    readBeats(t.base, "ls_amm-live").catch(() => [] as Beat[]),
+    readBeats(t.base, `${ammLookupOf(t.tokenId)}-live`).catch(() => [] as Beat[]),
     readBeats(t.base, `${t.topic}-live`).catch(() => [] as Beat[]),
   ]);
   return { beats, live: liveSenders(beats, tokenBeats) };
@@ -1176,8 +1176,10 @@ export function lookupOf(tokenId: TokenId): string {
   return `ls_color_${sdkTokenId(tokenId)}`;
 }
 
-/** The AMM lookup's service: a token instance's config names it, so it beats its prices on `ls_amm-live` (skein-overlay 0.17.0: a configured lookup beats). */
-export const AMM_LOOKUP = "ls_amm";
+/** The AMM lookup's service of a token, `ls_amm_<assetId>` (0.21.0): a token instance's config names it, so it beats its prices on `ls_amm_<assetId>-live` (skein-overlay 0.17.0: a configured lookup beats). */
+export function ammLookupOf(tokenId: TokenId): string {
+  return ammLookupService(tokenId);
+}
 
 /**
  * A token deploy's BEEF from the connected wallet (0.17.0), as the 1Color tokens page gets it

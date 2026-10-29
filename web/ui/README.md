@@ -121,7 +121,7 @@ with a wallet, Swap, Liquidity, Your tokens and Settings, hash-routed
 (`#/`, `#/swap/<tokenId>`, `#/liquidity`, `#/tokens`, `#/settings`), pages
 in `src/ox/`. Every read and action goes through `src/data/exchange.ts`,
 wired to the logic (its module comment names each): prices from the AMM
-lookup's beats (`.live/ls_amm-live`, `src/market/prices.ts`: Σsats /
+lookup's beats (`.live/ls_amm_<assetId>-live`, `src/market/prices.ts`: Σsats /
 Σtokens across the live validators, one report per validator), else this
 skein's listing; swaps through the matching engine and the relay
 (`market/`); positions from the wallet's pool rows and the chain state by
@@ -152,7 +152,7 @@ committed; `../../scripts/www.sh` builds them and copies the 1Color pages
 into `www/color/`); the base URL is the page's own directory
 (`src/lib/config.ts` `appBaseOf`: `https://<handle>.<host>/amm` or
 `<host>/@<handle>/amm`), `VITE_AMM_OVERLAY` overriding it; pool lookups go to
-the one service `ls_amm` with the token in the query (`{tokenId, …}`); the
+the token's own service `ls_amm_<assetId>` (0.21.0) with the token in the query (`{tokenId, …}`); the
 Validator page reads the policy from the app record's `config.amm` through
 the explorer. The records of runs against "v2/amm3" below are amm-poc's
 deploy.
@@ -195,7 +195,7 @@ and the remove-liquidity submit name the token's topic from its full id
 supersedes 0.6.3's bare txid): every token id, 1Color and legacy BSV-21
 alike, is `<txid>_<vout>`, `_0` included, as BRC-162 "Token identification"
 writes it; the bare 32-byte txid is the wire form only. The pages, the
-wallet's filings and `ls_amm` queries carry the same string
+wallet's filings and `ls_amm_<assetId>` queries carry the same string
 (`src/lib/tokenId.ts`), so the pages no longer read `/color/tokens` to
 learn a token's origin.
 
@@ -422,7 +422,7 @@ npm run typecheck
 the AMM app's base URL (the page's own directory, else `VITE_AMM_OVERLAY`),
 or to the connected BRC-100 wallet. Under that
 base: `GET listTopicManagers`, `GET listLookupServiceProviders`, `POST lookup`
-(BRC-24, service `ls_amm`), `GET live`, and through AuthFetch `POST call` (the swap relay).
+(BRC-24, service `ls_amm_<assetId>`), `GET live`, and through AuthFetch `POST call` (the swap relay).
 `VITE_AMM_REFRESH_MS` (default 10000) is the Swap
 page's refresh interval. There are no DEV keys and no DEV services: the old DEV swap builder,
 the DEV `ProtoWallet` and the HTTP validator transport are deleted.
@@ -441,7 +441,7 @@ David Case 2026-10-08): a token deployed at output 0 is topic
 every token id `<txid>_<vout>`, `_0` included (BRC-162 "Token
 identification"; 0.7.1, David 2026-10-07), and
 show an outpoint as `<txid>.<vout>` (0.6.3, David 2026-10-08;
-`src/lib/tokenId.ts`); `ls_amm` takes any form in `{tokenId}`. The topics listed are
+`src/lib/tokenId.ts`); `ls_amm_<assetId>` takes any form in `{tokenId}`. The topics listed are
 the ones the owner registered with the engine (`/listTopicManagers`).
 
 ## Swap page

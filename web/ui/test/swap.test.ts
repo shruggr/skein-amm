@@ -676,7 +676,7 @@ describe("pending payouts: a swap's BRC-29 payout survives a reload and is inter
     const { wallet, calls, prepared, vkey } = await tokensIn();
     const mem = new Map<string, string>();
     const kv: KV = { getItem: (k) => mem.get(k) ?? null, setItem: (k, val) => void mem.set(k, val) };
-    const service = "ls_amm";
+    const service = `ls_amm_${TOKEN_ID}`; // 0.21.0: the per-asset name
     const recs = pendingSwapPayouts(prepared, TOKEN_ID, 1);
     expect(recs).toHaveLength(1); // the commission goes to the relay: only the payout is the taker's
     const rec = recs[0]!;
@@ -712,7 +712,7 @@ describe("pending payouts: a swap's BRC-29 payout survives a reload and is inter
   it("not found on the instance: an error, and the record stays", async () => {
     const mem = new Map<string, string>();
     const store = new PendingPayoutStore({ getItem: (k) => mem.get(k) ?? null, setItem: (k, val) => void mem.set(k, val) });
-    const rec = { id: `${"ab".repeat(32)}:1`, kind: "swap" as const, txid: "ab".repeat(32), vout: 1, satoshis: 5, lockingScript: "76a914" + "00".repeat(20) + "88ac", remittance: { derivationPrefix: "AA==", derivationSuffix: "AA==", senderIdentityKey: "02" + "11".repeat(32) }, final: false, tokenId: "x_0", description: "AMM swap payout", createdAt: 1 };
+    const rec = { id: `${"ab".repeat(32)}:1`, kind: "swap" as const, txid: "ab".repeat(32), vout: 1, satoshis: 5, lockingScript: "76a914" + "00".repeat(20) + "88ac", remittance: { derivationPrefix: "AA==", derivationSuffix: "AA==", senderIdentityKey: "02" + "11".repeat(32) }, final: false, tokenId: `${"cd".repeat(32)}_0`, description: "AMM swap payout", createdAt: 1 }; // a real token id: the lookup's name carries it (0.21.0)
     store.save(rec);
     const af: SignedFetch = { fetch: async () => new Response(JSON.stringify({ type: "freeform", result: [] }), { status: 200 }) };
     await expect(internalizeNow(fakeWallet().wallet, store, af, "http://x/amm", rec)).rejects.toThrow(/not on the instance yet/);

@@ -4,6 +4,32 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.21.0 (2026-10-29)
+
+The AMM lookup named per asset (David, 2026-10-29: a lookup service name is
+advertised network-wide, so two providers under one name must answer over
+the same data; each token instance's AMM lookup indexes a different token's
+pools; plan ls-amm-per-asset-2026-10-29).
+
+- amm-config: a token's create names the lookups `{ls_amm_<id>: {program:
+  amm-lookup}, ls_color_<id>: {program: color-lookup, topics:
+  [tm_color_<id>]}}` (`tokens.ammLookupName`; `manifest_lookups` gone); the
+  create's and start's `topics` are `[tm_color_<id>, ls_color_<id>,
+  ls_amm_<id>]`. Discovery unchanged.
+- Token app `etc/app.json`: no `config` (its default lookup `ls_amm`
+  removed: a token instance's lookups are its create's); descriptions of
+  both manifests; version 0.21.0.
+- amm-lookup: comments and `documentation` name `ls_amm_<assetId>` and its
+  beat `ls_amm_<assetId>-live`; the INDEX name stays `ls_amm` (the head
+  `<app>/ls_amm`, no migration).
+- Pages: `ammLookupService(tokenId)` (lib/overlay.ts) / `ammLookupOf`
+  (data/exchange.ts) in place of `AMM_LOOKUP_SERVICE` / `AMM_LOOKUP`, the
+  asset id as `colorQuery` forms it; prices read `ls_amm_<assetId>-live`
+  per token instance; query bodies unchanged.
+- A token instance created before 0.21.0 keeps `ls_amm` until its config
+  names the new lookups (`install --config`) and a disable/enable gives its
+  row the new `topics`.
+
 ## 0.20.1 (2026-10-29)
 
 The lookups in BRC-207's query form, no shape of ours (David, 2026-10-29,

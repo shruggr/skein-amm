@@ -1843,7 +1843,7 @@ test "terms (0.15.0, David 2026-10-23): a runtime record root sets — root's fn
         if (std.mem.eql(u8, r.object.get("address").?.string, "validator") and std.mem.eql(u8, r.object.get("handler").?.string, "amm-validator")) break true;
     } else false;
     try testing.expect(routed);
-    try testing.expect(m.object.get("config").?.object.get("amm") == null); // 0.16.0: no config.amm at all
+    if (m.object.get("config")) |c| try testing.expect(c.object.get("amm") == null); // 0.16.0: no config.amm at all; 0.21.0: no config
 
     // The head.
     try testing.expectEqualStrings("amm/terms", try terms.headName(a, "amm"));

@@ -17,7 +17,7 @@
  *   1. The pool's current output: followed from the position's deploy by the
  *      chain state (`GET <base>/spends`, src/lp/positions.ts), its BEEF from
  *      the token's 1Color lookup (`ls_color {txid, outputIndex}`): the
- *      listing (`ls_amm`) answers listed pools only (a rescinded pool too is
+ *      listing (`ls_amm_<assetId>`) answers listed pools only (a rescinded pool too is
  *      closed from here).
  *   2. `PoolTemplate.planClose`: the outputs (the BSV payout, the pool's sats
  *      less `bsvFee`, when nonzero; every token, one sat) and the method args.

@@ -3,7 +3,7 @@
 // manager and lookup service, copied from their tagged builds (URL+hash dependencies; nothing is
 // built on the skein), and this repo's own programs:
 //
-//   amm-lookup      ls_amm: the listed pools over every token topic served; the prices beat   programs/amm-lookup
+//   amm-lookup      ls_amm_<assetId>: the listed pools of a token instance; the prices beat programs/amm-lookup
 //   amm-validator   the validator: swap (a libp2p direct call), affirm; root's close         programs/amm-validator
 //   amm-p2p         the relay (amm.swap/1; amm.pool/1: terms, affirm), the read /spends      programs/amm-p2p
 //   amm-config      the config app (0.17.0, shruggr/skein-amm#4): enable/disable/defaults,   programs/amm-config

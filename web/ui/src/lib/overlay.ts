@@ -4,8 +4,8 @@
  * app's base URL, `https://<handle>.<host>/amm` or `<host>/@<handle>/amm`):
  *
  *   GET  <base>/listTopicManagers            {tm_color_<txid>_<vout>: {name, shortDescription}, …}: the registered token topics
- *   GET  <base>/listLookupServiceProviders   {ls_amm: …, ls_color_<txid>_<vout>: …} (a token instance, 0.20.0)
- *   POST <base>/lookup   {service: "ls_amm", query: {tokenId, …}}   BRC-24
+ *   GET  <base>/listLookupServiceProviders   {ls_amm_<txid>_<vout>: …, ls_color_<txid>_<vout>: …} (a token instance, 0.21.0)
+ *   POST <base>/lookup   {service: "ls_amm_<txid>_<vout>", query: {tokenId, …}}   BRC-24
  *   GET  <base>/.live/tm_color_<txid>_0-live        [{sender, at, body, from}]: the validators beating on a
  *                                             token, kept by the runtime's liveness tool (skein#138)
  *
@@ -28,12 +28,13 @@
  * 2026-10-08; skein-1color 0.9.0), the asset id `<txid>_<vout>`, `_0`
  * included: a token deployed at output 0 is the topic `tm_color_<txid>_0`,
  * a BRC-161 token deployed at a non-zero output `tm_color_<txid>_<vout>`.
- * The old `tm_<txid>_<vout>` and the bare `tm_<txid>` are no topic. One lookup service,
- * `ls_amm`, answers for every token topic the overlay serves; each query
+ * The old `tm_<txid>_<vout>` and the bare `tm_<txid>` are no topic. The AMM lookup is
+ * named per token, `ls_amm_<assetId>` (0.21.0, David 2026-10-29: a lookup name is advertised
+ * network-wide, so it carries the asset id as `ls_color_<assetId>` does); each query still
  * names its token (`tokenId`: `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`).
  */
 import type { PoolState } from "@amm-poc/matching-engine";
-import { outpointText, tokenIdText } from "./tokenId";
+import { outpointText, parseTokenId, tokenIdText } from "./tokenId";
 
 // ---------------------------------------------------------------------------
 // Names
@@ -49,13 +50,21 @@ export interface TokenTopic {
   /**
    * The token id, `<txid>_<vout>` (src/lib/tokenId.ts, BRC-162 "Token
    * identification"): `tm_color_<txid>_<vout>` → `<txid>_<vout>`, `_0`
-   * included. What an `ls_amm` query names (any form).
+   * included. What an `ls_amm_<assetId>` query names (any form).
    */
   tokenId: string;
 }
 
-/** The AMM pool lookup service (programs/amm-lookup): one service over every token topic. */
-export const AMM_LOOKUP_SERVICE = "ls_amm";
+/**
+ * The AMM pool lookup service of a token (programs/amm-lookup; 0.21.0): `ls_amm_<assetId>`, the
+ * asset id as `colorQuery` (src/lib/tokenId.ts) forms it (`<txid>_<vout>`, `_0` included). Its
+ * beat is on `ls_amm_<assetId>-live`.
+ */
+export function ammLookupService(tokenId: string): string {
+  const ref = parseTokenId(tokenId);
+  if (!ref) throw new Error(`not a token id: ${tokenId}`);
+  return `ls_amm_${tokenIdText(ref)}`;
+}
 
 const TOPIC = /^tm_color_([0-9a-f]{64})_(0|[1-9]\d*)$/;
 
@@ -259,7 +268,7 @@ export async function lookup(af: SignedFetch | null, base: string, service: stri
 
 /**
  * Every live pool of a token (`{tokenId}`) or the newest continuation of an
- * outpoint (`{tokenId, outpoint}`), from `ls_amm`. `tokenId` is the token's
+ * outpoint (`{tokenId, outpoint}`), from `ls_amm_<assetId>`. `tokenId` is the token's
  * id (`<txid>_<vout>`, `<txid>`).
  */
 export async function queryPools(
@@ -268,13 +277,14 @@ export async function queryPools(
   tokenId: string,
   query: { outpoint: string } | Record<string, never> = {},
 ): Promise<PoolState[]> {
-  return parseLookupAnswer(await lookup(af, base, AMM_LOOKUP_SERVICE, { tokenId, ...query }));
+  return parseLookupAnswer(await lookup(af, base, ammLookupService(tokenId), { tokenId, ...query }));
 }
 
 /** The pool output (or its newest continuation) with its BEEF: `{tokenId, outpoint, beef: true}`. */
 export async function lookupPoolOutput(af: SignedFetch | null, base: string, tokenId: string, outpoint: string): Promise<LookupOutput> {
-  const outs = parseOutputList(await lookup(af, base, AMM_LOOKUP_SERVICE, { tokenId, outpoint, beef: true }));
-  if (outs.length === 0) throw new Error(`lookup ${AMM_LOOKUP_SERVICE} ${tokenId}: no output for ${outpointText(outpoint)}`);
+  const service = ammLookupService(tokenId);
+  const outs = parseOutputList(await lookup(af, base, service, { tokenId, outpoint, beef: true }));
+  if (outs.length === 0) throw new Error(`lookup ${service} ${tokenId}: no output for ${outpointText(outpoint)}`);
   return outs[0]!;
 }
 

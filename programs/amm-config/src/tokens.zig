@@ -37,11 +37,15 @@ pub const admin_box = "amm/admin";
 /// `$SKEIN_IMAGES_DIR/amm-token` (the repository's image/token).
 pub const default_token_image = "amm-token";
 
-/// The lookups every token instance serves beside its own `ls_color_<id>` (the token manifest's
-/// `config.overlay.lookups`, which a create's `lookups` replaces: skein's config merge is per
-/// program, so it is named again). 0.20.0: `ls_color` and `ls_color_deploys` dropped (David,
-/// 2026-10-29: one lookup per topic; `ls_color_<id>` answers the token's outputs by outpoint).
-pub const manifest_lookups = [_][2][]const u8{.{ "ls_amm", "amm-lookup" }};
+/// The AMM lookup's service name for a token (0.21.0, David 2026-10-29): `ls_amm_<assetId>`, paired
+/// with `tm_color_<assetId>` as `ls_color_<assetId>` is — a lookup name is advertised network-wide,
+/// so two providers under one name answer over the same data, and each token instance's AMM lookup
+/// indexes a different token's pools. Served by the program `amm-lookup`; its beat on
+/// `ls_amm_<assetId>-live` (skein-overlay's rule). `token_id` canonical (`<txid>_<vout>`).
+/// 0.20.0: `ls_color` and `ls_color_deploys` dropped (one lookup per topic).
+pub fn ammLookupName(a: Allocator, token_id: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "ls_amm_{s}", .{token_id});
+}
 
 pub const Status = enum { creating, enabled, failed, stopped, starting };
 
@@ -134,11 +138,12 @@ fn map(a: Allocator, es: []const cbor.Entry) !Value {
 }
 
 /// The token instance's config at birth: `{amm: {overlay: {topics: {<topic>: "color-topic"},
-/// lookups: {ls_amm, <lookup>: {program: "color-lookup", topics: [<topic>]}}, terms?}, "amm-p2p":
-/// {market?}}}` — `terms` and `market` the defaults' when set.
+/// lookups: {ls_amm_<id>: {program: "amm-lookup"}, <lookup>: {program: "color-lookup", topics:
+/// [<topic>]}}, terms?}, "amm-p2p": {market?}}}` — `terms` and `market` the defaults' when set. The
+/// create's `lookups` replaces the token manifest's (skein's config merge is per program).
 pub fn createConfig(a: Allocator, d: Deploy, defaults: ?Value) !Value {
     var lookups: std.ArrayList(cbor.Entry) = .empty;
-    for (manifest_lookups) |l| try lookups.append(a, .{ .key = l[0], .value = try map(a, &.{.{ .key = "program", .value = .{ .text = l[1] } }}) });
+    try lookups.append(a, .{ .key = try ammLookupName(a, d.token_id), .value = try map(a, &.{.{ .key = "program", .value = .{ .text = "amm-lookup" } }}) });
     try lookups.append(a, .{ .key = d.lookup, .value = try map(a, &.{
         .{ .key = "program", .value = .{ .text = "color-lookup" } },
         .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = d.topic }}) } },
@@ -160,32 +165,33 @@ pub fn createConfig(a: Allocator, d: Deploy, defaults: ?Value) !Value {
 }
 
 /// The names the host routes to a token's instance at the bare host (shruggr/skein#137):
-/// `[tm_color_<id>, ls_color_<id>]`, the create's and a start's `topics`.
-pub fn topicsOf(a: Allocator, topic: []const u8, lookup: []const u8) !Value {
-    return .{ .array = try a.dupe(Value, &.{ .{ .text = topic }, .{ .text = lookup } }) };
+/// `[tm_color_<id>, ls_color_<id>, ls_amm_<id>]`, the create's and a start's `topics`.
+pub fn topicsOf(a: Allocator, token_id: []const u8, topic: []const u8, lookup: []const u8) !Value {
+    return .{ .array = try a.dupe(Value, &.{ .{ .text = topic }, .{ .text = lookup }, .{ .text = try ammLookupName(a, token_id) } }) };
 }
 
 /// The instance manager's `create` body: `{handle: <tokenId>, image, config, beef, topics:
-/// [tm_color_<id>, ls_color_<id>]}`.
+/// [tm_color_<id>, ls_color_<id>, ls_amm_<id>]}`.
 pub fn createBody(a: Allocator, d: Deploy, image: []const u8, defaults: ?Value, beef_bytes: []const u8) !Value {
     return map(a, &.{
         .{ .key = "handle", .value = .{ .text = d.token_id } },
         .{ .key = "image", .value = .{ .text = image } },
         .{ .key = "config", .value = try createConfig(a, d, defaults) },
         .{ .key = "beef", .value = .{ .bytes = beef_bytes } },
-        .{ .key = "topics", .value = try topicsOf(a, d.topic, d.lookup) },
+        .{ .key = "topics", .value = try topicsOf(a, d.token_id, d.topic, d.lookup) },
     });
 }
 
-/// `start {handle, topics: [tm_color_<id>, ls_color_<id>]}` (a stopped token enabled again); null
+/// `start {handle, topics: [tm_color_<id>, ls_color_<id>, ls_amm_<id>]}` (a stopped token enabled again); null
 /// if `token_id` is not a token id.
 pub fn startBody(a: Allocator, token_id: []const u8) !?Value {
     const nid = color.name.tokenIdOfString(token_id) orelse return null;
     var nb: [color.name.max_topic_len]u8 = undefined;
     var lb: [color.name.max_lookup_len]u8 = undefined;
+    var tb: [color.name.max_suffix_len]u8 = undefined;
     return try map(a, &.{
         .{ .key = "handle", .value = .{ .text = token_id } },
-        .{ .key = "topics", .value = try topicsOf(a, try a.dupe(u8, color.name.topicName(&nb, nid)), try a.dupe(u8, color.name.lookupName(&lb, nid))) },
+        .{ .key = "topics", .value = try topicsOf(a, color.name.tokenIdText(&tb, nid), try a.dupe(u8, color.name.topicName(&nb, nid)), try a.dupe(u8, color.name.lookupName(&lb, nid))) },
     });
 }
 

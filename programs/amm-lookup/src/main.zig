@@ -1,4 +1,4 @@
-//! amm-lookup: `ls_amm`, the AMM pool liquidity lookup service (skein-overlay's
+//! amm-lookup: the AMM pool liquidity lookup service, served as `ls_amm_<assetId>` (skein-overlay's
 //! lookup contract, the `lookup` module), over every 1Color token topic the
 //! overlay serves. Its metadata and documentation answer the overlay's listing and
 //! documentation routes (skein-overlay#2). See README.md.
@@ -18,7 +18,9 @@ pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
 
 pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     return
-    \\# AMM pools (ls_amm)
+    \\# AMM pools (ls_amm_<assetId>)
+    \\
+    \\Served per token as `ls_amm_<assetId>`, paired with the token topic `tm_color_<assetId>`.
     \\
     \\The listed pools of the AMM's Pool contract, over every 1Color token topic this
     \\overlay serves (`tm_color_<txid>_<vout>`). A pool is a BRC-162 value output at output 0 whose
@@ -41,7 +43,7 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     \\  transaction's BEEF (output-list);
     \\- `{tokenId, validatorIdentityKey}`: that validator's listed pools of the token.
     \\
-    \\Its beat on `ls_amm-live` (dag-cbor): `{tokens: {<assetId>: {<validator identity>: {sats, tokens,
+    \\Its beat on `ls_amm_<assetId>-live` (dag-cbor): `{tokens: {<assetId>: {<validator identity>: {sats, tokens,
     \\pools}}}}`, this overlay's listed pools summed per token and validator: the prices.
     \\
     ;
