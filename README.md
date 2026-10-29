@@ -6,7 +6,8 @@ Exchange, as two [skein](https://github.com/shruggr/skein) apps, both named
 1Color components and the AMM's programs), run as one instance per token
 id, and the **config app** (`apps/config/`: the enable list, the defaults,
 the holders' requests and the pages), run as one instance that creates the
-token instances. Version **0.18.0** (2026-10-28, shruggr/skein#137; David
+token instances. Version **0.18.1** (2026-10-29, shruggr/skein#137: the
+create/start ask names the topics the host routes to the instance). 0.18.0 (2026-10-28, shruggr/skein#137; David
 Case: discovery is its own instance, "the Open Exchange's Settings page gets
 an option to turn it on and off"): root's `{fn: "discovery", args: {on}}`
 in `amm/admin` creates (or starts) the instance `discovery`, serving the
@@ -215,9 +216,11 @@ grant`; no page does that). The flow, each step one message:
    image: <tokenImage>, config: {amm: {overlay: {topics:
    {tm_color_<tokenId>: "color-topic"}, lookups: {ls_color,
    ls_color_deploys, ls_amm, ls_color_<tokenId>: {program: "color-lookup",
-   topics: [tm_color_<tokenId>]}}, terms?}, "amm-p2p": {market?}}}, beef}`
-   — `terms` and `market` the defaults when set. A `stopped` token: `start
-   {handle}` instead.
+   topics: [tm_color_<tokenId>]}}, terms?}, "amm-p2p": {market?}}}, beef,
+   topics: [tm_color_<tokenId>, ls_color_<tokenId>]}` — `terms` and
+   `market` the defaults when set; `topics` (0.18.1) the names the host
+   routes to the instance at the bare host. A `stopped` token: `start
+   {handle, topics}` instead.
 3. The host creates the instance, claims it with the shared key, publishes
    it at `/@<tokenId>`, hands the BEEF into its receive row and answers
    `{handle, identity, url, delivered: {verdict, reason?}}`.
@@ -254,9 +257,10 @@ Settings ("Discovery": one switch), one message each:
 2. amm-config asks the manager `create {handle: "discovery", image:
    <tokenImage>, config: {amm: {overlay: {topics: {tm_color:
    "color-topic"}, lookups: {ls_color: {program: "color-lookup"},
-   ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}}}`
-   — no BEEF, no terms, no market — or `start {handle: "discovery"}` when
-   it was stopped. Its record, the head `amm/discovery`: `{on, status:
+   ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}},
+   topics: ["tm_color", "ls_color_deploys"]}` — no BEEF, no terms, no
+   market — or `start {handle: "discovery", topics}` when it was stopped.
+   The create/start ask names the topics the host routes to it (0.18.1). Its record, the head `amm/discovery`: `{on, status:
    creating | enabled | failed | stopping | stopped | starting, since,
    url?, reason?}`, moved by the manager's answer as a token's row is.
 3. `{fn: "discovery", args: {on: false}}`: `stop {handle: "discovery"}`.
@@ -266,10 +270,10 @@ Enabling a token does not submit its deploy to discovery: deploys are
 submitted on deploy (the 1Color deploy page, `www/color/deploy/`, submits
 each new deploy to `tm_color` at the pages' own origin). The host routes a
 `POST /submit` with `X-Topics: tm_color`, and a `POST /lookup` for
-`ls_color_deploys` / `ls_color`, to the instance that declares that topic
-(skein's router, by the topic's liveness `<topic>-live`; skein main 2eafff1
-or later); with discovery off nothing here takes `tm_color` and the answer
-is the config instance's own refusal. A deploy made before discovery was on
+`ls_color_deploys`, to the instance whose create or start named that topic
+(skein's router, by the instance's row, whether or not it has run yet;
+skein main fef7823 or later); with discovery off nothing here takes
+`tm_color` and the answer is the config instance's own refusal. A deploy made before discovery was on
 is resubmitted to it once by hand.
 
 ## Use (a single instance, 0.16)
@@ -481,7 +485,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.18.0 |
+| this app | 0.18.1 |
 | skein | main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.17.0 (9d72eca) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.11.4 (53973f1; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (the same bytes as 0.10.0's), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |

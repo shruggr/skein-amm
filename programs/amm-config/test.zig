@@ -100,6 +100,18 @@ test "the create: {handle: <tokenId>, image, config: {amm: {overlay: {topics, lo
     try testing.expectEqual(@as(u64, 25), amm.get("overlay").?.get("terms").?.getUint("commissionBps").?);
     try testing.expectEqual(@as(u64, 1), amm.get("amm-p2p").?.get("market").?.getUint("minCommissionBps").?);
     try testing.expectEqualStrings("aa_0", (try tokens.handleBody(a, "aa_0")).getText("handle").?);
+    // shruggr/skein#137: the create names the topics the host routes to it; so does a start.
+    const ts = plain.getArray("topics").?;
+    try testing.expectEqual(@as(usize, 2), ts.len);
+    try testing.expectEqualStrings("tm_color_aa_0", ts[0].text);
+    try testing.expectEqualStrings("ls_color_aa_0", ts[1].text);
+    try testing.expect((try tokens.handleBody(a, "aa_0")).get("topics") == null);
+    const id = "959bebef" ++ "00" ** 28 ++ "_0";
+    const st = (try tokens.startBody(a, id)).?;
+    try testing.expectEqualStrings(id, st.getText("handle").?);
+    try testing.expectEqualStrings("tm_color_" ++ id, st.getArray("topics").?[0].text);
+    try testing.expectEqualStrings("ls_color_" ++ id, st.getArray("topics").?[1].text);
+    try testing.expect((try tokens.startBody(a, "not-a-token")) == null);
 }
 
 fn dagjsonValue(a: Allocator, text: []const u8) !Value {
@@ -255,6 +267,15 @@ test "discovery (0.18.0): the create names tm_color, ls_color, ls_color_deploys 
     try testing.expectEqualStrings("color-lookup", ls.get("ls_color_deploys").?.getText("program").?);
     try testing.expectEqualStrings("tm_color", ls.get("ls_color_deploys").?.getArray("topics").?[0].text);
     try testing.expectEqualStrings("discovery", (try discovery.handleBody(a)).getText("handle").?);
+    // shruggr/skein#137: the create and a start name the topics the host routes to it; a stop does not.
+    for ([_]Value{ c, try discovery.startBody(a) }) |b| {
+        const ts = b.getArray("topics").?;
+        try testing.expectEqual(@as(usize, 2), ts.len);
+        try testing.expectEqualStrings("tm_color", ts[0].text);
+        try testing.expectEqualStrings("ls_color_deploys", ts[1].text);
+    }
+    try testing.expectEqualStrings("discovery", (try discovery.startBody(a)).getText("handle").?);
+    try testing.expect((try discovery.handleBody(a)).get("topics") == null);
 }
 
 test "discovery (0.18.0): on/off decided from the record; the manager's answers move it; the read" {

@@ -211,7 +211,7 @@ fn enable(a: Allocator, in: Value, args: Value, body: Value) !void {
         .stopped => {
             // Started again: the instance stands.
             try saveRow(a, try tokens.updated(a, p, .starting, &.{}, &.{"reason"}));
-            const m = try vm.send(a, try managerKey(a), "start", try tokens.handleBody(a, id));
+            const m = try vm.send(a, try managerKey(a), "start", (try tokens.startBody(a, id)).?); // id is canonical (tokenIdArg)
             try vm.awaitRecord(m);
             _ = try vm.finish(a, s, try resultRecord(a, "enable", &.{ .{ .key = "tokenId", .value = .{ .text = id } }, .{ .key = "asked", .value = .{ .text = "start" } } }));
             return;
@@ -306,7 +306,7 @@ fn discoveryAsk(a: Allocator, in: Value, args: Value, body: Value) !void {
     const box: []const u8, const req: Value = switch (d) {
         .refused => |why| return answerRoot(a, args, "discovery", try tokens.refusal(a, "discovery", message, "bad-args", why)),
         .create => .{ "create", try discovery.createBody(a, try tokenImage(a)) },
-        .start => .{ "start", try discovery.handleBody(a) },
+        .start => .{ "start", try discovery.startBody(a) },
         .stop => .{ "stop", try discovery.handleBody(a) },
     };
     const at: u64 = in.getUint("at") orelse in.getUint("now") orelse 0;

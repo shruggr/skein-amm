@@ -4,6 +4,19 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.18.1 (2026-10-29)
+
+The create/start ask names the topics the host routes to the instance
+(shruggr/skein#137; David Case 2026-10-29: "This is a host routing rule.
+Why does the instance care at all?").
+
+- amm-config: a token's `create` gains `topics: [tm_color_<tokenId>,
+  ls_color_<tokenId>]`, and a stopped token's `start` (re-enable) carries
+  the same; discovery's `create` and `start` gain `topics: ["tm_color",
+  "ls_color_deploys"]`. `stop` unchanged. skein main fef7823 or later
+  routes a bare-host `/submit` / `/lookup` by them.
+- zig build test 80 (amm-config 9); vitest 158 (pages unchanged).
+
 ## 0.18.0 (2026-10-28)
 
 The discovery toggle (shruggr/skein#137; David Case 2026-10-28: discovery is

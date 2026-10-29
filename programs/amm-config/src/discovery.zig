@@ -29,6 +29,9 @@ pub const kind = "amm-discovery";
 /// The instance's handle (fixed).
 pub const handle = "discovery";
 pub const topic = "tm_color";
+/// The names the host routes to the instance at the bare host (shruggr/skein#137): the create's and
+/// a start's `topics`.
+pub const topics = [_][]const u8{ topic, "ls_color_deploys" };
 
 pub const Status = enum { creating, enabled, failed, stopping, stopped, starting };
 
@@ -38,7 +41,8 @@ fn map(a: Allocator, es: []const cbor.Entry) !Value {
 
 /// The instance manager's `create` body: `{handle: "discovery", image, config: {amm: {overlay:
 /// {topics: {tm_color: "color-topic"}, lookups: {ls_color: {program: "color-lookup"},
-/// ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}}}` — no beef.
+/// ls_color_deploys: {program: "color-lookup", topics: ["tm_color"]}}}}}, topics: ["tm_color",
+/// "ls_color_deploys"]}` — no beef.
 pub fn createBody(a: Allocator, image: []const u8) !Value {
     const lookups = try map(a, &.{
         .{ .key = "ls_color", .value = try map(a, &.{.{ .key = "program", .value = .{ .text = "color-lookup" } }}) },
@@ -55,10 +59,22 @@ pub fn createBody(a: Allocator, image: []const u8) !Value {
         .{ .key = "handle", .value = .{ .text = handle } },
         .{ .key = "image", .value = .{ .text = image } },
         .{ .key = "config", .value = try map(a, &.{.{ .key = "amm", .value = try map(a, &.{.{ .key = "overlay", .value = overlay }}) }}) },
+        .{ .key = "topics", .value = try topicsValue(a) },
     });
 }
 
-/// `start {handle}` / `stop {handle}`.
+fn topicsValue(a: Allocator) !Value {
+    var out: [topics.len]Value = undefined;
+    for (topics, 0..) |t, i| out[i] = .{ .text = t };
+    return .{ .array = try a.dupe(Value, &out) };
+}
+
+/// `start {handle, topics}`.
+pub fn startBody(a: Allocator) !Value {
+    return map(a, &.{ .{ .key = "handle", .value = .{ .text = handle } }, .{ .key = "topics", .value = try topicsValue(a) } });
+}
+
+/// `stop {handle}`.
 pub fn handleBody(a: Allocator) !Value {
     return map(a, &.{.{ .key = "handle", .value = .{ .text = handle } }});
 }

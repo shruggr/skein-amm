@@ -158,17 +158,37 @@ pub fn createConfig(a: Allocator, d: Deploy, defaults: ?Value) !Value {
     return map(a, &.{.{ .key = "amm", .value = .{ .map = app.items } }});
 }
 
-/// The instance manager's `create` body: `{handle: <tokenId>, image, config, beef}`.
+/// The names the host routes to a token's instance at the bare host (shruggr/skein#137):
+/// `[tm_color_<id>, ls_color_<id>]`, the create's and a start's `topics`.
+pub fn topicsOf(a: Allocator, topic: []const u8, lookup: []const u8) !Value {
+    return .{ .array = try a.dupe(Value, &.{ .{ .text = topic }, .{ .text = lookup } }) };
+}
+
+/// The instance manager's `create` body: `{handle: <tokenId>, image, config, beef, topics:
+/// [tm_color_<id>, ls_color_<id>]}`.
 pub fn createBody(a: Allocator, d: Deploy, image: []const u8, defaults: ?Value, beef_bytes: []const u8) !Value {
     return map(a, &.{
         .{ .key = "handle", .value = .{ .text = d.token_id } },
         .{ .key = "image", .value = .{ .text = image } },
         .{ .key = "config", .value = try createConfig(a, d, defaults) },
         .{ .key = "beef", .value = .{ .bytes = beef_bytes } },
+        .{ .key = "topics", .value = try topicsOf(a, d.topic, d.lookup) },
     });
 }
 
-/// `start {handle}` / `stop {handle}`.
+/// `start {handle, topics: [tm_color_<id>, ls_color_<id>]}` (a stopped token enabled again); null
+/// if `token_id` is not a token id.
+pub fn startBody(a: Allocator, token_id: []const u8) !?Value {
+    const nid = color.name.tokenIdOfString(token_id) orelse return null;
+    var nb: [color.name.max_topic_len]u8 = undefined;
+    var lb: [color.name.max_lookup_len]u8 = undefined;
+    return try map(a, &.{
+        .{ .key = "handle", .value = .{ .text = token_id } },
+        .{ .key = "topics", .value = try topicsOf(a, try a.dupe(u8, color.name.topicName(&nb, nid)), try a.dupe(u8, color.name.lookupName(&lb, nid))) },
+    });
+}
+
+/// `stop {handle}`.
 pub fn handleBody(a: Allocator, token_id: []const u8) !Value {
     return map(a, &.{.{ .key = "handle", .value = .{ .text = token_id } }});
 }
