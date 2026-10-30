@@ -8,7 +8,9 @@ programs), run as one instance per token id, and the page library
 `apps/config` here), the images and the setup — is
 [shruggr/open-exchange](https://github.com/shruggr/open-exchange) (0.23.0,
 shruggr/open-exchange#1: `apps/config`, `image/config`, `programs/amm-config`
-and the pages build moved there). Version **0.22.0** (2026-10-30, shruggr/skein-amm#5): the
+and the pages build moved there). Version **0.24.0** (2026-10-30: on skein-overlay 0.19.0 and
+skein-1color 0.13.0 — undecided is not rejected: a transfer whose token inputs
+the instance cannot read pauses and wants them, never refused for it). 0.22.0 (2026-10-30, shruggr/skein-amm#5): the
 token app takes its token as an event — `{kind: "deploy", beef}` in the box
 `amm/deploy` (`kernel.beef`), the program `amm-setup` writes the head
 `amm/token` and registers the token's topic and lookups with the engine in
@@ -188,7 +190,7 @@ go test ./pool/...
 ```
 
 **The overlay and 1Color artifacts are fetched, not built here.**
-`build.zig.zon` names skein-overlay v0.18.0 and skein-1color v0.12.1 by tag
+`build.zig.zon` names skein-overlay v0.19.0 and skein-1color v0.13.0 by tag
 URL and hash; `zig build bin` copies `bin/overlay.wasm` from the
 skein-overlay package and `bin/color-topic.wasm`, `bin/color-lookup.wasm`
 from the skein-1color package, byte for byte. skein-1color's pages are

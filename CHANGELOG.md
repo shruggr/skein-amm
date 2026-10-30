@@ -4,6 +4,23 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.24.0 (2026-10-30)
+
+Undecided is not rejected (David, 2026-10-30): skein-overlay v0.19.0 and
+skein-1color v0.13.0 (were v0.18.0 and v0.12.1).
+
+- `bin/overlay.wasm` (skein-overlay 0.19.0): a topic manager's
+  `MissingParents` failure is no verdict — the submission pauses, wants the
+  named sources (not in the BEEF, not held) from the peers that announced
+  it, and is judged again as each arrives; nothing is recorded as rejected.
+  The topic-call carries `unheld`.
+- `bin/color-topic.wasm` (skein-1color 0.13.0): a token transfer whose token
+  inputs' sources cannot be read fails `MissingParents`; a deploy needs no
+  parents. `bin/color-lookup.wasm` rebuilt there.
+- The AMM's four programs rebuilt on the new contract modules (no source
+  change). Manifest version 0.24.0. No page, route or image change.
+- zig: 79; vitest unchanged.
+
 ## 0.23.0 (2026-10-30)
 
 The config app leaves (shruggr/open-exchange#1): skein-amm is the AMM
