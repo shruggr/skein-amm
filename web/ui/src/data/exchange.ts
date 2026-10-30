@@ -1322,7 +1322,8 @@ export function enableCandidates(listed: ListedToken[], walletIds: string[], onL
  * What Settings' "Enable a token" lists (2026-10-31): discovery's token list (`GET
  * <discoveryBase>/color/tokens`; a failed read — discovery off — is an empty list) ∪ the asset ids
  * of the connected wallet's held token outputs (`p color assets`, each locking script decoded),
- * minus the tokens on the swap instance's list. A wallet-only token's metadata from its deploy
+ * minus the tokens on the swap instance's list. A wallet-only token's metadata from its deploy:
+ * the one in the wallet's module basket (`deployBeef` with the wallet), else discovery's
  * (`deployMeta`), else none (the page shows its short id).
  */
 export async function tokensToEnable(): Promise<EnableCandidate[]> {
@@ -1333,7 +1334,10 @@ export async function tokensToEnable(): Promise<EnableCandidate[]> {
   return Promise.all(
     rows.map(async (r) => {
       if (r.onDiscovery) return r;
-      const m = await deployMeta(r.tokenId);
+      const d = await deployBeef(r.tokenId, wallet).catch(() => null);
+      const fromWallet = d?.from === "wallet" && (d.meta.sym !== undefined || d.meta.icon !== undefined) ? d.meta : null;
+      // d null: neither had it (deployBeef asked discovery already). A wallet deploy with no display fields: discovery's.
+      const m = !d ? null : fromWallet ?? (d.from === "discovery" ? d.meta : await deployMeta(r.tokenId));
       return { ...r, ...(m?.sym !== undefined ? { sym: m.sym } : {}), ...(m?.icon ? { icon: m.icon } : {}) };
     }),
   );

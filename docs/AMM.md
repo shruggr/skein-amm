@@ -704,8 +704,9 @@ The pages (served by the config instance): the token list from `GET
 <config>/amm/tokens`; everything per token at `<url>/amm` of that token's
 row (`tokenBase`): its pools, prices (one `ls_amm_<assetId>-live` read per token
 instance), liveness, `/call`, `/submit`, `/spends`. No read crosses
-instances. Settings: Enable a token (a token id typed; the deploy's BEEF from the connected wallet's module
-basket, else pasted), the enabled list with Disable / Enable again, the
+instances. Settings: Enable a token (2026-10-31: one list, one Enable per token — the tokens on
+discovery and in the connected wallet not on the list yet; the deploy's BEEF from the wallet's
+module basket, else discovery's `ls_color` `color-admission` lookup at the host root), the enabled list with Disable / Enable again, the
 Default validator terms and Default market minimum cards; a token's own
 terms are root's message to `/@<tokenId>` (no page for it).
 

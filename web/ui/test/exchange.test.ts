@@ -13,6 +13,7 @@ import { decodeOneColor } from "../src/pool";
 import { tokenP2pkhScript } from "../src/lp/poolDeploy";
 import { decode, encode } from "cbor2";
 import { P1SAT_PROTOCOL } from "@1sat/actions";
+import { OneColor } from "@1sat/templates";
 import {
   NO_TERMS_TEXT,
   clearDefaultMarket,
@@ -619,6 +620,26 @@ describe("exchange.ts, wired", () => {
       [B, false, true],
       [C, false, true],
     ]);
+  });
+
+  it("tokensToEnable (2026-10-31): a wallet-only token whose deploy is not on discovery takes its metadata from the deploy in the wallet's module basket (no discovery lookup)", async () => {
+    inst.enabled = [];
+    inst.discoveryList = null;
+    const key = PrivateKey.fromRandom().toPublicKey();
+    const deployTx = new Transaction();
+    deployTx.addInput({ sourceTransaction: fund, sourceOutputIndex: 0, unlockingScript: new UnlockingScript() });
+    const lock = OneColor.deployValue(1_000n, { lock: key.toAddress(), payload: { sym: "CCC", dec: 3 } }).lock();
+    deployTx.addOutput({ satoshis: 1, lockingScript: lock });
+    const C = `${deployTx.id("hex")}_0`;
+    const basketBeef = new Beef();
+    basketBeef.mergeRawTx(fund.toBinary());
+    basketBeef.mergeRawTx(deployTx.toBinary());
+    connect({
+      held: [{ outpoint: `${deployTx.id("hex")}.0`, satoshis: 1, spendable: true, lockingScript: lock.toHex() }],
+      deploy: { basket: `p color ${deployTx.id("hex")}v0`, outpoint: `${deployTx.id("hex")}.0`, beef: basketBeef.toBinary() },
+    });
+    expect(await tokensToEnable()).toEqual([{ tokenId: C, sym: "CCC", onDiscovery: false, inWallet: true }]);
+    expect(inst.lookups).toEqual([]);
   });
 
   it("registeredTokens: the swap instance's enable list, enabled and disabled", async () => {
