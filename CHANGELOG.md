@@ -4,6 +4,18 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## Unreleased
+
+- Settings, "Enable a token" (David, 2026-10-31: "One list, one click per
+  token"): the typed token id and the pasted BEEF are gone; the card lists
+  the tokens on discovery (`<origin>/@discovery/1color/color/tokens`) and in
+  the connected wallet (`p color assets`) that are not on this exchange's
+  list yet, each with one Enable. `enableToken(tokenId)` takes the deploy's
+  BEEF from the wallet's module basket, else from discovery's `ls_color`
+  lookup at the host root (`deployBeef`, which `deployMeta` uses too), else
+  refuses naming both; `EnableSent.beefFrom` is `"wallet" | "discovery"`.
+  Pages only.
+
 ## 0.24.1 (2026-10-30)
 
 The settled overlay sync design (David, 2026-10-30): skein-overlay v0.20.0

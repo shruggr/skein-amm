@@ -30,6 +30,8 @@ import {
   discoveryState,
   tokenBaseOf,
   deployPosition,
+  deployBeef,
+  tokensToEnable,
   executeSwap,
   hostedTokens,
   isRoot,
@@ -101,6 +103,8 @@ interface Instance {
   color: Record<string, unknown>;
   /** The host root's `ls_color` BRC-207 `color-admission` answers (the discovery instance, 0.20.1), by outpoint. */
   deploys: Record<string, unknown>;
+  /** The discovery instance's token list (`/@discovery/1color/color/tokens`, 2026-10-31); null: discovery off (404). */
+  discoveryList: unknown[] | null;
   /** Every lookup asked: its URL and body. */
   lookups: { url: string; service: string; query: Record<string, unknown> }[];
   sent: { url: string; body: Record<string, unknown> }[];
@@ -135,6 +139,7 @@ function instance(): Instance {
     spends: {},
     color: {},
     deploys: {},
+    discoveryList: null,
     lookups: [],
     sent: [],
     calls: [],
@@ -151,6 +156,7 @@ const signed = (body: unknown, status = 200) =>
 
 async function route(url: string, init?: { method?: string; headers?: Record<string, string>; body?: unknown }): Promise<Response> {
   const u = new URL(url);
+  if (u.pathname === "/@discovery/1color/color/tokens") return inst.discoveryList ? json(inst.discoveryList) : json({ error: "no instance discovery" }, 404);
   const path = u.pathname.replace(/^\/@[^/]+/, "").replace(/^\/amm/, "");
   if (path === "/tokens") return signed(inst.enabled);
   if (path === "/defaults") return json(inst.defaults);
@@ -533,9 +539,9 @@ describe("exchange.ts, wired", () => {
     expect(inst.lookups).toEqual([{ url: `${ORIGIN}/lookup`, service: "ls_color", query: { type: "color-admission", version: 1, assetId: TOKEN, topic: "tm_color", outpoints: [`${DEPLOY}.0`] } }]);
   });
 
-  it("enableToken / disableToken (0.17.0): root's {fn: enable, args: {tokenId, beef}} to the config instance's <app>/admin, the deploy's Atomic BEEF from the wallet's module basket (p color <txid>v<vout>), else pasted (hex), else refused; disable {tokenId}; a stopped token enabled again without a BEEF", async () => {
+  it("enableToken / disableToken (0.17.0; 2026-10-31 no paste): root's {fn: enable, args: {tokenId, beef}} to the config instance's <app>/admin, the deploy's Atomic BEEF from the wallet's module basket (p color <txid>v<vout>), else from discovery (ls_color at the host root), else refused naming both; disable {tokenId}; a stopped token enabled again without a BEEF", async () => {
     connect();
-    await expect(enableToken(OTHER)).rejects.toThrow(/does not hold the deploy; paste its BEEF/);
+    await expect(enableToken(OTHER)).rejects.toThrow(`no deploy for ${OTHER}: not on discovery and not in this wallet`);
     expect(inst.sent).toHaveLength(0);
     const full = atomic(tokenDeploy, [fund]);
     const beefOf = (m: Record<string, unknown>) => (decode((m.message as { body: Uint8Array }).body) as { args: { beef: Uint8Array } }).args.beef;
@@ -544,6 +550,7 @@ describe("exchange.ts, wired", () => {
     basketBeef.mergeRawTx(fund.toBinary());
     basketBeef.mergeRawTx(tokenDeploy.toBinary());
     connect({ deploy: { basket: `p color ${DEPLOY}v0`, outpoint: `${DEPLOY}.0`, beef: basketBeef.toBinary() } });
+    inst.lookups = [];
     expect(await enableToken(TOKEN)).toEqual({ beefFrom: "wallet" });
     let msg = inst.sent.at(-1)!.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
     expect(Utils.toHex(Array.from(msg.recipient))).toBe(SKEIN);
@@ -552,11 +559,13 @@ describe("exchange.ts, wired", () => {
     expect(body.fn).toBe("enable");
     expect(body.args.tokenId).toBe(TOKEN);
     expect(Transaction.fromAtomicBEEF(Array.from(body.args.beef)).id("hex")).toBe(DEPLOY);
-    // Pasted (hex).
+    expect(inst.lookups).toEqual([]); // the wallet had it: discovery not asked
+    // Not in the wallet: discovery's deploy (the host root's ls_color color-admission answer).
     connect();
-    expect(await enableToken(OTHER, Utils.toHex(full))).toEqual({ beefFrom: "pasted" });
+    inst.deploys[`${DEPLOY}.0`] = { type: "output-list", outputs: [{ beef: full, outputIndex: 0 }] };
+    expect(await enableToken(TOKEN)).toEqual({ beefFrom: "discovery" });
     expect(Array.from(beefOf(inst.sent.at(-1)!.body))).toEqual(full);
-    await expect(enableToken(OTHER, "zz")).rejects.toThrow(/not hex/);
+    expect(inst.lookups.at(-1)).toMatchObject({ url: `${ORIGIN}/lookup`, service: "ls_color" });
     // Disable; a token on the list enabled again names no BEEF (the swap instance keeps its deploy).
     await disableToken(TOKEN);
     msg = inst.sent.at(-1)!.body.message as { recipient: Uint8Array; messageBox: string; body: Uint8Array };
@@ -564,6 +573,52 @@ describe("exchange.ts, wired", () => {
     inst.enabled[0] = { ...inst.enabled[0], status: "disabled" };
     await enableToken(TOKEN);
     expect(decode((inst.sent.at(-1)!.body.message as { body: Uint8Array }).body)).toEqual({ fn: "enable", args: { tokenId: TOKEN } });
+  });
+
+  it("deployBeef (2026-10-31): the wallet's module basket first, else discovery (ls_color at the host root), each with the deploy's metadata; neither: refused naming both", async () => {
+    const full = atomic(tokenDeploy, [fund]);
+    const basketBeef = new Beef();
+    basketBeef.mergeRawTx(fund.toBinary());
+    basketBeef.mergeRawTx(tokenDeploy.toBinary());
+    const wallet = fakeWallet({ deploy: { basket: `p color ${DEPLOY}v0`, outpoint: `${DEPLOY}.0`, beef: basketBeef.toBinary() } });
+    const w = await deployBeef(TOKEN, wallet);
+    expect(w.from).toBe("wallet");
+    expect(Transaction.fromAtomicBEEF(w.beef).id("hex")).toBe(DEPLOY);
+    expect(w.meta).toEqual({}); // the fixture's deploy carries no metadata (a 1Color deploy output all the same)
+    expect(inst.lookups).toEqual([]);
+    inst.deploys[`${DEPLOY}.0`] = { type: "output-list", outputs: [{ beef: full, outputIndex: 0 }] };
+    const d = await deployBeef(TOKEN, fakeWallet());
+    expect(d).toEqual({ from: "discovery", beef: full, meta: {} });
+    expect(inst.lookups).toEqual([{ url: `${ORIGIN}/lookup`, service: "ls_color", query: { type: "color-admission", version: 1, assetId: TOKEN, topic: "tm_color", outpoints: [`${DEPLOY}.0`] } }]);
+    // No wallet: discovery only.
+    expect((await deployBeef(TOKEN)).from).toBe("discovery");
+    await expect(deployBeef(OTHER, fakeWallet())).rejects.toThrow(`no deploy for ${OTHER}: not on discovery and not in this wallet`);
+    await expect(deployBeef("nope")).rejects.toThrow(/not a token id/);
+  });
+
+  it("tokensToEnable (2026-10-31): discovery's list (A, B) ∪ the wallet's held assets (B, C), minus the swap instance's list (A) → B (both sources) then C (wallet only, its metadata from its deploy); discovery off (404) → the wallet's only", async () => {
+    const A = TOKEN;
+    const B = `${"b1".repeat(32)}_0`;
+    const C = `${"c1".repeat(32)}_0`;
+    inst.enabled = [enabledRow(A, "TST", 0, 2)];
+    inst.discoveryList = [
+      { tokenId: A, topic: `tm_color_${A}`, sym: "TST", dec: 0 },
+      { tokenId: B, topic: `tm_color_${B}`, sym: "BBB", dec: 2, icon: "data:image/png;base64,AA" },
+    ];
+    const key = PrivateKey.fromRandom().toPublicKey().toString();
+    const heldOf = (tokenId: string, n: number) => ({ outpoint: `${"ee".repeat(32)}.${n}`, satoshis: 1, spendable: true, lockingScript: tokenP2pkhScript(tokenId, 5n, key) });
+    connect({ held: [heldOf(B, 0), heldOf(C, 1), heldOf(C, 2)] });
+    expect(await tokensToEnable()).toEqual([
+      { tokenId: B, sym: "BBB", icon: "data:image/png;base64,AA", onDiscovery: true, inWallet: true },
+      { tokenId: C, onDiscovery: false, inWallet: true },
+    ]);
+    // C's deploy was looked up at the host root (none there: its short id is shown).
+    expect(inst.lookups.map((l) => l.query.assetId)).toEqual([C]);
+    inst.discoveryList = null;
+    expect((await tokensToEnable()).map((t) => [t.tokenId, t.onDiscovery, t.inWallet])).toEqual([
+      [B, false, true],
+      [C, false, true],
+    ]);
   });
 
   it("registeredTokens: the swap instance's enable list, enabled and disabled", async () => {

@@ -67,7 +67,7 @@ import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { deployQuery, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { ammLookupService, fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readDefaults, readDiscovery, readSpend, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
+import { readBeats, readDefaults, readDiscovery, readSpend, readTokenList, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -432,25 +432,76 @@ function hostRoot(): string {
   return new URL(context.base).origin;
 }
 
+/** A token's symbol, decimals and icon, read off its deploy output. */
+export interface DeployMeta {
+  sym?: string;
+  dec?: number;
+  icon?: string;
+}
+
+/** The metadata of the deploy output `vout` of an Atomic BEEF's subject; null when that output is no 1Color deploy. */
+function deployMetaOf(beef: number[], vout: number): DeployMeta | null {
+  const tx = Transaction.fromAtomicBEEF(beef);
+  const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${vout}`, lockingScript: tx.outputs[vout]?.lockingScript.toHex() });
+  if (!t || t.role !== "deploy") return null;
+  const icon = deployIcon(t)?.image;
+  return { ...(t.metadata?.sym !== undefined ? { sym: t.metadata.sym } : {}), ...(t.metadata?.dec !== undefined ? { dec: t.metadata.dec } : {}), ...(icon ? { icon: imageDataUrl(icon) } : {}) };
+}
+
 /**
- * A token's metadata from its deploy (0.20.1: the discovery lookup `ls_color`, BRC-207's
+ * A token's deploy from discovery (0.20.1: the discovery lookup `ls_color`, BRC-207's
  * `color-admission` of the deploy's outpoint over `tm_color` — the token id `<txid>_<vout>` IS it
- * (`deployQuery`) — POSTed to the HOST ROOT, plain `fetch`: the deploy output with its BEEF), for a
- * token the list does not carry; null when the lookup has none. Until 0.19.0 it asked
- * `ls_color_deploys {tokenId}` at the token's own instance, which a token not enabled here does
- * not have.
+ * (`deployQuery`) — POSTed to the HOST ROOT, plain `fetch`): the deploy output's Atomic BEEF and its
+ * metadata; null when the lookup has none or fails (discovery off).
  */
-async function deployMeta(tokenId: string): Promise<{ sym?: string; dec?: number; icon?: string } | null> {
+async function discoveryDeploy(tokenId: string): Promise<{ beef: number[]; meta: DeployMeta } | null> {
   try {
-    if (!parseTokenId(tokenId)) return null;
     const { service, query } = deployQuery(tokenId);
     const out = parseOutputList(await lookup(null, hostRoot(), service, query))[0];
     if (!out) return null;
-    const tx = Transaction.fromAtomicBEEF(out.beef);
-    const t = decodeTokenRow({ outpoint: `${tx.id("hex")}.${out.outputIndex}`, lockingScript: tx.outputs[out.outputIndex]?.lockingScript.toHex() });
-    if (!t || t.role !== "deploy") return null;
-    const icon = deployIcon(t)?.image;
-    return { ...(t.metadata?.sym !== undefined ? { sym: t.metadata.sym } : {}), ...(t.metadata?.dec !== undefined ? { dec: t.metadata.dec } : {}), ...(icon ? { icon: imageDataUrl(icon) } : {}) };
+    const meta = deployMetaOf(out.beef, out.outputIndex);
+    return meta ? { beef: out.beef, meta } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A token's deploy as `deployBeef` finds it: its Atomic BEEF, its metadata, and where it came from. */
+export interface DeployFound {
+  beef: number[];
+  meta: DeployMeta;
+  from: "wallet" | "discovery";
+}
+
+/**
+ * A token's deploy (Settings "Enable a token", 2026-10-31): with a wallet, the deploy output in its
+ * module basket (`walletDeployBeef`) when it holds it; else the HOST ROOT discovery lookup
+ * (`discoveryDeploy`). Refused when neither has it: "no deploy for <id>: not on discovery and not
+ * in this wallet". With no wallet, discovery only (`deployMeta`).
+ */
+export async function deployBeef(tokenId: TokenId, wallet?: WalletInterface | null): Promise<DeployFound> {
+  const op = parseOutpoint(sdkTokenId(tokenId).replace("_", "."));
+  if (!op) throw new Error(`not a token id: ${tokenId}`);
+  const canonical = tokenIdText(op);
+  if (wallet) {
+    const beef = await walletDeployBeef(wallet, canonical);
+    if (beef) return { beef, meta: deployMetaOf(beef, op.vout) ?? {}, from: "wallet" };
+  }
+  const found = await discoveryDeploy(canonical);
+  if (found) return { ...found, from: "discovery" };
+  throw new Error(`no deploy for ${canonical}: not on discovery and not in this wallet`);
+}
+
+/**
+ * A token's metadata from its deploy (`deployBeef` with no wallet: the discovery lookup at the
+ * host root), for a token the list does not carry; null when the lookup has none. Until 0.19.0 it
+ * asked `ls_color_deploys {tokenId}` at the token's own instance, which a token not enabled here
+ * does not have.
+ */
+async function deployMeta(tokenId: string): Promise<DeployMeta | null> {
+  if (!parseTokenId(tokenId)) return null;
+  try {
+    return (await deployBeef(tokenId)).meta;
   } catch {
     return null;
   }
@@ -1190,27 +1241,21 @@ export async function walletDeployBeef(wallet: WalletInterface, tokenId: TokenId
   return undefined;
 }
 
-/** A pasted BEEF (hex), as bytes; refused when it is not hex. */
-export function pastedBeef(text: string): number[] {
-  const t = text.trim().replace(/\s+/g, "");
-  if (!/^([0-9a-fA-F]{2})+$/.test(t)) throw new Error("the BEEF is not hex");
-  return Utils.toArray(t, "hex") as number[];
-}
-
-/** What enabling a token reports (0.17.0): where the BEEF came from. */
+/** What enabling a token reports: where the deploy's BEEF came from (2026-10-31: the wallet's basket or discovery; no paste). */
 export interface EnableSent {
-  beefFrom: "wallet" | "pasted";
+  beefFrom: "wallet" | "discovery";
 }
 
 /**
  * Enables a token (Open Exchange, shruggr/open-exchange#1): root's message `{fn: "enable", args:
- * {tokenId, beef}}` to the swap instance's `<app>/admin`. The deploy's BEEF from the connected
- * wallet's module basket, else `pasted` (hex); with neither, refused here ("this wallet does not
- * hold the deploy; paste its BEEF"). The swap instance records the token enabled (a fact) and the
- * host makes its instance at `<origin>/@<tokenId>`. A token already on the list (disabled) is
- * enabled again with no BEEF (the swap instance keeps its deploy).
+ * {tokenId, beef}}` to the swap instance's `<app>/admin`. The deploy's BEEF from `deployBeef`: the
+ * connected wallet's module basket, else the discovery lookup at the host root; with neither,
+ * refused here ("no deploy for <id>: not on discovery and not in this wallet"). The swap instance
+ * records the token enabled (a fact) and the host makes its instance at `<origin>/@<tokenId>`. A
+ * token already on the list (disabled) is enabled again with no BEEF (the swap instance keeps its
+ * deploy).
  */
-export async function enableToken(tokenId: TokenId, pasted?: string): Promise<EnableSent> {
+export async function enableToken(tokenId: TokenId): Promise<EnableSent> {
   const { af, wallet } = needWallet();
   const id = parseOutpoint(sdkTokenId(tokenId).replace("_", "."));
   if (!id) throw new Error(`not a token id: ${tokenId}`);
@@ -1219,14 +1264,79 @@ export async function enableToken(tokenId: TokenId, pasted?: string): Promise<En
   let beef: number[] | undefined;
   let from: EnableSent["beefFrom"] = "wallet";
   if (row?.status !== "disabled") {
-    beef = pasted && pasted.trim() ? pastedBeef(pasted) : await walletDeployBeef(wallet, canonical);
-    if (pasted && pasted.trim()) from = "pasted";
-    if (!beef) throw new Error("this wallet does not hold the deploy; paste its BEEF");
+    const d = await deployBeef(canonical, wallet);
+    beef = d.beef;
+    from = d.from;
   }
   const me = await instanceIdentity();
   await sendMessage(af, context.base, me, `${app()}/admin`, { fn: "enable", args: { tokenId: canonical, ...(beef ? { beef: Uint8Array.from(beef) } : {}) } });
   emit();
   return { beefFrom: from };
+}
+
+/** A token Settings offers to enable (2026-10-31): on discovery, in this wallet, or both; not on the list yet. */
+export interface EnableCandidate {
+  tokenId: TokenId;
+  sym?: string;
+  icon?: string;
+  onDiscovery: boolean;
+  inWallet: boolean;
+}
+
+/** The discovery instance's app base (Open Exchange: the fixed handle `discovery`, its 1Color app `1color`). */
+export function discoveryBase(): string {
+  return `${hostRoot()}/@discovery/1color`;
+}
+
+const canonicalId = (tokenId: string): string | null => {
+  const ref = parseTokenId(tokenId);
+  return ref ? tokenIdText(ref) : null;
+};
+
+/**
+ * The candidates to enable: discovery's token list (its order, newest first, with its metadata),
+ * then the tokens only this wallet holds (in the order held); every token already on the swap
+ * instance's list (enabled or disabled) left out. Pure: the reads are `tokensToEnable`'s.
+ */
+export function enableCandidates(listed: ListedToken[], walletIds: string[], onList: string[]): EnableCandidate[] {
+  const skip = new Set(onList.map((t) => canonicalId(t) ?? t));
+  const held = new Set(walletIds.map((t) => canonicalId(t) ?? t));
+  const out: EnableCandidate[] = [];
+  const seen = new Set<string>();
+  for (const t of listed) {
+    const id = canonicalId(t.tokenId);
+    if (!id || skip.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ tokenId: id, ...(t.sym ? { sym: t.sym } : {}), ...(t.icon ? { icon: t.icon } : {}), onDiscovery: true, inWallet: held.has(id) });
+  }
+  for (const w of walletIds) {
+    const id = canonicalId(w);
+    if (!id || skip.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ tokenId: id, onDiscovery: false, inWallet: true });
+  }
+  return out;
+}
+
+/**
+ * What Settings' "Enable a token" lists (2026-10-31): discovery's token list (`GET
+ * <discoveryBase>/color/tokens`; a failed read — discovery off — is an empty list) ∪ the asset ids
+ * of the connected wallet's held token outputs (`p color assets`, each locking script decoded),
+ * minus the tokens on the swap instance's list. A wallet-only token's metadata from its deploy
+ * (`deployMeta`), else none (the page shows its short id).
+ */
+export async function tokensToEnable(): Promise<EnableCandidate[]> {
+  const { wallet } = needWallet();
+  const [listed, held, list] = await Promise.all([readTokenList(discoveryBase()).catch(() => [] as ListedToken[]), heldOutputs(wallet), enabledList()]);
+  const walletIds = [...new Set(held.map((h) => decodeTokenRow(h)?.tokenId).filter((t): t is string => typeof t === "string"))];
+  const rows = enableCandidates(listed, walletIds, list.map((t) => t.tokenId));
+  return Promise.all(
+    rows.map(async (r) => {
+      if (r.onDiscovery) return r;
+      const m = await deployMeta(r.tokenId);
+      return { ...r, ...(m?.sym !== undefined ? { sym: m.sym } : {}), ...(m?.icon ? { icon: m.icon } : {}) };
+    }),
+  );
 }
 
 /** Disables a token (0.17.0): root's `{fn: "disable", args: {tokenId}}` to `<app>/admin`; its instance stopped. */
@@ -1359,6 +1469,7 @@ export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabl
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
 export const useDefaults = (enabled: boolean) => useData(defaults, [], enabled);
 export const useDiscovery = (enabled: boolean) => useData(discoveryState, [], enabled);
+export const useTokensToEnable = (enabled: boolean) => useData(tokensToEnable, [], enabled);
 /** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
 export const useTokenPools = (tokenId: TokenId | undefined, connected: boolean) =>
   useData(() => (tokenId ? swapPools(tokenId) : Promise.resolve({ pools: [], hidden: 0 })), [tokenId, connected]);

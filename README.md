@@ -466,7 +466,16 @@ wildcard DNS, `<host>/@<handle>/amm`).
    hosted tokens, their prices from the beats), Swap, Liquidity (deploy a
    position at the terms; close one, `bsvFee` the miner fee left from the
    pool), Your tokens, Settings
-   (root: the validator's terms, 0.15.0; the market's terms, 0.16.0; register and deregister a token);
+   (root: the validator's terms, 0.15.0; the market's terms, 0.16.0; register and deregister a token;
+   "Enable a token" is one list, one Enable per token, no typed id and no
+   pasted BEEF: the tokens on discovery — the discovery instance's
+   `<origin>/@discovery/1color/color/tokens` — and the asset ids of the
+   connected wallet's held token outputs (`p color assets`), minus every
+   token already on the list, enabled or disabled; the deploy's BEEF from
+   the wallet's module basket `p color <txid>v<vout>` when it holds it,
+   else discovery's `ls_color` `color-admission` answer at the host root,
+   else refused "no deploy for <id>: not on discovery and not in this
+   wallet"; with discovery off, only the wallet's tokens are listed);
    the 1Color pages
    at `<base>/color/`. They read `<base>/listTopicManagers`,
    `<base>/color/tokens`, `<base>/.live/<topic>` (the beats),

@@ -1,8 +1,9 @@
 /**
  * Settings, root of the swap instance only (Open Exchange, shruggr/open-exchange#1):
- * Enable a token — a token id typed, the deploy's BEEF from the connected
- * wallet's module basket (or pasted when the wallet does not hold it): root's
- * `enable` to `<app>/admin`, recorded as a fact (the host makes the token's
+ * Enable a token — one list of the tokens on discovery and in the connected
+ * wallet not on this exchange's list yet, one Enable per token; the deploy's
+ * BEEF from the wallet's module basket, else from discovery (2026-10-31: no
+ * typed id, no paste): root's `enable` to `<app>/admin`, recorded as a fact (the host makes the token's
  * own instance at `/@<tokenId>`); the list, each enabled or disabled, with
  * Disable, and Enable again for a disabled one; and the defaults a new token
  * instance is given — its initial validator terms and market minimum (root's
@@ -12,24 +13,24 @@
  * `tm_color` served by an instance of its own, started or stopped by the host.
  */
 import { useState } from "react";
-import { Id } from "../components/Id";
-import { parseTokenId, shortTokenId, tokenIdText } from "../lib/tokenId";
+import { shortTokenId } from "../lib/tokenId";
 import {
   clearDefaultMarket,
   clearDefaultTerms,
   disableToken,
   enableToken,
-  lookupOf,
   setDefaultMarket,
   setDefaultTerms,
   setDiscovery,
-  topicOf,
   useDefaults,
   useDiscovery,
   useRegisteredTokens,
+  useTokensToEnable,
   type Data,
   type Defaults,
   type Discovery,
+  type EnableCandidate,
+  type EnableSent,
   type RegisteredToken,
   type Session,
 } from "../data/exchange";
@@ -48,71 +49,99 @@ function useAct(): [string | null, boolean, (f: () => Promise<void>) => void] {
   return [error, busy, run];
 }
 
-function EnableCard() {
-  const [pick, setPick] = useState("");
-  const [paste, setPaste] = useState("");
-  const [needPaste, setNeedPaste] = useState(false);
-  const [error, busy, run] = useAct();
+/** Where a candidate's deploy can come from, in a few words. */
+export function sourceText(c: EnableCandidate): string {
+  return c.onDiscovery && c.inWallet ? "on discovery · in this wallet" : c.onDiscovery ? "on discovery" : "in this wallet";
+}
+
+/** The muted line shown while discovery is off. */
+export const DISCOVERY_OFF_TEXT = "Discovery is off: only the tokens this wallet holds are listed.";
+/** The empty list's line. */
+export const NOTHING_TO_ENABLE_TEXT = "Nothing to enable: every token on discovery and in this wallet is already enabled.";
+
+/** What the confirmation says once an enable is sent. */
+export function enableSentText(tokenId: string, r: EnableSent): string {
+  return `Enabling ${shortTokenId(tokenId)} is sent (its deploy from ${r.beefFrom === "wallet" ? "this wallet" : "discovery"}). The list shows it once this skein has taken it; its instance is at /@${tokenId}.`;
+}
+
+/**
+ * The candidate rows (no state of its own): each token's name, id, source and ONE Enable button.
+ * `run` runs the action (the card's busy/error handling); `onSent` gets what was sent.
+ */
+export function EnableList({
+  rows,
+  discoveryOff,
+  busy,
+  run,
+  onSent,
+}: {
+  rows: EnableCandidate[];
+  discoveryOff: boolean;
+  busy: string | null;
+  run: (tokenId: string, f: () => Promise<void>) => void;
+  onSent: (tokenId: string, r: EnableSent) => void;
+}) {
+  return (
+    <>
+      {discoveryOff && <p className="muted">{DISCOVERY_OFF_TEXT}</p>}
+      {rows.length === 0 ? (
+        discoveryOff ? null : <p className="muted">{NOTHING_TO_ENABLE_TEXT}</p>
+      ) : (
+        <ul className="regs">
+          {rows.map((c) => {
+            const sym = c.sym ?? shortTokenId(c.tokenId);
+            return (
+              <li key={c.tokenId} className="reg-row">
+                <span className="req-text">
+                  <TokenName tokenId={c.tokenId} sym={sym} {...(c.icon ? { icon: c.icon } : {})} size="sm" />
+                  <span className="small muted">{sourceText(c)}</span>
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy !== null}
+                  onClick={() => run(c.tokenId, async () => onSent(c.tokenId, await enableToken(c.tokenId)))}
+                  aria-label={`Enable ${sym}`}
+                >
+                  {busy === c.tokenId ? "Enabling…" : "Enable"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function EnableCard({ discovery }: { discovery: Data<Discovery> }) {
+  const list = useTokensToEnable(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const id = parseTokenId(pick.trim());
-  const tokenId = id ? tokenIdText(id) : null;
+  const run = (tokenId: string, f: () => Promise<void>) => {
+    setBusy(tokenId);
+    setError(null);
+    setDone(null);
+    f()
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(null));
+  };
 
   return (
-    <form
-      className="panel stack-sm"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!tokenId) return;
-        setDone(null);
-        run(async () => {
-          try {
-            const r = await enableToken(tokenId, needPaste ? paste : undefined);
-            setDone(`Enabling ${shortTokenId(tokenId)} is sent (its deploy from ${r.beefFrom === "wallet" ? "this wallet" : "the pasted BEEF"}). The list shows it once this skein has taken it; its instance is at /@${tokenId}.`);
-            setPaste("");
-            setNeedPaste(false);
-          } catch (e) {
-            if (e instanceof Error && /does not hold the deploy/.test(e.message)) setNeedPaste(true);
-            throw e;
-          }
-        });
-      }}
-    >
-      <h2 className="h2">Enable a token</h2>
-      <div className="row row-wrap">
-        <label htmlFor="en-token" className="sr-only">
-          Token id
-        </label>
-        <input id="en-token" className="mono grow" placeholder="<txid>_<vout>" value={pick} onChange={(e) => setPick(e.target.value)} aria-invalid={(pick.trim() !== "" && !tokenId) || undefined} />
-        <button type="submit" className="btn btn-primary" disabled={busy || !tokenId || (needPaste && paste.trim() === "")}>
-          {busy ? "Enabling…" : "Enable"}
-        </button>
-      </div>
-      {needPaste && (
-        <div className="field">
-          <label htmlFor="en-beef">The deploy&apos;s BEEF (hex)</label>
-          <textarea id="en-beef" className="mono" rows={3} value={paste} onChange={(e) => setPaste(e.target.value)} />
-        </div>
+    <section className="panel stack-sm" aria-labelledby="en-h">
+      <h2 id="en-h" className="h2">
+        Enable a token
+      </h2>
+      {list.data === null ? (
+        <p className="muted">{list.error ? `Could not read the tokens to enable: ${list.error}` : "Loading…"}</p>
+      ) : (
+        <EnableList rows={list.data} discoveryOff={discovery.data?.on === false} busy={busy} run={run} onSent={(id, r) => setDone(enableSentText(id, r))} />
       )}
-      {tokenId && (
-        <dl className="kv kv-left small">
-          <dt>Token id</dt>
-          <dd>
-            <Id value={tokenId} kind="token" label="token id" />
-          </dd>
-          <dt>Topic</dt>
-          <dd>
-            <Id value={topicOf(tokenId)} kind="topic" label="topic" />
-          </dd>
-          <dt>Lookup</dt>
-          <dd>
-            <Id value={lookupOf(tokenId)} kind="topic" label="lookup service" />
-          </dd>
-        </dl>
-      )}
-      <span className="help">The token gets its own instance, created with its deploy (from this wallet&apos;s tokens, else pasted). Topic and lookup names are derived from the token id.</span>
+      <span className="help">The tokens on discovery and in this wallet that are not on this exchange yet. Each gets its own instance, created with its deploy (from this wallet&apos;s tokens, else from discovery). Topic and lookup names are derived from the token id.</span>
       {error && <Notice kind="bad">Could not enable: {error}</Notice>}
       {done && <Notice kind="ok">{done}</Notice>}
-    </form>
+    </section>
   );
 }
 
@@ -387,7 +416,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
           <DefaultTermsCard defaults={defs} />
           <DefaultMarketCard defaults={defs} />
           <DiscoveryCard discovery={disc} />
-          <EnableCard />
+          <EnableCard discovery={disc} />
           <section className="panel stack-sm" aria-labelledby="regd-h">
             <h2 id="regd-h" className="h2">
               Enabled
