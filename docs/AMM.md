@@ -445,14 +445,15 @@ fn `affirm` in-VM, which answers at once.
 
 **libp2p**: `/amm-validator/1/swap` (0.9.0: `/addLiquidity` gone; 0.11.0:
 `/deploy` gone) (amm-validator; one signed-message package per frame); the engine's
-`<topic>` (submit and admit messages, one mesh) and `-proof` for each
-registered topic (skein-overlay 0.12.0; `-admit` before); `tm_color_<txid>_0-live`,
+`<topic>` (the engine's `admit` verdicts, read by the host, which fetches the
+BEEF from the announcer: skein-overlay 0.20.0; submit and admit messages
+before) and `-proof` (every proof, a reorg's too) for each registered topic; `tm_color_<txid>_0-live`,
 beaconed by a validator's host and subscribed, without admitting anything,
 by a market's liveness tool (below); `ls_amm_<assetId>-live`, the AMM lookup's beat
 (the prices, above), its name configured at the create (0.21.0); `/skein/overlay/sync/1.0.0`,
 the overlay sync protocol, answered by the engine's filter `sync` (0.14.0);
-`/skein/overlay/beef/1.0.0`, the engine's receive row, a catch-up's fetched
-Atomic BEEFs (0.14.1).
+`/skein/overlay/beef/1.0.0`, the engine's receive row, the BEEFs the host
+fetches (0.14.1; 0.24.1: the host's own entry, never served to peers).
 
 **Box `amm/amm-p2p`** (also): the cron provider's ticks, `{kind: "amm-p2p-tick",
 job: "catchup"}` — a utility nothing schedules (0.6.0). amm-p2p takes no
@@ -587,8 +588,10 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
    front door, a read, nothing logged
 9. libp2p `/skein/overlay/beef/1.0.0`, `kernel.beef` → `overlay.submit`
    (0.14.1, as in skein-overlay's own manifest): the host hands each
-   Atomic BEEF a catch-up fetches to this row, as from the serving peer;
-   without it the puller refused every one ("no route for
+   Atomic BEEF it fetches (on a peer's admit, from a peer's tail list, in a
+   pull) to this row, as from the peer it came from; it is the host's own
+   entry, not served to peers (0.24.1, skein-overlay 0.20.0); without it
+   the host refused every one ("no route for
    libp2p:/skein/overlay/beef/1.0.0")
 10. event `deploy`, `kernel.beef` → `amm-setup.deploy` (0.22.0,
     shruggr/skein-amm#5, skein #164): the token's deploy, the door's
@@ -727,16 +730,16 @@ terms are root's message to `/@<tokenId>` (no page for it).
   filed): a deploy whose filing failed can be recovered only in that
   browser. The validator can still Rescind it.
 
-- **The want-answer stream** `/skein/overlay/beef/1.0.0` (skein-overlay
-  0.7.1+'s manifest row): not carried, as skein-1color 0.6.0 does not; a
-  submission paused on a parent resumes only when a later submission brings
-  it.
+- **A paused submission asks nobody** (skein-overlay 0.20.0, the settled
+  sync design): it resumes when its parent arrives by any path — a later
+  submission, a BEEF the host fetched on a peer's admit or from a peer's
+  tail, a pull of mined history.
 - **`tm_color_<txid>_0-live` for an unregistered token.** Liveness is
   kept for a registered topic (every skein a market, 0.8.1); for a token
   not registered here the `.live` read answers 404 and its Swap page plans
   nothing.
-- **Catch-up and proofs by block.** Never specified; sync is
-  shruggr/skein#112's `want`. The `/amm/proofs/1.0.0` row is gone and no
+- **Catch-up and proofs by block.** Never specified; sync is the host's
+  announce-then-fetch, pull and tail reconcile (skein-overlay 0.20.0). The `/amm/proofs/1.0.0` row is gone and no
   start schedules the catch-up pass; the code stays as a utility
   (`proofsByBlock`, `catchup`).
 - **A setting changed after a register.** The roles' events are emitted at

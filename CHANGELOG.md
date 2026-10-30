@@ -4,6 +4,27 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.24.1 (2026-10-30)
+
+The settled overlay sync design (David, 2026-10-30): skein-overlay v0.20.0
+and skein-1color v0.13.1 (were v0.19.0 and v0.13.0).
+
+- `bin/overlay.wasm` (skein-overlay 0.20.0): announce, then fetch — the
+  `<topic>` mesh carries only the engine's `admit` verdicts and the host
+  fetches the BEEF from the announcer; a paused submission asks nobody (no
+  `want` events); every proof the chain app takes is published (a reorg's
+  too); the sync protocol's `tail` read; beat defaults 120 s / 300 s (this
+  app's manifest sets none).
+- `bin/color-topic.wasm`, `bin/color-lookup.wasm` from skein-1color 0.13.1
+  (byte-identical to 0.13.0's). `bin/amm-p2p.wasm` and
+  `bin/amm-validator.wasm` rebuilt on the new contract modules (no source
+  change).
+- The receive row `/skein/overlay/beef/1.0.0` stays in the manifest: it is
+  the host's own entry, not served to peers (skein's host never handles it
+  inbound); the manifest's description says so.
+- `image/token` installs skein-chain v0.7.1 (a reorg broadcasts nothing).
+- Manifest version 0.24.1. Pages (`web/ui`) unchanged.
+
 ## 0.24.0 (2026-10-30)
 
 Undecided is not rejected (David, 2026-10-30): skein-overlay v0.19.0 and
