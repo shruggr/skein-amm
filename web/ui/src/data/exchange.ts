@@ -45,7 +45,9 @@
  *   new token instance is
  *   created with (`GET <config>/defaults`; root's `{fn: "defaults"}`): its
  *   initial validator terms and market minimum (a token's own terms are root's
- *   message to `/@<tokenId>`: not on this page). `isRoot` is a stub (no grants read).
+ *   message to `/@<tokenId>`: not on this page). `isRoot` (0.26.0): the host's
+ *   `/skeins?key=` names swap; while nobody holds root, Settings offers the
+ *   claim (`claimStatus`, `claimExchange`).
  * - **The instance's identity** (0.15.0, `instanceIdentity`): the key its
  *   signed answers carry, the recipient of root's messages (a market-only
  *   skein refuses `amm.pool.terms`, which named it
@@ -67,7 +69,7 @@ import { useConnectDialog, useWallet } from "../wallet/AppWalletProvider";
 import { deployQuery, outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "../lib/tokenId";
 import { AMM_OVERLAY, FEE_RATE_SATS_PER_KB, REFRESH_MS, appName, tokenBase } from "../lib/config";
 import { ammLookupService, fetchLive, lookup, lookupPoolOutput, parseOutputList, parseTokenTopic, queryPools, type LiveAnswer, type SignedFetch, type TokenTopic } from "../lib/overlay";
-import { readBeats, readDefaults, readDiscovery, readSpend, readTokenList, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
+import { instanceBase, readBeats, readDefaults, readDiscovery, readSpend, readTokenList, readTokens, sendMessage, type Beat, type Defaults, type Discovery, type EnabledToken, type ListedToken } from "../lib/skein";
 import { liveSenders, pricesFromBeats, depthOf, type TokenPrice } from "../market/prices";
 import { buildPlanRequest, goneFromLookup, quote as planQuote } from "../market/plan";
 import { validatorStatus } from "../market/view";
@@ -548,15 +550,59 @@ export function useSession(): Session {
   return { status, identityKey: connected ? w.identityKey : null, connect, disconnect: w.disconnect };
 }
 
+/** Whether anyone holds root on the swap instance yet, and its identity (skein's `GET <instance>/.well-known/skein`, 0.26.0). */
+export interface ClaimStatus {
+  claimed: boolean;
+  identity: string;
+}
+
+/** The swap instance's card: `GET <its origin>/.well-known/skein` (the host's read, unsigned). */
+export async function claimStatus(): Promise<ClaimStatus> {
+  const url = `${instanceBase(context.base)}/.well-known/skein`;
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`GET ${url}: ${res.status}`);
+  const v = (await res.json()) as { claimed?: unknown; identity?: unknown };
+  const identity = String(v.identity ?? "").toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(identity)) throw new Error(`GET ${url}: no identity`);
+  return { claimed: v.claimed === true, identity };
+}
+
 /**
- * Whether this identity holds the role `root` on this skein.
- *
- * STUB (skein-amm 0.9.0): the skein has no read of a key's grants
- * (shruggr/skein#143), so every connected wallet is shown Settings; the
- * skein refuses a non-root's register messages (the role gate).
+ * Whether this identity holds the role `root` on the swap instance (0.26.0): the host's `GET
+ * <host root>/skeins?key=<identityKey>` (the instances that key is root on) names swap's identity.
+ * False when either read fails.
  */
 export async function isRoot(identityKey: string | null): Promise<boolean> {
-  return identityKey !== null;
+  if (!identityKey) return false;
+  try {
+    const { identity } = await claimStatus();
+    const res = await fetch(`${hostRoot()}/skeins?key=${encodeURIComponent(identityKey)}`, { headers: { accept: "application/json" } });
+    if (!res.ok) return false;
+    const held = (await res.json()) as Array<{ identity?: string }>;
+    return Array.isArray(held) && held.some((x) => String(x.identity ?? "").toLowerCase() === identity);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claims the swap instance with the connected wallet (0.26.0): the wallet's own message in box
+ * `claim` to swap's identity — what `skein claim` sends; the kernel grants root to its sender if
+ * nobody holds it yet, and refuses it otherwise. Then reads `isRoot` again (the claim is a step:
+ * a few reads until it shows) and tells the pages.
+ */
+export async function claimExchange(): Promise<boolean> {
+  const { af } = needWallet();
+  const { identity } = await claimStatus();
+  await sendMessage(af, context.base, identity, "claim", {});
+  let root = false;
+  for (let i = 0; i < 20 && !root; i++) {
+    root = await isRoot(context.identityKey);
+    if (!root) await new Promise((r) => setTimeout(r, 250));
+  }
+  emit();
+  if (!root) throw new Error("The claim was sent, but this wallet is not root: someone else may have claimed this exchange first.");
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -1473,6 +1519,7 @@ export const useWalletSats = (enabled: boolean) => useData(walletSats, [], enabl
 export const useRegisteredTokens = (enabled: boolean) => useData(registeredTokens, [], enabled);
 export const useDefaults = (enabled: boolean) => useData(defaults, [], enabled);
 export const useDiscovery = (enabled: boolean) => useData(discoveryState, [], enabled);
+export const useClaimStatus = (enabled: boolean) => useData(claimStatus, [], enabled);
 export const useTokensToEnable = (enabled: boolean) => useData(tokensToEnable, [], enabled);
 /** The pools the Swap page lists (0.16.0: `swapPools`), read again when the wallet connects (the market's minimum is a signed read). */
 export const useTokenPools = (tokenId: TokenId | undefined, connected: boolean) =>

@@ -650,8 +650,8 @@ describe("exchange.ts, wired", () => {
     ]);
   });
 
-  it("isRoot: a stub (no grants read): any connected wallet", async () => {
-    expect(await isRoot(ME)).toBe(true);
+  // isRoot (0.26.0) is real: test/claim.test.tsx (the host's /skeins?key=).
+  it("isRoot: no key, no root", async () => {
     expect(await isRoot(null)).toBe(false);
   });
 

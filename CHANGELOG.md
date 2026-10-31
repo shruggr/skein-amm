@@ -4,6 +4,18 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.26.0 (2026-10-30)
+
+- The Open Exchange admin is a claim (David, 2026-10-30): swap is set up
+  unclaimed, and Settings, while nobody holds root on it (`claimStatus`:
+  skein 0.1.2's `GET <swap>/.well-known/skein` → `claimed: false`), shows
+  ONE card, "Claim this exchange", with one button: `claimExchange` sends
+  the wallet's own message in box `claim` to swap's identity (what `skein
+  claim` sends) and reads `isRoot` again. `isRoot` is real: the host's
+  `GET <origin>/skeins?key=<wallet key>` names swap's identity (was a
+  stub: every connected wallet). Claimed by another key: the not-root
+  line. Pages only.
+
 ## 0.25.0 (2026-10-30)
 
 - Settings, "Enable a token" (David, 2026-10-31: "One list, one click per

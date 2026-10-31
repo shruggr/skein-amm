@@ -1,5 +1,6 @@
 /**
- * Settings, root of the swap instance only (Open Exchange, shruggr/open-exchange#1):
+ * Settings, root of the swap instance only (Open Exchange, shruggr/open-exchange#1)
+ * (while nobody holds root, one card instead: Claim this exchange, 0.26.0):
  * Enable a token — one list of the tokens on discovery and in the connected
  * wallet not on this exchange's list yet, one Enable per token; the deploy's
  * BEEF from the wallet's module basket, else from discovery (2026-10-31: no
@@ -15,6 +16,7 @@
 import { useState } from "react";
 import { shortTokenId } from "../lib/tokenId";
 import {
+  claimExchange,
   clearDefaultMarket,
   clearDefaultTerms,
   disableToken,
@@ -22,6 +24,7 @@ import {
   setDefaultMarket,
   setDefaultTerms,
   setDiscovery,
+  useClaimStatus,
   useDefaults,
   useDiscovery,
   useRegisteredTokens,
@@ -35,6 +38,32 @@ import {
   type Session,
 } from "../data/exchange";
 import { NeedWallet, Notice, TokenName } from "./bits";
+
+/** The claim card's sentence (0.26.0). */
+export const CLAIM_TEXT = "Nobody holds root on this exchange yet. The wallet that claims it becomes root: it enables tokens and sets terms.";
+
+/** "Claim this exchange" (0.26.0): shown to a connected wallet while nobody holds root on swap; one button. */
+export function ClaimCard({ busy, error, onClaim }: { busy: boolean; error: string | null; onClaim: () => void }) {
+  return (
+    <section className="panel stack-sm" aria-labelledby="claim-h">
+      <h2 id="claim-h" className="h2">
+        Claim this exchange
+      </h2>
+      <p className="fg2">{CLAIM_TEXT}</p>
+      <div>
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={onClaim} aria-label="Claim">
+          {busy ? "Claiming…" : "Claim"}
+        </button>
+      </div>
+      {error && <Notice kind="bad">{error}</Notice>}
+    </section>
+  );
+}
+
+function ClaimSection() {
+  const [error, busy, run] = useAct();
+  return <ClaimCard busy={busy} error={error} onClaim={() => run(async () => void (await claimExchange()))} />;
+}
 
 function useAct(): [string | null, boolean, (f: () => Promise<void>) => void] {
   const [error, setError] = useState<string | null>(null);
@@ -399,6 +428,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
   const reg = useRegisteredTokens(connected && root);
   const defs = useDefaults(connected && root);
   const disc = useDiscovery(connected && root);
+  const claim = useClaimStatus(connected && !root);
   return (
     <>
       <div className="stack-xs">
@@ -407,6 +437,8 @@ export function Settings({ session, root }: { session: Session; root: boolean })
       </div>
       {!connected ? (
         <NeedWallet session={session} what="this exchange's settings" />
+      ) : !root && claim.data?.claimed === false ? (
+        <ClaimSection />
       ) : !root ? (
         <section className="panel">
           <p className="fg2">The connected wallet is not root on this skein. Settings are root&apos;s.</p>

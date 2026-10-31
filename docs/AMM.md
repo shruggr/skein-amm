@@ -761,9 +761,12 @@ terms are root's message to `/@<tokenId>` (no page for it).
   before 0.21.0 serves `ls_amm` until its config names the new name (an
   install with `--config`, then a disable and enable for its `topics`); a
   token no beat reports is priced from this skein's own listing.
-- **Root, as the page sees it.** No read tells a page a key's grants
-  (shruggr/skein#143): `isRoot` is a stub, every connected wallet sees
-  Settings, and the skein refuses a non-root's register messages.
+- **Root, as the page sees it** (0.26.0). `isRoot`: the host's `GET
+  <origin>/skeins?key=<wallet key>` names swap's identity. While nobody
+  holds root (`GET <swap>/.well-known/skein` → `claimed: false`, skein
+  0.1.2), Settings shows one card, "Claim this exchange": the wallet's
+  own message in box `claim` to swap; the kernel makes its sender root
+  and refuses any later claim.
 - **Pending payouts.** A payout the wallet did not take in at once (sats or
   tokens, or a Move back not yet admitted) is kept in the browser
   (`wallet/pendingPayouts.ts`); 0.8.1's Pending payouts page, which retried
