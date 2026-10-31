@@ -35,8 +35,8 @@
  *   wallet's BRC-207 module build, sign and broadcast the deploy in one
  *   createAction (src/lp/poolDeploy.ts, 0.12.0); `closePosition` closes it
  *   (src/lp/close.ts, `POST /submit`).
- * - **Your tokens**: the wallet's BRC-207 module (`p color assets`, `p color
- *   balance <assetTag>`; src/wallet/color.ts) and the active swap basket
+ * - **Your tokens**: the wallet's BRC-207 module (`p color assets`, the
+ *   balance summed from its outputs; src/wallet/color.ts) and the active swap basket
  *   (`moveBackTokens`).
  * - **Settings** (root of the config instance, 0.17.0): the enable list
  *   (`GET <config>/tokens`) with Disable / Enable again; Enable a token —
@@ -86,7 +86,7 @@ import { deployPool } from "../lp/poolDeploy";
 import { PoolTemplate } from "../pool";
 import { colorOutput, positionRowsOf, loadPosition, type LoadedPosition } from "../lp/positions";
 import { recoverPosition as recoverPoolRow } from "../lp/recover";
-import { POOLS_BASKET, assetBalance, assetBasket, heldOutputs } from "../wallet/color";
+import { POOLS_BASKET, assetBasket, heldOutputs } from "../wallet/color";
 import { completeClose, prepareClose, submitToOverlay } from "../lp/close";
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ export interface WalletToken {
   sym: string;
   dec: number;
   icon?: string;
-  /** The wallet's balance (the BRC-207 module's `p color balance`). */
+  /** The wallet's balance: the sum of the token's held value outputs in `p color assets` (0.27.0; was the module's `p color balance`). */
   balance: bigint;
   /** How many wallet outputs hold it. */
   outputs: number;
@@ -1180,8 +1180,9 @@ async function baseHolding(outpoint: string): Promise<{ base: string; tokenId: s
 
 /**
  * The connected wallet's 1Color tokens (0.12.0: the BRC-207 module's): the
- * assets `p color assets` lists, each balance `p color balance <assetTag>`,
- * and what the active swap basket (`amm-swap`) holds of each; symbol,
+ * assets `p color assets` lists, each balance the sum of its held value
+ * outputs there (0.27.0: one read for the whole list, granted once by the
+ * pages' group permissions; no per-token `p color balance` here), and what the active swap basket (`amm-swap`) holds of each; symbol,
  * decimals and icon from the token list, else the token's deploy
  * (the discovery lookup `ls_color`, BRC-207 `color-admission`, at the host root, 0.20.1), else a deploy the wallet holds. Each marked on this
  * exchange (registered) or not.
@@ -1200,10 +1201,8 @@ export async function myTokens(): Promise<WalletToken[]> {
   const out = await Promise.all(
     ids.map(async (tokenId): Promise<WalletToken> => {
       const t = inv.tokens.find((x) => x.tokenId === tokenId);
-      const [balance, fromDeploy] = await Promise.all([
-        t && t.valueOutputs > 0 ? assetBalance(wallet, tokenId) : Promise.resolve(0n),
-        meta.has(tokenId) ? Promise.resolve(null) : deployMeta(tokenId),
-      ]);
+      const balance = t && t.valueOutputs > 0 ? t.balance : 0n;
+      const fromDeploy = meta.has(tokenId) ? null : await deployMeta(tokenId);
       const m = meta.get(tokenId) ?? fromDeploy ?? {};
       const icon = m.icon ?? (t?.icon?.image ? imageDataUrl(t.icon.image) : undefined);
       return {

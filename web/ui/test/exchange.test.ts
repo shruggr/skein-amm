@@ -209,9 +209,12 @@ interface WalletRows {
   balances?: Record<string, string>;
   swaps?: unknown[];
 }
+/** Every basket the fake wallet was asked to list, in order (0.27.0: myTokens reads no `p color balance`). */
+let walletReads: string[] = [];
 function fakeWallet(rows: WalletRows = {}, sats: number[] = [1_000, 2_500]): WalletInterface {
   return {
     async listOutputs(args: { basket: string; tags?: string[] }) {
+      walletReads.push(args.basket);
       if (args.basket === "default") return { totalOutputs: sats.length, outputs: sats.map((s, i) => ({ outpoint: `${"aa".repeat(32)}.${i}`, satoshis: s, spendable: true })) };
       if (args.basket === "amm-pools") return { totalOutputs: rows.pools?.length ?? 0, outputs: rows.pools ?? [] };
       if (args.basket === "amm-swap") return { totalOutputs: rows.swaps?.length ?? 0, outputs: rows.swaps ?? [] };
@@ -515,28 +518,34 @@ describe("exchange.ts, wired", () => {
     expect(inst.calls.filter((c) => c.fn === "amm.pool.affirm")).toEqual([]);
   });
 
-  it("myTokens (0.12.0): the module's assets (p color assets), each balance the module's (p color balance <assetTag>), what the swap basket holds; on this exchange (registered) or not", async () => {
+  it("myTokens (0.27.0): the module's assets (p color assets), each balance the SUM of its held value outputs there — no per-token p color balance read (one group grant covers the list); what the swap basket holds; on this exchange (registered) or not", async () => {
     const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
+    const key = PrivateKey.fromRandom().toPublicKey().toString();
+    const more = { outpoint: `${"ee".repeat(32)}.0`, satoshis: 1, spendable: true, lockingScript: tokenP2pkhScript(TOKEN, 7n, key) };
+    const other = [1, 2].map((n) => ({ outpoint: `${"ef".repeat(32)}.${n}`, satoshis: 1, spendable: true, lockingScript: tokenP2pkhScript(OTHER, BigInt(n * 100), key) }));
     const swapRow = { outpoint: `${poolDeploy.id("hex")}.1`, satoshis: 1, lockingScript: poolDeploy.outputs[1]!.lockingScript.toHex(), customInstructions: JSON.stringify({ assetId: TOKEN, amount: "50000", protocolID: [2, "amm swap"], keyID: "amm-swap-1", counterparty: "self" }) };
-    connect({ held: [held], balances: { [`p color balance ${DEPLOY}v0`]: "9999999" }, swaps: [swapRow] });
+    // The module's own figures differ from the outputs' sums: the list must not read them.
+    connect({ held: [held, more, ...other], balances: { [`p color balance ${DEPLOY}v0`]: "9999999", [`p color balance ${"cd".repeat(32)}v0`]: "1" }, swaps: [swapRow] });
+    walletReads = [];
     const ts = await myTokens();
-    expect(ts).toHaveLength(1);
-    // The balance is the module's exact decimal string, not the scripts' sum.
-    expect(ts[0]).toMatchObject({ tokenId: TOKEN, sym: "TST", dec: 0, balance: 9_999_999n, outputs: 1, onExchange: true });
-    expect(ts[0]!.inSwaps).toBe(50_000n); // the swap basket's output carries 50,000 (pool_deploy:1)
+    expect(walletReads.filter((b) => b.startsWith("p color balance"))).toEqual([]);
+    expect(walletReads).toContain("p color assets");
+    const deployAmount = decodeOneColor(tokenDeploy.outputs[0]!.lockingScript.toBinary())!.amount;
+    expect(ts).toHaveLength(2);
+    expect(ts.find((t) => t.tokenId === TOKEN)).toMatchObject({ sym: "TST", dec: 0, balance: BigInt(deployAmount) + 7n, outputs: 2, onExchange: true, inSwaps: 50_000n });
+    expect(ts.find((t) => t.tokenId === OTHER)).toMatchObject({ balance: 300n, outputs: 2, inSwaps: 0n, onExchange: false });
     // Only what the swap basket holds: still listed, with "Move back".
     connect({ swaps: [swapRow] });
     expect(await myTokens()).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: 0n, outputs: 0, inSwaps: 50_000n })]);
-    expect(inst.lookups).toEqual([]); // the list carries its metadata: no deploy lookup
   });
 
   it("myTokens (0.20.1): a token not enabled here — its metadata from its deploy, the discovery lookup ls_color (BRC-207 color-admission, topic tm_color) at the HOST ROOT (plain fetch), not /@<tokenId>", async () => {
     inst.enabled = [];
     inst.deploys[`${DEPLOY}.0`] = { type: "output-list", outputs: [{ beef: atomic(tokenDeploy, [fund]), outputIndex: 0 }] };
     const held = { outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() };
-    connect({ held: [held], balances: { [`p color balance ${DEPLOY}v0`]: "5" } });
+    connect({ held: [held] });
     const ts = await myTokens();
-    expect(ts).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: 5n, onExchange: false })]);
+    expect(ts).toEqual([expect.objectContaining({ tokenId: TOKEN, balance: BigInt(decodeOneColor(tokenDeploy.outputs[0]!.lockingScript.toBinary())!.amount), onExchange: false })]);
     expect(inst.lookups).toEqual([{ url: `${ORIGIN}/lookup`, service: "ls_color", query: { type: "color-admission", version: 1, assetId: TOKEN, topic: "tm_color", outpoints: [`${DEPLOY}.0`] } }]);
   });
 

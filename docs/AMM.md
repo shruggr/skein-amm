@@ -218,8 +218,10 @@ swap basket, keys `[2, "amm swap"]`, counterparty self, a fresh keyID per
 output; customInstructions `{assetId, amount, protocolID, keyID,
 counterparty}`).
 
-- **Your tokens.** The assets `p color assets` lists, each balance `p color
-  balance <tag>` (an exact decimal string); symbol, decimals and icon from
+- **Your tokens.** The assets `p color assets` lists, each balance the sum
+  of its held value outputs there (0.27.0: one read for the whole list,
+  granted once by the pages' group permissions, `basketAccess` `p color
+  assets`; no per-token `p color balance <tag>` in the list); symbol, decimals and icon from
   the token list (`/color/tokens`), else `ls_color` BRC-207 `color-admission` (`topic: "tm_color"`) at the host root (0.20.1), else
   a deploy the wallet holds. Beside it, what `amm-swap` holds, with Move
   back.

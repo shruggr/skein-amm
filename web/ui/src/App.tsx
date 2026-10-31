@@ -2,7 +2,8 @@
  * Open Exchange (shruggr/skein#147): the shell (header with the wordmark, nav
  * and wallet; footer) and five hash-routed pages. Landing is open to all;
  * after a wallet connects the nav shows Tokens, Swap, Liquidity and Your
- * tokens, plus Settings for root. All data comes from src/data/exchange.ts.
+ * tokens, plus Settings for root (0.27.0: and for anyone while the exchange
+ * is unclaimed, where the claim card lives). All data comes from src/data/exchange.ts.
  *
  * The earlier tab pages (src/pages/*) are no longer in the shell; their files
  * stay for the overlay session.
@@ -10,7 +11,7 @@
 import { useEffect, useRef } from "react";
 import { AppWalletProvider } from "./wallet/AppWalletProvider";
 import { Id } from "./components/Id";
-import { SITE_HREF, useHostedTokens, useIsRoot, useSession, type Session } from "./data/exchange";
+import { SITE_HREF, useClaimStatus, useHostedTokens, useIsRoot, useSession, type Session } from "./data/exchange";
 import { routeHref, useRoute, type Page, type Route } from "./ox/route";
 import { LiveDot } from "./ox/bits";
 import { Landing } from "./ox/Landing";
@@ -19,6 +20,7 @@ import { Liquidity } from "./ox/Liquidity";
 import { YourTokens } from "./ox/YourTokens";
 import { Settings } from "./ox/Settings";
 
+/** `rootOnly`: shown to root, and to anyone while nobody holds root on swap (the claim is on Settings, 0.27.0). */
 const NAV: { page: Page; label: string; rootOnly?: boolean }[] = [
   { page: "landing", label: "Tokens" },
   { page: "swap", label: "Swap" },
@@ -60,6 +62,26 @@ function Wallet({ session }: { session: Session }) {
         </button>
       </div>
     </details>
+  );
+}
+
+/**
+ * The main nav of a connected wallet. A root-only link shows for root, and
+ * (0.27.0) for any wallet while the exchange is unclaimed (swap's
+ * `.well-known/skein` says `claimed: false`), since the claim card is on
+ * Settings; hidden while that read is pending or failed.
+ */
+export function Nav({ route, connected, root }: { route: Route; connected: boolean; root: boolean }) {
+  const claim = useClaimStatus(connected && !root);
+  const open = root || claim.data?.claimed === false;
+  return (
+    <nav className="nav" aria-label="Main">
+      {NAV.filter((n) => !n.rootOnly || open).map((n) => (
+        <a key={n.page} href={routeHref({ page: n.page } as Route)} aria-current={route.page === n.page ? "page" : undefined}>
+          {n.label}
+        </a>
+      ))}
+    </nav>
   );
 }
 
@@ -107,15 +129,7 @@ function Shell() {
           <a className="brand" href={routeHref({ page: "landing" })}>
             Open Exchange
           </a>
-          {connected && (
-            <nav className="nav" aria-label="Main">
-              {NAV.filter((n) => !n.rootOnly || root).map((n) => (
-                <a key={n.page} href={routeHref({ page: n.page } as Route)} aria-current={route.page === n.page ? "page" : undefined}>
-                  {n.label}
-                </a>
-              ))}
-            </nav>
-          )}
+          {connected && <Nav route={route} connected={connected} root={root} />}
           <div className="wallet">
             <Wallet session={session} />
           </div>

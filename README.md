@@ -8,7 +8,7 @@ programs), run as one instance per token id, and the page library
 `apps/config` here), the images and the setup — is
 [shruggr/open-exchange](https://github.com/shruggr/open-exchange) (0.23.0,
 shruggr/open-exchange#1: `apps/config`, `image/config`, `programs/amm-config`
-and the pages build moved there). Version **0.26.0** (2026-10-30: the admin is a CLAIM — while nobody holds root on swap, Settings shows "Claim this exchange" and the claiming wallet becomes root; `isRoot` is real, the host's `/skeins?key=`). 0.25.0 (2026-10-30: Settings "Enable a token" is one list of the tokens on discovery and in the wallet, one Enable per row; no typed id, no pasted BEEF). 0.24.1 (2026-10-30: on skein-overlay 0.20.0 and
+and the pages build moved there). Version **0.27.0** (2026-10-30: Your tokens reads one `p color assets` list, each balance summed from its outputs, no per-token `p color balance`; the manifest's group permissions grant `p color assets` on the first visit; the Settings link shows while the exchange is unclaimed). 0.26.0 (2026-10-30: the admin is a CLAIM — while nobody holds root on swap, Settings shows "Claim this exchange" and the claiming wallet becomes root; `isRoot` is real, the host's `/skeins?key=`). 0.25.0 (2026-10-30: Settings "Enable a token" is one list of the tokens on discovery and in the wallet, one Enable per row; no typed id, no pasted BEEF). 0.24.1 (2026-10-30: on skein-overlay 0.20.0 and
 skein-1color 0.13.1 — the settled overlay sync design: announce, then fetch; no wants; every
 proof published; the receive row the host's own entry, not served to peers). 0.24.0 (2026-10-30: on skein-overlay 0.19.0 and
 skein-1color 0.13.0 — undecided is not rejected: a transfer whose token inputs
@@ -113,7 +113,7 @@ Liquidity files the position row of a pool whose deploy left none, so Close
 works for it. Since **0.12.0** (David Case, 2026-10-21/22; docs/AMM.md
 "The pages and the wallet's module"): the pages hold the user's tokens in
 the wallet's BRC-207 1Color module — Your tokens reads its assets and
-balances, a pool deploy is the validator's affirmation and then one
+balances (0.27.0: one `p color assets` read, granted with the group permissions on the first visit, each balance summed from its outputs), a pool deploy is the validator's affirmation and then one
 module-built createAction, a tokens-in swap first sends its tokens into the
 exchange's active swap basket (`amm-swap`) with one module send, token
 payouts are locked to module receiving keys and taken in with a receipt,
@@ -482,7 +482,8 @@ wildcard DNS, `<host>/@<handle>/amm`).
    `<base>/lookup` (`ls_amm_<tokenId>`, `ls_color_<tokenId>`),
    `<base>/spends?outpoint=`, and call `<base>/call` (the relay),
    `<base>/submit` (a Close) and `<origin>/sendMessage` (root's
-   registers). Settings is root's (0.26.0: `isRoot` = the host's
+   registers). Settings is root's (its nav link shows to root, and to any
+   wallet while the exchange is unclaimed, 0.27.0; 0.26.0: `isRoot` = the host's
    `GET <origin>/skeins?key=<wallet key>` names swap); while nobody holds
    root (`GET <swap>/.well-known/skein` → `claimed: false`, skein 0.1.2)
    it shows one card, "Claim this exchange": the wallet's own message in
@@ -573,7 +574,7 @@ files copied beside this `etc/apps.json`) it makes the genesis above.
 
 | | |
 |---|---|
-| this app | 0.26.0 |
+| this app | 0.27.0 |
 | skein | 0.22.0: main fa8077c or later (an event route naming `kernel.beef` in a manifest; the event door and born-owned instances, a5c1897, shruggr/skein#164); main 2eafff1 or later for discovery (a bare-host overlay request routed to the instance that declares its topic, shruggr/skein#137); 61a39e0 or later: the instance manager's `create {…, config, beef}` (shruggr/skein#162; skein-amm#4: the BEEF delivered, `delivered` in the answer), one-key hosts and path-only token-id handles (#160, #161) |
 | skein-overlay | v0.20.0 (a9ec5ee) by tag URL and hash (`build.zig.zon`): the engine in `bin/` (0.20.0: announce, then fetch, the settled sync design; 0.18.0: register / registerLookup callable in-VM from a program of the instance, skein-overlay#10; 0.17.0: configured topics and lookups beat, `config.overlay.terms` the beat's initial terms, shruggr/skein-overlay#8; chain/state through skein-sdk's `chain.open`, 0.16.1; the beat's terms from `amm/terms`, 0.16.0), its filter `sync` on the libp2p row `/skein/overlay/sync/1.0.0` (0.14.0) and its receive row `/skein/overlay/beef/1.0.0` (0.14.1), the modules `topic` (0.13: a verdict's `ancillary_txids`, empty here), `lookup` (0.12: a lookup's beat, `Spec.beat`, `Service.beat`), `sk`, and its engine sources for amm-validator and amm-p2p |
 | skein-1color | v0.13.1 (14a3acc; shruggr/skein-mandala until 0.9.2) by tag URL and hash: `bin/color-*.wasm` (0.13.0: color-topic's MissingParents; 0.12.0: `color-lookup.wasm` rebuilt, `ls_color_deploys` gone; 0.12.1: `ls_color` answers BRC-207's query over `tm_color`), the module `1color`; its pages by the tag's tarball and sha256 (`scripts/color-pages.sh`) |

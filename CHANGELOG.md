@@ -4,6 +4,25 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.27.0 (2026-10-30)
+
+- Your tokens: one first-visit approval covers the list (David,
+  2026-10-30). `myTokens` takes each token's balance from the one `p color
+  assets` read, the sum of its held value outputs (`buildInventory`); it no
+  longer reads `p color balance <assetTag>` per token (one "Grant Item
+  View" prompt per token on first visit). `assetBalance` stays in
+  `src/wallet/color.ts` for a per-token page; nothing calls it today (the
+  Swap page's "you hold" line reads the list's balance, as before).
+- `public/manifest.json` `metanet.groupPermissions.basketAccess` lists
+  `p color assets` (the wallet grants it with the group in one popup, into
+  the store its 1Color module reads); the group description no longer says
+  the module "asks you each time".
+- The Settings nav link shows to root and, while the exchange is unclaimed
+  (`claimStatus` → `claimed: false`), to any connected wallet: since 0.26.0
+  made `isRoot` real, a non-root wallet never saw the link and could not
+  reach the claim card. Hidden while that read is pending, as before. The
+  Settings page itself is unchanged. Pages only.
+
 ## 0.26.0 (2026-10-30)
 
 - The Open Exchange admin is a claim (David, 2026-10-30): swap is set up
