@@ -4,7 +4,7 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
-## Unreleased
+## 0.25.0 (2026-10-30)
 
 - Settings, "Enable a token" (David, 2026-10-31: "One list, one click per
   token"): the typed token id and the pasted BEEF are gone; the card lists
