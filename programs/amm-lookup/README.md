@@ -23,6 +23,16 @@ create (one token topic per instance); the index stays one head,
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
 ```
 
+## 0.48.1: reindex (skein-overlay 0.23.0; agent-env plans/reindex-2026-11-07.md)
+
+The index can be derived again from `tm_color_<assetId>`'s admitted history in place: root's `{fn:
+"reindex", args: {service: "ls_amm_<assetId>"}}` in the box `amm/reindex`. The engine re-runs these
+hooks over each admitted transaction with `reindex: true`, which makes `lookup.main` read and write
+`<app>/ls_amm.reindex`; the last step names `<app>/ls_amm` the new index. The hooks need nothing for
+it: they write only through their `Service` and read no head. A re-run stamps the reindex step's time
+(`now`) where admission stamped its own (a trade row's and a history row's `at`). The app's
+`lookupVersion` (1: this record shape) is raised by a release that changes it.
+
 ## 0.48.0: one record per hop; fewer maps; no beat (agent-env plans/data-model-cleanup-2026-11-07.md)
 
 This supersedes the map list and the record shapes below. `pools` and `spentPools` link each hop's

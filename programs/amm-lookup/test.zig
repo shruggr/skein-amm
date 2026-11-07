@@ -1904,3 +1904,65 @@ test "/trades (0.47.0, D3): stepped back from the window's end — the same rows
         }
     }
 }
+
+/// The fixtures' history as admission called the hooks: the pool's deploy, its two Swaps, the
+/// validator's Rescind, the LP's Close of it — `admitted`, then `spent` for the coin each consumed.
+fn history(a: Allocator, e: *Env, svc: *lookup.Service) !void {
+    idx.now_ms = 1_000;
+    try twoSwaps(a, e, svc);
+    idx.now_ms = 2_000;
+    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
+    try idx.admitted(a, svc, e.topic, rs, &.{0}, &.{0});
+    try idx.spent(a, svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
+    idx.now_ms = 3_000;
+    const cr = try ltx(a, e.f.txid("close_rescinded"), e.f.tx("close_rescinded"));
+    try idx.admitted(a, svc, e.topic, cr, &.{1}, &.{0});
+    try idx.spent(a, svc, e.topic, .{ .txid = e.f.txid("rescind"), .vout = 0 }, cr);
+}
+
+test "reindex (0.48.1, skein-overlay 0.23.0): the hooks re-run over the same history into a fresh index give the same index, byte for byte — they write only through the Service, read no head and carry nothing between calls but the maps; the step's time is the one input from outside (a re-run at another time stamps that time)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var live = try e.svc(a);
+    try history(a, e, &live);
+    const live_root = try live.save();
+    // A fresh index (what the reindex's head starts as: the empty state), the same calls in the same order.
+    var fresh = try e.svc(a);
+    try history(a, e, &fresh);
+    try testing.expectEqualSlices(u8, live_root, try fresh.save());
+    // Through the contract, as the engine's reindex thread calls the program: fn reindex begin (the
+    // empty index), the hooks over it, switch (the index's head the new one).
+    const arg = struct {
+        fn of(al: Allocator, service: []const u8, op: []const u8) !Value {
+            return .{ .map = try al.dupe(Entry, &.{
+                .{ .key = "kind", .value = .{ .text = "lookup-reindex" } },
+                .{ .key = "app", .value = .{ .text = "amm" } },
+                .{ .key = "service", .value = .{ .text = service } },
+                .{ .key = "program", .value = .{ .text = "amm-lookup" } },
+                .{ .key = "op", .value = .{ .text = op } },
+            }) };
+        }
+    }.of;
+    const begun = try lookup.reindexOp(a, idx.spec, e.ms.store(), try arg(a, e.service, "begin"), null);
+    try testing.expectEqualStrings("ls_amm", begun.answer.getText("index").?);
+    var re = try lookup.Service.loadIndex(a, e.ms.store(), e.service, "ls_amm", idx.spec.maps, begun.partial);
+    try history(a, e, &re);
+    const partial = try re.save();
+    try testing.expectEqualSlices(u8, live_root, partial);
+    const sw = try lookup.reindexOp(a, idx.spec, e.ms.store(), try arg(a, e.service, "switch"), partial);
+    try testing.expectEqualSlices(u8, live_root, sw.live.?);
+    try testing.expectEqualSlices(u8, begun.partial, sw.partial);
+    // At another time: the same maps but the rows the hooks stamp with the step's time (a trade row's
+    // and a history row's `at`, their keys).
+    var later = try e.svc(a);
+    idx.now_ms = 9_000;
+    try twoSwaps(a, e, &later);
+    var early = try e.svc(a);
+    idx.now_ms = 1_000;
+    try twoSwaps(a, e, &early);
+    try testing.expect(!std.mem.eql(u8, try early.save(), try later.save()));
+    try testing.expectEqual(try early.map("history").count(), try later.map("history").count());
+}

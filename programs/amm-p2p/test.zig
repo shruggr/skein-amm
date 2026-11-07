@@ -465,8 +465,10 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token 
     // 0.17.0 (shruggr/skein-amm#4): no register, registerLookup, deregisterLookup — a token instance's
     // topic is its config's at birth; rescind, the validator's (0.13.0); terms, the validator's (0.15.0:
     // the runtime record); market, the market's (0.16.0: the runtime record).
-    try testing.expectEqual(@as(usize, 3), gated.len);
-    for ([_][]const u8{ "rescind", "terms", "market" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    // 0.48.1: reindex, root's (skein-overlay 0.23.0: the engine's, in the box amm/reindex).
+    try testing.expectEqual(@as(usize, 4), gated.len);
+    for ([_][]const u8{ "rescind", "terms", "market", "reindex" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    try testing.expectEqual(@as(i128, 1), m.get("lookupVersion").?.int);
     const filters = m.get("filters").?;
     try testing.expect(filters.get("page") == null and filters.get("requests") == null);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
@@ -492,6 +494,8 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token 
             try testing.expectEqualStrings("kernel.brc104", scbor.Value.str(r.get("filters").?.array[0]).?);
             seen |= 2;
         }
+        // 0.48.1: root's reindex, the engine's handler (skein-overlay 0.23.0).
+        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "reindex")) try testing.expectEqualStrings("overlay.reindex", h.?);
         // 0.9.0: the validator's box (root's rescind, 0.13.0) and the read /spends.
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "validator")) {
             try testing.expectEqualStrings("amm-validator", h.?);

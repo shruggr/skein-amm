@@ -4,6 +4,26 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.48.1 (2026-11-07)
+
+Reindex (agent-env plans/reindex-2026-11-07.md, D5).
+
+- `etc/app.json`: `lookupVersion: 1` — the version of the token app's lookups' record shape (amm-lookup's
+  and color-lookup's: 0.48.0's is 1), raised by a release that changes it; the open-exchange host reindexes
+  a token instance's lookups after an install whose `lookupVersion` is greater than the installed one. The
+  route `{address: "reindex", handler: "overlay.reindex"}` and `reindex` under `roles.root`: root's `{fn:
+  "reindex", args: {service}}` in the box `amm/reindex` (skein-overlay 0.23.0) derives `ls_amm_<assetId>`'s or
+  `ls_color_<assetId>`'s index again from `tm_color_<assetId>`'s admitted history in place.
+- amm-lookup's hooks verified re-runnable into a fresh index: they write only through their `Service`, read
+  no head and carry nothing between calls but the maps (a new test: the fixtures' history re-run into the
+  empty index through fn `reindex` begin / switch gives the live index byte for byte). The one input from
+  outside is the step's time (`now`): a re-run stamps the reindex step's time on the trade and history rows
+  (and their keys), not the admission's.
+- Pins: skein-overlay v0.23.0, skein-1color v0.17.2. `bin/amm-lookup.wasm` and `bin/color-lookup.wasm`
+  rebuilt on the 0.23.0 lookup contract; `bin/amm-validator.wasm` and `bin/amm-p2p.wasm` rebuilt (they compile
+  the engine's sources, which now read the head `<app>/reindex`); `bin/amm-setup.wasm` the same bytes.
+- Versions: etc/app.json, amm-setup's version test, README, @dcasegr/amm-engine and @dcasegr/amm-client 0.48.1.
+
 ## 0.48.0 (2026-11-07)
 
 The data model, second batch (agent-env plans/data-model-cleanup-2026-11-07.md, D1–D5, D9).
