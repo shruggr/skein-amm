@@ -284,7 +284,10 @@ test "admitted: a pool deploy that passes the checks is indexed once, and the an
     // 0.40.0: its id (the deploy's outpoint) and its swap count.
     try testing.expectEqualStrings(try opStr(a, pd_txid, 0), entry.getText("poolId").?);
     try testing.expectEqual(@as(u64, 0), entry.get("swaps").?.uint);
-    try testing.expectEqual(@as(usize, 10), entry.map.len);
+    // 0.47.0: the pool's counters, `lifetime` (no Swap yet: zeros, lastTradeAt null).
+    try testing.expectEqual(@as(usize, 11), entry.map.len);
+    try testing.expectEqual(@as(u64, 0), entry.get("lifetime").?.get("satsIn").?.uint);
+    try testing.expect(entry.get("lifetime").?.get("lastTradeAt").? == .null);
     // The dupe wrote one deploy event.
     try testing.expectEqual(@as(usize, 1), try svc.map("history").count());
 
@@ -1732,4 +1735,199 @@ test "pool events (0.41.0): one event per history row written — deploy, swap, 
     row = try poolEvent(e, evs[0]);
     try testing.expectEqualStrings("revert", row.getText("kind").?);
     try testing.expectEqualStrings(try opStr(a, f.txid("swap_tokens_in"), 0), row.getText("outpoint").?);
+}
+
+// --- 0.47.0: the counters, /trades stepped backward ---
+
+test "counters (0.47.0): per pool (volume in and out each side, the three fees each asset, the last trade), per token (volume, trades), per validator (swaps, fees) — written at admission, a dupe counted once, unwound at rejection (lastTradeAt from history), exposed on the pool row and /stats" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    try twoSwapsAt(a, e, &svc, 1_000, 2_000);
+    const tp = try w.store.nameKey(a, e.topic, &.{});
+    const buy = try tradeRec(a, &svc, tp, e.f.txid("swap_bsv_in"));
+    const sell = try tradeRec(a, &svc, tp, e.f.txid("swap_tokens_in"));
+    const bout = buy.getUint("amountOut").?;
+    const sout = sell.getUint("amountOut").?;
+    var p = try idx.poolCounters(a, &svc, tp, &poolId(e));
+    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
+    try testing.expectEqual(bout, p.tokens_out);
+    try testing.expectEqual(@as(u64, 50_000), p.tokens_in);
+    try testing.expectEqual(sout, p.sats_out);
+    try testing.expectEqual(@as(u64, 60), p.lp_sats);
+    try testing.expectEqual(@as(u64, 10), p.validator_sats);
+    try testing.expectEqual(@as(u64, 20), p.commission_sats);
+    try testing.expectEqual(@as(u64, 150), p.lp_tokens);
+    try testing.expectEqual(@as(u64, 25), p.validator_tokens);
+    try testing.expectEqual(@as(u64, 50), p.commission_tokens);
+    try testing.expectEqual(@as(?u64, 2_000), p.last_trade_at);
+    var t = try idx.tokenCounters(a, &svc, tp);
+    try testing.expectEqual(@as(u64, 2), t.trades);
+    try testing.expectEqual(20_000 + sout, t.volume_sats);
+    try testing.expectEqual(bout + 50_000, t.volume_tokens);
+    var v = try idx.validatorCounters(a, &svc, tp, &key33(vec.identity));
+    try testing.expectEqual(@as(u64, 2), v.swaps);
+    try testing.expectEqual(@as(u64, 10), v.fee_sats);
+    try testing.expectEqual(@as(u64, 25), v.fee_tokens);
+
+    // Exposed: the pool row's `lifetime`, /stats' lifetime volume and trades.
+    var ch = try e.chain(a);
+    const row = (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array[0];
+    try testing.expectEqual(@as(u64, 20_000), row.get("lifetime").?.get("satsIn").?.uint);
+    try testing.expectEqual(@as(u64, 150), row.get("lifetime").?.get("lpTokens").?.uint);
+    try testing.expectEqual(@as(u64, 2_000), row.get("lifetime").?.get("lastTradeAt").?.uint);
+    const st = try idx.stats(a, &svc, tp, 3_000);
+    try testing.expectEqual(@as(u64, 2), st.trades);
+    try testing.expectEqual(20_000 + sout, st.volume_sats);
+
+    // The token-in Swap rejected: its counts unwound, the last trade the first Swap's again.
+    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
+    p = try idx.poolCounters(a, &svc, tp, &poolId(e));
+    try testing.expectEqual(@as(u64, 0), p.tokens_in);
+    try testing.expectEqual(@as(u64, 0), p.lp_tokens);
+    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
+    try testing.expectEqual(@as(?u64, 1_000), p.last_trade_at);
+    t = try idx.tokenCounters(a, &svc, tp);
+    try testing.expectEqual(@as(u64, 1), t.trades);
+    try testing.expectEqual(@as(u64, 20_000), t.volume_sats);
+    v = try idx.validatorCounters(a, &svc, tp, &key33(vec.identity));
+    try testing.expectEqual(@as(u64, 1), v.swaps);
+    try testing.expectEqual(@as(u64, 0), v.fee_tokens);
+    // The other rejected too: no counter record left.
+    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")));
+    try testing.expectEqual(@as(usize, 0), try svc.map("counters").count());
+
+    // A dupe hook call of the same Swap (a later time): counted once.
+    var svc2 = try e.svc(a);
+    idx.now_ms = 1;
+    try e.admit(a, &svc2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
+    idx.now_ms = 1_000;
+    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
+    idx.now_ms = 5_000;
+    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
+    p = try idx.poolCounters(a, &svc2, tp, &poolId(e));
+    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
+    try testing.expectEqual(@as(?u64, 5_000), p.last_trade_at);
+    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc2, tp)).trades);
+}
+
+/// 0.40.0's `/trades`, kept here as the reference: the whole window read, then stepped back.
+fn tradesFullWindow(a: Allocator, svc: *lookup.Service, tp: []const u8, q: idx.TradeQuery) ![]idx.Trade {
+    const lt = struct {
+        fn f(x: idx.Trade, y: idx.Trade) bool {
+            if (x.at != y.at) return x.at < y.at;
+            return std.mem.order(u8, &x.txid, &y.txid) == .lt;
+        }
+    }.f;
+    var rows: std.ArrayList(idx.Trade) = .empty;
+    if (q.pool) |pid| {
+        const prefix = try cat(a, &.{ tp, &pid });
+        for (try svc.map("history").prefixed(prefix)) |kv| {
+            const rec = try svc.store.getValue(a, kv.value.cid);
+            if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap")) continue;
+            const at = rec.getUint("at").?;
+            if (q.from) |f| if (at < f) continue;
+            if (q.to) |t| if (at >= t) continue;
+            try rows.append(a, .{ .at = at, .txid = rec.getBytes("txid").?[0..32].*, .rec = rec });
+        }
+        std.mem.sort(idx.Trade, rows.items, {}, struct {
+            fn f(_: void, x: idx.Trade, y: idx.Trade) bool {
+                return lt(x, y);
+            }
+        }.f);
+    } else {
+        var to = q.to;
+        if (q.before) |b| to = if (to) |t| @min(t, b.at +| 1) else b.at +| 1;
+        for (try svc.map("trades").prefixed(tp)) |kv| {
+            const at = std.mem.readInt(u64, kv.key[tp.len..][0..8], .big);
+            if (q.from) |f| if (at < f) continue;
+            if (to) |t| if (at >= t) continue;
+            try rows.append(a, .{ .at = at, .txid = kv.key[tp.len + 8 ..][0..32].*, .rec = .null });
+        }
+    }
+    var out: std.ArrayList(idx.Trade) = .empty;
+    var i = rows.items.len;
+    while (i > 0 and out.items.len < q.limit) {
+        i -= 1;
+        const r = rows.items[i];
+        if (q.before) |b| if (!lt(r, .{ .at = b.at, .txid = b.txid, .rec = .null })) continue;
+        try out.append(a, r);
+    }
+    return out.items;
+}
+
+test "/trades (0.47.0, D3): stepped back from the window's end — the same rows, in the same order, as 0.40.0's full-window read, for windows, limits and cursors; one pool's from its history (swaps among other events, several at one ms)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var svc = try lookup.Service.load(a, ms.store(), "ls_amm_x", idx.spec.maps, null);
+    const tp = try w.store.nameKey(a, "tm_color_" ++ "aa" ** 32 ++ "_0", &.{});
+    const pid: [36]u8 = .{0x77} ** 36;
+    var prng = std.Random.DefaultPrng.init(5);
+    const r = prng.random();
+    // 400 trades over times 0..199 (ties), every third of them also one pool's history Swap, with
+    // other events among them.
+    var seq: u64 = 0;
+    for (0..400) |n| {
+        const at = r.uintLessThan(u64, 200);
+        var txid: [32]u8 = undefined;
+        r.bytes(&txid);
+        const rec = try svc.store.putValue(a, .{ .map = try a.dupe(Entry, &.{
+            .{ .key = "kind", .value = .{ .text = "swap" } },
+            .{ .key = "txid", .value = .{ .bytes = try a.dupe(u8, &txid) } },
+            .{ .key = "at", .value = .{ .uint = at } },
+        }) });
+        try svc.map("trades").putLink(try atKey(a, tp, at, txid), rec);
+        if (n % 3 == 0) {
+            seq += 1;
+            var b: [16]u8 = undefined;
+            std.mem.writeInt(u64, b[0..8], at, .big);
+            std.mem.writeInt(u64, b[8..16], seq, .big);
+            try svc.map("history").putLink(try cat(a, &.{ tp, &pid, &b }), rec);
+            if (n % 9 == 0) {
+                seq += 1;
+                std.mem.writeInt(u64, b[8..16], seq, .big);
+                const other = try svc.store.putValue(a, .{ .map = try a.dupe(Entry, &.{ .{ .key = "kind", .value = .{ .text = "close" } }, .{ .key = "at", .value = .{ .uint = at } } }) });
+                try svc.map("history").putLink(try cat(a, &.{ tp, &pid, &b }), other);
+            }
+        }
+    }
+    for (0..400) |k| {
+        var q: idx.TradeQuery = .{ .limit = r.uintLessThan(usize, 60) + 1 };
+        if (r.boolean()) q.from = r.uintLessThan(u64, 210);
+        if (r.boolean()) q.to = r.uintLessThan(u64, 210);
+        if (k % 2 == 0) q.pool = pid;
+        if (r.boolean()) {
+            var bt: [32]u8 = undefined;
+            r.bytes(&bt);
+            q.before = .{ .at = r.uintLessThan(u64, 210), .txid = bt };
+        }
+        const want = try tradesFullWindow(a, &svc, tp, q);
+        const got = try idx.trades(a, &svc, tp, q);
+        try testing.expectEqual(want.len, got.len);
+        for (want, got) |x, y| {
+            try testing.expectEqual(x.at, y.at);
+            try testing.expectEqualSlices(u8, &x.txid, &y.txid);
+        }
+        // Paging by the last row's cursor to the end gives the window's rows exactly once.
+        if (k % 20 == 0 and got.len == q.limit) {
+            var seen: usize = got.len;
+            var cur = got[got.len - 1];
+            var pq = q;
+            while (true) {
+                pq.before = .{ .at = cur.at, .txid = cur.txid };
+                const pg = try idx.trades(a, &svc, tp, pq);
+                try testing.expectEqualDeep(try tradesFullWindow(a, &svc, tp, pq), pg);
+                seen += pg.len;
+                if (pg.len < pq.limit) break;
+                cur = pg[pg.len - 1];
+            }
+            try testing.expect(seen > 0);
+        }
+    }
 }

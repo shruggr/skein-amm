@@ -20,7 +20,8 @@
  *   market's minimum (the host's filter), each validator's minimum leg, the market's commission key
  *   hash; a quote is the matching engine's plan over that list (no request); a swap (`executeSwap`)
  *   stages what the swap basket lacks by ONE wallet action, then per leg the pools route read fresh,
- *   ONE `GET /@<token>/amm/pools/beef?pool=` and the leg's ONE plain `POST /@<token>/amm/swap`
+ *   ONE `GET /@<token>/amm/tx?id=` of the chosen pool's current outpoint (0.47.0: `/pools/beef`
+ *   is gone) and the leg's ONE plain `POST /@<token>/amm/swap`
  *   (0.44.0: the host is the relay, answering the validator's reply; the page's patience,
  *   `LEG_PATIENCE_MS`, is the only timer); no answer → the host's `GET /amm/spends`, once more, a
  *   race. The pool events (`watchPoolEvents`, 0.41.0: the host's feeds) are signals for
@@ -28,7 +29,8 @@
  * - **Liquidity** (D9, D23; 0.40.0: by pool id): the wallet's pool rows and deploy history, then
  *   ONE `GET /@<token>/amm/positions?pool=` per token; a deploy the history has but the basket
  *   lacks is filed then; Close walks history from the output the wallet holds, then reads that
- *   output's BEEF (`GET /tx?id=`); Rebalance still reads `/pools/beef?pool=`;
+ *   output's BEEF (`GET /tx?id=`); Rebalance reads the position's output the same way (0.47.0), its
+ *   spender first (`GET /spends?outpoint=`: spent → `stale_pool`);
  *   the deploy's terms `GET /@<token>/amm/terms`.
  * - **Your tokens** (D17, D18, D19, D24): the wallet's module and the swap basket; the token list
  *   once and ONE discovery `GET /@discovery/1color/tokens?ids=` for held tokens the list lacks; the
@@ -63,9 +65,9 @@ import {
   readHolders,
   readPoolHistory,
   readPoolsAt,
-  readPoolsBeef,
   readPools,
   readPositions,
+  readSpends,
   readSpendsAll,
   readStats,
   readTerms,
@@ -1109,8 +1111,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
    *      /@<token>/amm/pools`, no cache; 0.41.0: before EACH leg, no list of its own kept);
    *      `nextLeg` over it minus the excluded outpoints, `minOut` the quote's floor less what has
    *      filled, `maxSources` (0.40.2) the request's less the legs filled → its stop ends the swap;
-   *      the pool's current output read by its id (`GET /pools/beef?pool=`; moved → the list read
-   *      again); the staged rows that cover the leg, else `fees`; built, signed, relayed
+   *      the pool's transaction at the list's outpoint (0.47.0: `GET /tx?id=` of its txid, the
+   *      self-contained BEEF; none → that outpoint excluded); the staged rows that cover the leg, else `fees`; built, signed, relayed
    *      (`relaying`):
    *      - accepted → taken in (ONE internalizeAction) before the next leg;
    *      - refused `pool_spent` (`repricing`) → the list read again: the relaying host took the
@@ -1227,15 +1229,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
       }
       const leg = next.leg;
       const row = pools.find((x) => x.outpoint === leg.outpoint)!;
-      const fresh = await readPoolsBeef(base, [row.poolId], freshFetch);
-      const now = fresh.pools.find((x) => x.poolId === row.poolId);
-      if (!now) {
-        excluded.add(row.outpoint);
-        continue;
-      }
-      // Moved since the list was read: read the list again.
-      if (now.outpoint !== row.outpoint) continue;
-      const poolOutput = poolOutputOf(fresh, leg.outpoint);
+      // 0.47.0 (D1): the pool's transaction at the outpoint the fresh list names, its self-contained BEEF.
+      const poolOutput = poolOutputOf(await readTx(base, parseOutpoint(row.outpoint)?.txid ?? "", freshFetch).catch(() => null), leg.outpoint);
       const peerId = row.validatorPeerId ?? answer.validators.find((v) => v.identity === row.validatorIdentityKey.toLowerCase())?.peerId;
       if (!poolOutput || !peerId) {
         excluded.add(row.outpoint);
@@ -1553,8 +1548,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
    * `sats` deployed in ONE wallet createAction — the old pool the explicit input (as Close spends
    * it), the new one output 0 affirmed by the validator at its terms now (`amm.pool.affirm`, as a
    * deploy), the token difference through the wallet's module, the sats difference to or from the
-   * wallet's change. The old pool's output and BEEF by its pool id (`GET
-   * /@<token>/amm/pools/beef?pool=<id>`); the page's submit at the host root; the new pool's row
+   * wallet's change. The old pool's output: its spender read first (`GET /@<token>/amm/spends?outpoint=`,
+   * 0.47.0; spent → `stale_pool`), then its transaction's BEEF (`GET /tx?id=`); the page's submit at the host root; the new pool's row
    * filed in `amm-pools`.
    */
   async function rebalancePosition(req: RebalanceRequest): Promise<RebalanceResult> {
@@ -1570,7 +1565,9 @@ function makeClient(opts: ClientOptions, s: Shared) {
     const v = terms.validator;
     if (!v) throw new Error(NO_VALIDATOR);
     const m = meta.get(row.tokenId);
-    const poolOutput = poolOutputOf(await readPoolsBeef(base, [row.deployOutpoint.replace(".", "_")], freshFetch), req.outpoint);
+    const op = parseOutpoint(req.outpoint);
+    const [spend] = op ? await readSpends(base, [outpointText(req.outpoint)], freshFetch) : [];
+    const poolOutput = !op || spend?.spentBy ? null : poolOutputOf(await readTx(base, op.txid, freshFetch), req.outpoint);
     if (!poolOutput) throw new ClientError("stale_pool", `the pool is no longer at ${req.outpoint}: reload your positions`);
     const r = await rebalancePool({
       wallet,

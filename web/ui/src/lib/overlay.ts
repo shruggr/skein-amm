@@ -10,12 +10,12 @@
  * |---|---|---|
  * | P1 | `GET <origin>/amm/pools` | `[{tokenId, …P2 row}]`, every enabled token's live pools (the host's) |
  * | P2 | `GET <origin>/@<token>/amm/pools` (0.41.0: a plain read only) | `{market: {commissionPkh, minCommissionBps}, validators: [{identity, peerId, minLegSats?}] (0.34.1: beating now; 0.40.0: the minimum leg its terms announce), pools: [{poolId, lpPubKey, outpoint, bsvReserve, tokenReserve, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, validatorPeerId, swaps}]}`: only pools whose validator beats now and whose commission is at or above the market's minimum (the host's) |
- * | P3 | `GET /@<token>/amm/pools/beef?pool=id1,id2` (0.40.0: by pool id) | `{pools: [P2 row without validatorPeerId], beef: <base64 BEEF of their transactions>}` |
+ * | (P3) | gone in 0.47.0: a pool's transaction is P9 `/tx?id=` of its current outpoint's txid (the pools list carries the outpoint) |
  * | P4 | `GET /@<token>/amm/positions?pool=id1,id2` (0.40.0) | `[{poolId, lpPubKey, status: live|rescinded|closed, outpoint?, current?, sats, tokens, swaps}]` |
  * | P5 | `GET /@<token>/amm/fees/validator?id=k1,k2` | `[{validatorIdentityKey, sats, tokens, swaps, pools}]` |
  * | P6 | `GET /@<token>/amm/fees/commission?pkh=h1,h2` | `[{commissionPkh, sats, tokens, swaps}]` |
  * | P7 | `GET /@<token>/amm/terms` | `{validator: {identity, peerId, lpFeeBps, validatorFeeBps, commissionBps, minLegSats} | null, market: {commissionPkh, minCommissionBps}}` |
- * | P8 | `GET /@<token>/amm/spends?outpoint=a,b` | `[{outpoint, spentBy?, current?, hops, closed}]` (one outpoint: the object) |
+ * | P8 | `GET /@<token>/amm/spends?outpoint=a,b` | `[{outpoint, spentBy?}]` (one outpoint: the object; 0.47.0: one lookup each, no pool following) |
  * | P9 | `GET /@<token>/amm/tx?id=<txid>` | the transaction's BEEF (bytes) |
  * | (P10) | gone in 0.44.0: the host relays a leg (`POST /@<token>/amm/swap`, src/market/relay.ts), nothing is recorded |
  * | P11 | `GET /@<token>/amm/token` | the token's record |
@@ -27,7 +27,7 @@
  * | P17 | `GET <origin>/.well-known/skein`, `/skeins?key=`, `/amm/admin`, `/amm/defaults`, `/amm/discovery` | as before |
  * | H1 | `GET /@<token>/amm/trades?from=&to=&limit=&before=&pool=` (or `?txid=`) | `{trades: [Trade], next}` newest first (one txid: the row) |
  * | H2 | `GET /@<token>/amm/candles?tf=&from=&to=&series=fill|market` | `[{t, o, h, l, c, volumeSats, volumeTokens, n}]`, one per non-empty bucket (0.40.0: `market`, the host's: the price after each pool event) |
- * | H3 | `GET /@<token>/amm/stats` | `{tokenId, price, buyPrice, sellPrice, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools}` |
+ * | H3 | `GET /@<token>/amm/stats` | `{tokenId, price, buyPrice, sellPrice, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools, volumeSats, volumeTokens, trades}` (0.47.0: the last three the token's lifetime counters) |
  * | H4 | `GET <origin>/amm/stats?ids=` | `[H3]`, every enabled token's (the host's) |
  * | H5 | `GET <origin>/amm/positions?pool=` | `[{tokenId, …P4 row}]`, every enabled token's (the host's) |
  * | H7 | `GET /@<token>/amm/pools/at?t=<ms>` (0.40.0) | `[{poolId, outpoint, bsvReserve, tokenReserve, lpPubKey, …the three bps, validatorIdentityKey, at, swaps}]`: every pool listed at `t` |
@@ -50,7 +50,7 @@
  * Names (skein-1color docs/1COLOR.md "The topic"): a token's topic is `tm_color_<assetId>`
  * (BRC-207), the asset id `<txid>_<vout>`, `_0` included.
  */
-import { Beef, Utils } from "@bsv/sdk";
+import { Beef } from "@bsv/sdk";
 import type { PoolState } from "@dcasegr/amm-engine";
 import { parseTokenId, tokenIdText } from "./tokenId.js";
 
@@ -312,29 +312,21 @@ export function watchPoolEvents(url: string, onEvent: (e: PoolEventMessage) => v
 }
 
 /** P3's answer: the pools' current outputs and one BEEF of their transactions. */
-export interface PoolsBeef {
-  pools: PoolRow[];
-  beef: number[];
-}
-
-/** P3: `GET <base>/pools/beef?pool=id1,id2` (0.40.0: by pool id; no `poolIds`: every live pool). */
-export async function readPoolsBeef(base: string, poolIds?: string[], fetchFn?: FetchFn): Promise<PoolsBeef> {
-  const url = `${trim(base)}/pools/beef${poolIds ? `?pool=${list(poolIds)}` : ""}`;
-  const a = (await getJson(url, fetchFn)) as { pools?: unknown; beef?: unknown } | null;
-  return { pools: poolRows(a?.pools), beef: typeof a?.beef === "string" && a.beef ? Utils.toArray(a.beef, "base64") : [] };
-}
-
 /** One output of a pool transaction with its BEEF (Atomic, the transaction its subject): what a spend of the pool is built from. */
 export interface LookupOutput {
   beef: number[];
   outputIndex: number;
 }
 
-/** The pool `outpoint` (`<txid>_<vout>`) out of P3's BEEF, as an Atomic BEEF of its transaction; null when the BEEF lacks it. */
-export function poolOutputOf(pb: PoolsBeef, outpoint: string): LookupOutput | null {
+/**
+ * The pool `outpoint` (`<txid>_<vout>` or `<txid>.<vout>`) out of its transaction's BEEF (P9 `/tx`,
+ * 0.47.0: what the Swap leg and Rebalance read), as an Atomic BEEF of that transaction; null when
+ * there is none or it lacks the transaction.
+ */
+export function poolOutputOf(beefBytes: number[] | null, outpoint: string): LookupOutput | null {
   const m = /^([0-9a-f]{64})[._](\d+)$/i.exec(outpoint);
-  if (!m || pb.beef.length === 0) return null;
-  const beef = Beef.fromBinary(pb.beef);
+  if (!m || !beefBytes || beefBytes.length === 0) return null;
+  const beef = Beef.fromBinary(beefBytes);
   if (!beef.findTxid(m[1]!.toLowerCase())) return null;
   return { beef: beef.toBinaryAtomic(m[1]!.toLowerCase()), outputIndex: Number(m[2]) };
 }
@@ -414,15 +406,11 @@ export async function readTerms(base: string, fetchFn?: FetchFn): Promise<Instan
   };
 }
 
-/** The chain state of an outpoint (P8; amm-p2p reads.zig `spendOf`). */
+/** An outpoint's spender in the chain state (P8; amm-p2p reads.zig `spendOf`, one lookup; 0.47.0: no pool following). */
 export interface Spend {
   /** `<txid>.<vout>` */
   outpoint: string;
   spentBy?: string;
-  /** Followed from a pool output: its current output, `<txid>.<vout>`. */
-  current?: string;
-  hops: number;
-  closed: boolean;
 }
 
 /** P8: `GET <base>/spends?outpoint=a,b` → one record per outpoint in query order (one outpoint: its object, wrapped). */
@@ -573,6 +561,10 @@ export interface TokenStats {
   tvlSats: bigint;
   tvlTokens: bigint;
   pools: number;
+  /** 0.47.0: the token's lifetime counters — its volume on each side and its trade count (from 0.47.0 on). */
+  volumeSats: bigint;
+  volumeTokens: bigint;
+  trades: number;
 }
 
 /** A token's holders (H6): `count` the addresses with a balance, `rows` largest balance first. */
@@ -645,6 +637,9 @@ export function toStats(x: unknown): TokenStats | null {
     tvlSats: wireBig(r.tvlSats),
     tvlTokens: wireBig(r.tvlTokens),
     pools: int(r.pools),
+    volumeSats: wireBig(r.volumeSats),
+    volumeTokens: wireBig(r.volumeTokens),
+    trades: int(r.trades),
   };
 }
 

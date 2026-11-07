@@ -2,12 +2,12 @@
 //! (main.zig wires the VM). (The holders' listing requests moved to the config app in 0.17.0
 //! and were removed in 0.19.0.)
 //!
-//! - **Spends** (`/spends?outpoint=<txid>.<vout>`, filter `spends`): what the chain state says of
-//!   an outpoint — the LP page follows its pool from the deploy's outpoint to the current pool
-//!   output, or to the Close that ended it (the LP's or, 0.11.0, the validator's) (each spender's
-//!   output 0 while it is a pool) — `{outpoint, spentBy?, current?, hops, closed}`. The chain
-//!   app's `chain/state` (its `spent` map), read only, as the overlay reads it. 0.34.0: a list
-//!   (`?outpoint=a,b`) answers one record per outpoint in query order (P8).
+//! - **Spends** (`/spends?outpoint=<txid>.<vout>`, filter `spends`): an outpoint's spender, ONE
+//!   lookup in the chain app's `chain/state` (its `spent` map), read only, as the overlay reads it —
+//!   `{outpoint, spentBy?}` (0.47.0, agent-env plans/read-optimizations-2026-11-07.md D2: the
+//!   forward pool-following, `current`, `hops`, `closed`, a full transaction parse per hop, is gone;
+//!   following a pool is `/pools/history`). 0.34.0: a list (`?outpoint=a,b`) answers one record per
+//!   outpoint in query order (P8).
 //!
 //! **The public read API** (0.34.0, docs/AMM.md "The public read API"; David Case 2026-11-04,
 //! D1/D7/D8): plain GETs, JSON unless the row says bytes, list parameters comma-separated, one
@@ -16,9 +16,8 @@
 //! routes answer from the pool lookup's own answers (amm-lookup index.zig `answer`, the same code
 //! over the same index, the head `amm/ls_amm`):
 //!
-//! - P3 `/pools/beef?pool=id1,id2` (0.40.0: by pool id, `<txid>_<vout>`; `?lp=` gone): `{pools:
-//!   [<the lookup's PoolState rows>], beef: <base64 BEEF of their transactions>}`; no `pool`, every
-//!   live pool;
+//! - (0.47.0, D1: P3 `/pools/beef` is gone; a pool's transaction is P9 `/tx?id=` of its current
+//!   outpoint's txid, which the pools list carries)
 //! - P4 `/positions?pool=`, P5 `/fees/validator?id=`, P6 `/fees/commission?pkh=`: the lookup's
 //!   `{poolIds}`, `{validatorIdentityKeys}`, `{commissionPkhs}` answers as JSON;
 //! - (0.40.0) `/pools/at?t=<ms>` and `/pools/history?from=&to=&pool=&limit=&after=&outpoint=`: the pool history
@@ -28,8 +27,6 @@
 //! - P9 `/tx?id=`: a transaction's BEEF (`imm` when proven);
 const std = @import("std");
 const w = @import("chain");
-const color = @import("1color");
-const pool = @import("pool");
 const lookup = @import("lookup");
 const idx = @import("amm_lookup");
 
@@ -37,7 +34,6 @@ const cbor = w.cbor;
 const Value = cbor.Value;
 const Allocator = std.mem.Allocator;
 const Chain = w.state.State;
-const Transaction = w.bsvz.transaction.Transaction;
 const eql = std.mem.eql;
 
 // ---------------------------------------------------------------- spends
@@ -104,46 +100,14 @@ pub fn queryList(a: Allocator, query: []const u8, name: []const u8) !?[]const []
 pub const Spend = struct {
     outpoint: Outpoint,
     spent_by: ?[32]u8,
-    /// Following pool spends: the current pool output (the outpoint itself when unspent).
-    current: ?Outpoint,
-    hops: u32,
-    /// A pool spent by a transaction that did not continue it (Close).
-    closed: bool,
 };
 
-fn isPool(script: []const u8) bool {
-    const tok = color.brc162.decode(script) orelse return false;
-    if (tok.role != .value) return false;
-    return (pool.parse(tok.lock) catch null) != null;
+/// What the chain state says of `op`: its spender (the first held spender not rejected), one lookup.
+pub fn spendOf(ch: *Chain, op: Outpoint) !Spend {
+    return .{ .outpoint = op, .spent_by = try ch.spentBy(op.txid, op.vout) };
 }
 
-/// What the chain state says of `op`: its spender, and (when `op` is a pool output) the pool's
-/// current output, followed spender to spender while each spender's output 0 is a pool.
-pub fn spendOf(a: Allocator, ch: *Chain, op: Outpoint) !Spend {
-    var out: Spend = .{ .outpoint = op, .spent_by = try ch.spentBy(op.txid, op.vout), .current = null, .hops = 0, .closed = false };
-    const raw = (try ch.txRaw(op.txid)) orelse return out;
-    const t = Transaction.parse(a, raw) catch return out;
-    if (op.vout >= t.outputs.len or !isPool(t.outputs[op.vout].locking_script.bytes)) return out;
-    var cur = op;
-    var steps: u32 = 0;
-    while (steps < 100_000) : (steps += 1) {
-        const sp = (try ch.spentBy(cur.txid, cur.vout)) orelse {
-            out.current = cur;
-            return out;
-        };
-        const sraw = (try ch.txRaw(sp)) orelse return out;
-        const st = Transaction.parse(a, sraw) catch return out;
-        if (st.outputs.len == 0 or !isPool(st.outputs[0].locking_script.bytes)) {
-            out.closed = true;
-            return out;
-        }
-        cur = .{ .txid = sp, .vout = 0 };
-        out.hops += 1;
-    }
-    return out;
-}
-
-/// The `/spends` answer's JSON: `{outpoint, spentBy?, current?, hops, closed}`, outpoints `<txid>.<vout>`.
+/// The `/spends` answer's JSON: `{outpoint, spentBy?}`, the outpoint `<txid>.<vout>`.
 pub fn spendJson(a: Allocator, s: Spend) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     var jw: std.json.Stringify = .{ .writer = &out.writer };
@@ -154,14 +118,6 @@ pub fn spendJson(a: Allocator, s: Spend) ![]const u8 {
         try jw.objectField("spentBy");
         try jw.write(&w.header.toHex(sb));
     }
-    if (s.current) |c| {
-        try jw.objectField("current");
-        try jw.write(try std.fmt.allocPrint(a, "{s}.{d}", .{ &w.header.toHex(c.txid), c.vout }));
-    }
-    try jw.objectField("hops");
-    try jw.write(s.hops);
-    try jw.objectField("closed");
-    try jw.write(s.closed);
     try jw.endObject();
     return out.written();
 }
@@ -276,33 +232,6 @@ pub fn lookupAnswer(a: Allocator, svc: *lookup.Service, ch: *Chain, token: []con
         .freeform => |v| v,
         .output_list => error.BadQuery,
     };
-}
-
-/// The pools a P3 answer carries: the current pools of the pool ids `ids` (the lookup's `{poolIds}`
-/// records whose status is live or rescinded: their `current`, the output a Swap or a Close spends;
-/// an id with neither, nothing), in query order; `ids` null, every live pool (`{tokenId}`).
-pub fn currentPools(a: Allocator, svc: *lookup.Service, ch: *Chain, token: []const u8, ids: ?[]const []const u8) ![]const Value {
-    const keys = ids orelse return (try lookupAnswer(a, svc, ch, token, null, &.{})).array;
-    const recs = try lookupAnswer(a, svc, ch, token, "poolIds", keys);
-    var out: std.ArrayList(Value) = .empty;
-    for (recs.array) |r| if (r.get("current")) |c| if (c == .map) try out.append(a, c);
-    return out.items;
-}
-
-/// A pool row's outpoint (`<txid>_<vout>`), parsed.
-pub fn rowOutpoint(row: Value) ?Outpoint {
-    return parseOutpoint(row.getText("outpoint") orelse return null);
-}
-
-/// P3's JSON: `{pools, beef}` — `beef` the base64 of `beef_bytes` (one BEEF of the pools'
-/// transactions, `beefOfMany`).
-pub fn poolsBeefJson(a: Allocator, pools: []const Value, beef_bytes: []const u8) ![]const u8 {
-    const b64 = try a.alloc(u8, std.base64.standard.Encoder.calcSize(beef_bytes.len));
-    _ = std.base64.standard.Encoder.encode(b64, beef_bytes);
-    return valueJson(a, .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "pools", .value = .{ .array = @constCast(pools) } },
-        .{ .key = "beef", .value = .{ .text = b64 } },
-    }) });
 }
 
 /// P8's JSON over several outpoints: one record per outpoint in query order (`spendJson` each).
@@ -575,6 +504,13 @@ pub fn historyRead(a: Allocator, svc: *lookup.Service, _: *Chain, placed: *w.sto
             try jw.write(s.tvl_tokens);
             try jw.objectField("pools");
             try jw.write(s.pools);
+            // 0.47.0: the token's lifetime counters (amm-lookup `TokenCounters`).
+            try jw.objectField("volumeSats");
+            try jw.write(s.volume_sats);
+            try jw.objectField("volumeTokens");
+            try jw.write(s.volume_tokens);
+            try jw.objectField("trades");
+            try jw.write(s.trades);
             try jw.endObject();
         },
         .poolsAt => {

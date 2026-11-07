@@ -30,13 +30,15 @@
 //!                   shruggr/skein#125); it reads only
 //!   call            route /amm/call (APPS.md §4; kernel.brc104: the caller is the signed request's key,
 //!                   who may call is the kernel's gate, 0.7.0): {fn, args} → {fn, result} | {fn, error}, at once
-//!   spends          the read route `/spends?outpoint=<txid>.<vout>` (filter `spends`, 0.9.0): the chain
-//!                   state of an outpoint, a pool followed to its current output (reads.zig); 0.34.0:
-//!                   `?outpoint=a,b` one record per outpoint in query order (P8)
-//!   poolsBeef, positions, validatorFees, commissionFees, readTerms, tx
+//!   spends          the read route `/spends?outpoint=<txid>.<vout>` (filter `spends`, 0.9.0): an
+//!                   outpoint's spender in the chain state, one lookup (0.47.0: `{outpoint, spentBy?}`;
+//!                   the pool-following `current`, `hops`, `closed` are gone: following a pool is
+//!                   `/pools/history`); 0.34.0: `?outpoint=a,b` one record per outpoint in query order (P8)
+//!   positions, validatorFees, commissionFees, readTerms, tx
 //!                   the public read routes (0.34.0, reads.zig; docs/AMM.md "The public read API"):
-//!                   /pools/beef (P3), /positions (P4), /fees/validator (P5), /fees/commission (P6),
-//!                   /terms (P7), /tx (P9); plain GETs, cache headers per class (0.44.0: /swaps, P10, gone)
+//!                   /positions (P4), /fees/validator (P5), /fees/commission (P6), /terms (P7), /tx (P9);
+//!                   plain GETs, cache headers per class (0.44.0: /swaps, P10, gone; 0.47.0: /pools/beef,
+//!                   P3, gone: a pool's transaction is `/tx?id=` of its current outpoint's txid)
 //!   trades, candles, stats
 //!                   the history reads (0.36.0, reads.zig `historyRead`): /trades (H1), /candles
 //!                   (H2), /stats (H3), over the pool lookup's trade rows
@@ -160,8 +162,8 @@ fn headRecord(a: Allocator, name: []const u8) !?Value {
 /// The head amm-setup writes the token record under (amm-setup `setup.token_head`).
 const token_head = iface.app_name ++ "/token";
 
-/// The read `/spends?outpoint=<txid>.<vout>` (filter `spends`): the chain state of an outpoint
-/// (reads.zig `spendOf`). 0.34.0 (P8): `?outpoint=a,b` (a comma in it) answers one record per
+/// The read `/spends?outpoint=<txid>.<vout>` (filter `spends`): an outpoint's spender in the chain
+/// state (reads.zig `spendOf`, one lookup). 0.34.0 (P8): `?outpoint=a,b` (a comma in it) answers one record per
 /// outpoint in query order; one outpoint answers the single object, as before.
 fn spendsRead(a: Allocator, in: Value, arg: Value) !Value {
     const q = arg.getText("query") orelse "";
@@ -172,17 +174,17 @@ fn spendsRead(a: Allocator, in: Value, arg: Value) !Value {
     const st = try loadState(a, in);
     if (std.mem.indexOfScalar(u8, text, ',') == null) {
         const op = reads.parseOutpoint(list[0]) orelse return reads.httpError(a, 400, want);
-        return reads.httpCached(a, 200, "application/json", .state, try reads.spendJson(a, try reads.spendOf(a, st.ch, op)));
+        return reads.httpCached(a, 200, "application/json", .state, try reads.spendJson(a, try reads.spendOf(st.ch, op)));
     }
     const ss = try a.alloc(reads.Spend, list.len);
-    for (list, ss) |t, *o| o.* = try reads.spendOf(a, st.ch, reads.parseOutpoint(t) orelse return reads.httpError(a, 400, want));
+    for (list, ss) |t, *o| o.* = try reads.spendOf(st.ch, reads.parseOutpoint(t) orelse return reads.httpError(a, 400, want));
     return reads.httpCached(a, 200, "application/json", .state, try reads.spendsJson(a, ss));
 }
 
 /// The public read routes' functions (0.34.0; the manifest's filters name them).
-const Read = enum { poolsBeef, positions, validatorFees, commissionFees, readTerms, tx, trades, candles, stats, poolsAt, poolsHistory };
+const Read = enum { positions, validatorFees, commissionFees, readTerms, tx, trades, candles, stats, poolsAt, poolsHistory };
 
-/// One public read (reads.zig): P3 to P7, P9 (0.44.0: P10 `/swaps` gone with the relay records).
+/// One public read (reads.zig): P4 to P7, P9 (0.44.0: P10 `/swaps` gone with the relay records; 0.47.0: P3 `/pools/beef` gone).
 fn publicRead(a: Allocator, in: Value, arg: Value, r: Read) !Value {
     const q = arg.getText("query") orelse "";
     switch (r) {
@@ -205,20 +207,12 @@ fn publicRead(a: Allocator, in: Value, arg: Value, r: Read) !Value {
     };
     if (hist) |h| return reads.historyRead(a, &svc, st.ch, st.map("placed"), token, h, q, @intCast(st.now));
     const list = switch (r) {
-        .poolsBeef => "pool",
         .positions => "pool",
         .validatorFees => "id",
         .commissionFees => "pkh",
         else => unreachable,
     };
     const keys = try reads.queryList(a, q, list);
-    if (r == .poolsBeef) {
-        const pools = reads.currentPools(a, &svc, st.ch, token, keys) catch |e| return badQuery(a, e);
-        const txids = try a.alloc([32]u8, pools.len);
-        for (pools, txids) |p, *t| t.* = (reads.rowOutpoint(p) orelse return error.BadIndex).txid;
-        const beef = try ov.state.beefOfMany(st.ch, txids);
-        return reads.httpCached(a, 200, "application/json", .state, try reads.poolsBeefJson(a, pools, beef));
-    }
     const ks = keys orelse return reads.httpError(a, 400, try std.fmt.allocPrint(a, "want ?{s}=k1,k2", .{list}));
     const field = switch (r) {
         .positions => "poolIds",

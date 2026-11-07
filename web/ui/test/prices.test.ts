@@ -49,7 +49,7 @@ describe("the skein's doors", () => {
       asked.push(url);
       const u = new URL(url);
       const ops = (u.searchParams.get("outpoint") ?? "").split(",");
-      const rec = (o: string) => ({ outpoint: o, ...(o === op1 ? { spentBy: "ab".repeat(32) } : {}), hops: 0, closed: false });
+      const rec = (o: string) => ({ outpoint: o, ...(o === op1 ? { spentBy: "ab".repeat(32) } : {}) });
       return new Response(JSON.stringify(ops.length > 1 ? ops.map(rec) : rec(ops[0]!)));
     }) as typeof fetch;
     const two = await readSpends("http://x/@t/amm", [op1, op2], f);

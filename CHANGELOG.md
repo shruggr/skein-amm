@@ -4,6 +4,34 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.47.0 (2026-11-07)
+
+Read-path optimizations and admission counters (agent-env plans/read-optimizations-2026-11-07.md D1–D6).
+
+- D1: `/pools/beef` is REMOVED (route, filter `poolsBeef`, reads.zig `currentPools` / `poolsBeefJson`, the
+  client's `readPoolsBeef`, its tests). A Swap leg reads the chosen pool's transaction with `GET
+  /@<token>/amm/tx?id=<txid of the listed outpoint>` (the self-contained BEEF); a leg is now the list read, `/tx`
+  and the POST. Rebalance reads the position's spender (`/spends`, spent → `stale_pool`) then `/tx`. The
+  client's `poolOutputOf(beefBytes, outpoint)` takes the `/tx` bytes.
+- D2: `/spends?outpoint=` is ONE lookup per outpoint, `{outpoint, spentBy?}`: the pool-following
+  (`current`, `hops`, `closed`, a transaction parse per hop) is gone; following a pool is `/pools/history`. The
+  client's `Spend` type likewise. The BRC-24 `{tokenId, outpoint}` query is unchanged.
+- D3: `/trades` steps the trade index BACKWARD from the window's end (skein-sdk 0.15.0 `Map.rangeBack`) and
+  reads `limit` rows (one pool's: its `history` in pages of 32 until `limit` Swaps and their time's ties); the
+  same rows, order and cursor as 0.46 (a test against 0.40.0's full-window read, 400 random queries).
+- D5: amm-lookup `counters` (records, written at each admitted Swap, unwound at its rejection, a dupe counted
+  once, no backfill): per pool `amm-pool-counters` (satsIn, satsOut, tokensIn, tokensOut, lpSats, lpTokens,
+  validatorSats, validatorTokens, commissionSats, commissionTokens, lastTradeAt — recomputed from `history`
+  when its Swap is unwound), exposed on the pool row as `lifetime` (`/pools`, positions' `current`, BRC-24
+  answers); per token `amm-token-counters` (volumeSats, volumeTokens, trades), exposed on `/stats` as
+  `volumeSats`, `volumeTokens`, `trades` (the client's `TokenStats` too); per validator `amm-validator-counters`
+  (swaps, feeSats, feeTokens), not on a read (`/fees/validator` already answers the same sums from the rows).
+- Pins: skein-overlay v0.21.1 (skein-sdk 0.15.0), skein-1color v0.17.0 (its counters and `burn` event).
+  `bin/amm-lookup.wasm` dbd07a5d…, `bin/amm-p2p.wasm` 71fa531f…, `bin/color-lookup.wasm` 4f924298… (v0.17.0's);
+  `bin/amm-validator.wasm` 824750cd… — the SAME bytes as 0.46.3; amm-setup, color-topic, overlay the same bytes.
+- Versions: etc/app.json, amm-setup's version test, README, @dcasegr/amm-engine and @dcasegr/amm-client 0.47.0.
+  zig 118, vitest 300, engine 68; harness (real toolbox): balance 11, held 1 (five swaps on one pool).
+
 ## 0.46.3 (2026-11-07)
 
 Pins only: skein-overlay v0.21.0 and skein-1color v0.16.2 (skein-sdk 0.14.0 through them). A BEEF

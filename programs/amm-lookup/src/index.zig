@@ -80,7 +80,17 @@ pub const service_name = "ls_amm";
 /// already the next count and the key uses that number); `closes`: `tp ‖ at (u64 BE) ‖ poolId → <event>` for a close or a rescind;
 /// `trades`: `tp ‖ at (u64 BE) ‖ swap txid → <the Swap's event>`. A rejection removes every row its
 /// transaction wrote. Nothing derived is stored.
-pub const maps = [_][]const u8{ "pools", "byValidator", "spentPools", "beat", "fees", "byCommission", "rescinded", "byPool", "trades", "history", "closes" };
+/// The COUNTERS (0.47.0, agent-env plans/read-optimizations-2026-11-07.md D5): plain records under
+/// `counters`, written at each admitted Swap (`putTrade`) and unwound at its rejection (`removeTrade`,
+/// by the trade row itself): `p ‖ tp ‖ poolId → {kind: "amm-pool-counters", satsIn, satsOut,
+/// tokensIn, tokensOut, lpSats, lpTokens, validatorSats, validatorTokens, commissionSats,
+/// commissionTokens, lastTradeAt}` (the pool's side: a buy brings `amountIn` sats in and sends
+/// `amountOut` tokens out, a sell the reverse; each fee in the Swap's input asset; `lastTradeAt` the
+/// latest Swap's `at`, recomputed from `history` when the latest is unwound); `t ‖ tp →
+/// {kind: "amm-token-counters", volumeSats, volumeTokens, trades}` (each trade's sats side and token
+/// side); `v ‖ tp ‖ validator identity (33) → {kind: "amm-validator-counters", swaps, feeSats,
+/// feeTokens}`. No backfill: Swaps admitted before 0.47.0 are not counted.
+pub const maps = [_][]const u8{ "pools", "byValidator", "spentPools", "beat", "fees", "byCommission", "rescinded", "byPool", "trades", "history", "closes", "counters" };
 
 /// The step's time (ms), the clock of the step whose hook this call runs in: the in-VM call input's
 /// `now` (skein docs/VM.md, "call": the time of the entry that drove the step; replay-exact), set by
@@ -547,10 +557,15 @@ fn putTrade(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, tx: 
     if (after > before) return;
     const fkey = try feeKey(a, tp, &cont.pool_id, tx.txid);
     // A re-admission of the same Swap (a dupe hook call): its earlier time rows go, one row stays.
-    if (try svc.map("fees").link(fkey)) |old| if ((try svc.store.getValue(a, old)).getUint("at")) |at0| {
-        _ = try svc.map("trades").remove(try tradeKey(a, tp, at0, tx.txid));
-        _ = try svc.map("history").remove(try historyKey(a, tp, &cont.pool_id, at0, cont.swaps));
-    };
+    if (try svc.map("fees").link(fkey)) |old| {
+        const orec = try svc.store.getValue(a, old);
+        if (orec.getUint("at")) |at0| {
+            _ = try svc.map("trades").remove(try tradeKey(a, tp, at0, tx.txid));
+            _ = try svc.map("history").remove(try historyKey(a, tp, &cont.pool_id, at0, cont.swaps));
+        }
+        // 0.47.0: its earlier count unwound (counted once).
+        if (orec.get("amountIn") != null) try countTrade(a, svc, tp, orec, false);
+    }
     var es = try eventFields(a, "swap", cont, tx.txid, true);
     try es.appendSlice(a, &.{
         .{ .key = "lp", .value = .{ .uint = f.lp } },
@@ -564,10 +579,171 @@ fn putTrade(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, tx: 
         .{ .key = "payoutPkh", .value = .{ .bytes = try a.dupe(u8, call.user_pkh) } },
     });
     const rec = try svc.store.putValue(a, .{ .map = es.items });
+    try countTrade(a, svc, tp, .{ .map = es.items }, true);
     try svc.map("fees").putLink(fkey, rec);
     try svc.map("trades").putLink(try tradeKey(a, tp, now_ms, tx.txid), rec);
     try linkEvent(a, svc, topic, tp, cont, rec, false, false);
     if (f.commission > 0) try svc.map("byCommission").putLink(try commissionKey(a, &f.commission_pkh, tp, tx.txid), rec);
+}
+
+// ---------------------------------------------------------------- the counters (0.47.0)
+
+/// A pool's counters (`counters` under `p ‖ tp ‖ poolId`).
+pub const PoolCounters = struct {
+    sats_in: u64 = 0,
+    sats_out: u64 = 0,
+    tokens_in: u64 = 0,
+    tokens_out: u64 = 0,
+    lp_sats: u64 = 0,
+    lp_tokens: u64 = 0,
+    validator_sats: u64 = 0,
+    validator_tokens: u64 = 0,
+    commission_sats: u64 = 0,
+    commission_tokens: u64 = 0,
+    last_trade_at: ?u64 = null,
+};
+
+/// A token's counters (`t ‖ tp`).
+pub const TokenCounters = struct { volume_sats: u64 = 0, volume_tokens: u64 = 0, trades: u64 = 0 };
+
+/// A validator's counters (`v ‖ tp ‖ identity`).
+pub const ValidatorCounters = struct { swaps: u64 = 0, fee_sats: u64 = 0, fee_tokens: u64 = 0 };
+
+const pool_fields = .{
+    .{ "satsIn", "sats_in" },             .{ "satsOut", "sats_out" },
+    .{ "tokensIn", "tokens_in" },         .{ "tokensOut", "tokens_out" },
+    .{ "lpSats", "lp_sats" },             .{ "lpTokens", "lp_tokens" },
+    .{ "validatorSats", "validator_sats" }, .{ "validatorTokens", "validator_tokens" },
+    .{ "commissionSats", "commission_sats" }, .{ "commissionTokens", "commission_tokens" },
+};
+const token_fields = .{ .{ "volumeSats", "volume_sats" }, .{ "volumeTokens", "volume_tokens" }, .{ "trades", "trades" } };
+const validator_fields = .{ .{ "swaps", "swaps" }, .{ "feeSats", "fee_sats" }, .{ "feeTokens", "fee_tokens" } };
+
+fn poolCountersKey(a: Allocator, tp: []const u8, pid: []const u8) ![]u8 {
+    return cat(a, &.{ "p", tp, pid });
+}
+fn tokenCountersKey(a: Allocator, tp: []const u8) ![]u8 {
+    return cat(a, &.{ "t", tp });
+}
+fn validatorCountersKey(a: Allocator, tp: []const u8, identity: []const u8) ![]u8 {
+    return cat(a, &.{ "v", tp, identity });
+}
+
+fn readCounters(comptime T: type, comptime fields: anytype, a: Allocator, svc: *Service, key: []const u8) !T {
+    var out: T = .{};
+    const cid = (try svc.map("counters").link(key)) orelse return out;
+    const rec = try svc.store.getValue(a, cid);
+    inline for (fields) |f| @field(out, f[1]) = rec.getUint(f[0]) orelse 0;
+    if (T == PoolCounters) out.last_trade_at = rec.getUint("lastTradeAt");
+    return out;
+}
+
+fn writeCounters(comptime T: type, comptime fields: anytype, a: Allocator, svc: *Service, key: []const u8, kind: []const u8, v: T) !void {
+    var es: std.ArrayList(Entry) = .empty;
+    try es.append(a, .{ .key = "kind", .value = .{ .text = kind } });
+    var any = false;
+    inline for (fields) |f| {
+        const n: u64 = @field(v, f[1]);
+        any = any or n != 0;
+        try es.append(a, .{ .key = f[0], .value = .{ .uint = n } });
+    }
+    if (T == PoolCounters) try es.append(a, .{ .key = "lastTradeAt", .value = if (v.last_trade_at) |t| .{ .uint = t } else .null });
+    // Nothing counted (every Swap unwound): no record.
+    if (!any) {
+        _ = try svc.map("counters").remove(key);
+        return;
+    }
+    try svc.map("counters").putLink(key, try svc.store.putValue(a, .{ .map = es.items }));
+}
+
+pub fn poolCounters(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !PoolCounters {
+    return readCounters(PoolCounters, pool_fields, a, svc, try poolCountersKey(a, tp, pid));
+}
+pub fn tokenCounters(a: Allocator, svc: *Service, tp: []const u8) !TokenCounters {
+    return readCounters(TokenCounters, token_fields, a, svc, try tokenCountersKey(a, tp));
+}
+pub fn validatorCounters(a: Allocator, svc: *Service, tp: []const u8, identity: []const u8) !ValidatorCounters {
+    return readCounters(ValidatorCounters, validator_fields, a, svc, try validatorCountersKey(a, tp, identity));
+}
+
+fn bump(x: *u64, n: u64, add: bool) void {
+    x.* = if (add) std.math.add(u64, x.*, n) catch std.math.maxInt(u64) else x.* -| n;
+}
+
+/// The latest Swap of pool `pid` in `history` other than `skip` (its `at`), stepped back from the end; null none.
+fn lastSwapAt(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8, skip: [32]u8) !?u64 {
+    const prefix = try cat(a, &.{ tp, pid });
+    var hi = try above(a, prefix);
+    while (true) {
+        const kvs = try svc.map("history").rangeBack(prefix, hi, history_page);
+        for (kvs) |kv| {
+            if (kv.value != .cid) return error.BadIndex;
+            const rec = try svc.store.getValue(a, kv.value.cid);
+            if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap")) continue;
+            if (std.mem.eql(u8, rec.getBytes("txid") orelse "", &skip)) continue;
+            return rec.getUint("at");
+        }
+        if (kvs.len < history_page) return null;
+        hi = kvs[kvs.len - 1].key;
+    }
+}
+
+/// A Swap's event record (`putTrade`) counted in (`add`) or unwound: its pool's, its token's and its
+/// validator's counters.
+fn countTrade(a: Allocator, svc: *Service, tp: []const u8, rec: Value, add: bool) !void {
+    const pid = try poolIdOf(rec);
+    const txid = try bytesN(32, rec, "txid");
+    const at = rec.getUint("at") orelse return error.BadIndex;
+    const in = rec.getUint("amountIn") orelse return error.BadIndex;
+    const out = rec.getUint("amountOut") orelse return error.BadIndex;
+    const lp = rec.getUint("lp") orelse 0;
+    const val = rec.getUint("validator") orelse 0;
+    const com = rec.getUint("commission") orelse 0;
+    const bsv_in = rec.getBool("bsvIn") orelse false;
+    const pk = try poolCountersKey(a, tp, &pid);
+    var p = try readCounters(PoolCounters, pool_fields, a, svc, pk);
+    if (bsv_in) {
+        bump(&p.sats_in, in, add);
+        bump(&p.tokens_out, out, add);
+        bump(&p.lp_sats, lp, add);
+        bump(&p.validator_sats, val, add);
+        bump(&p.commission_sats, com, add);
+    } else {
+        bump(&p.tokens_in, in, add);
+        bump(&p.sats_out, out, add);
+        bump(&p.lp_tokens, lp, add);
+        bump(&p.validator_tokens, val, add);
+        bump(&p.commission_tokens, com, add);
+    }
+    if (add) {
+        p.last_trade_at = if (p.last_trade_at) |t| @max(t, at) else at;
+    } else if (p.last_trade_at != null and p.last_trade_at.? == at) {
+        p.last_trade_at = try lastSwapAt(a, svc, tp, &pid, txid);
+    }
+    try writeCounters(PoolCounters, pool_fields, a, svc, pk, "amm-pool-counters", p);
+    const tk = try tokenCountersKey(a, tp);
+    var t = try readCounters(TokenCounters, token_fields, a, svc, tk);
+    const v = volumeOf(rec);
+    bump(&t.volume_sats, v.sats, add);
+    bump(&t.volume_tokens, v.tokens, add);
+    bump(&t.trades, 1, add);
+    try writeCounters(TokenCounters, token_fields, a, svc, tk, "amm-token-counters", t);
+    const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
+    const vk = try validatorCountersKey(a, tp, identity);
+    var vc = try readCounters(ValidatorCounters, validator_fields, a, svc, vk);
+    bump(&vc.swaps, 1, add);
+    if (bsv_in) bump(&vc.fee_sats, val, add) else bump(&vc.fee_tokens, val, add);
+    try writeCounters(ValidatorCounters, validator_fields, a, svc, vk, "amm-validator-counters", vc);
+}
+
+/// A pool's counters as its row carries them (`lifetime`, 0.47.0): the counters' fields by their
+/// record names, `lastTradeAt` null without a Swap.
+fn lifetimeValue(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !Value {
+    const p = try poolCounters(a, svc, tp, pid);
+    var es: std.ArrayList(Entry) = .empty;
+    inline for (pool_fields) |f| try es.append(a, .{ .key = f[0], .value = .{ .uint = @field(p, f[1]) } });
+    try es.append(a, .{ .key = "lastTradeAt", .value = if (p.last_trade_at) |t| .{ .uint = t } else .null });
+    return .{ .map = es.items };
 }
 
 /// A rejected Swap's fee row, its time row and its commission membership, gone (the pool id from
@@ -581,6 +757,8 @@ fn removeTrade(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx) !void
     const key = try feeKey(a, tp, &pid, tx.txid);
     const cid = (try svc.map("fees").link(key)) orelse return;
     const rec = try svc.store.getValue(a, cid);
+    // 0.47.0: its counts unwound, by the row itself.
+    if (rec.get("amountIn") != null) try countTrade(a, svc, tp, rec, false);
     _ = try svc.map("fees").remove(key);
     if (rec.getUint("at")) |at| _ = try svc.map("trades").remove(try tradeKey(a, tp, at, tx.txid));
     if (rec.getBytes("commissionPkh")) |pkh| _ = try svc.map("byCommission").remove(try commissionKey(a, pkh, tp, tx.txid));
@@ -834,7 +1012,7 @@ pub fn poolIdText(a: Allocator, pid: []const u8) ![]const u8 {
 /// plus the outpoint string, the pool's commissionBps, (0.34.0) its LpPubKey (hex) and (0.40.0) its
 /// id (`poolId`, `<txid>_<vout>`) and `swaps`, from an indexed record. (0.34.0: no `lastSeen`: the
 /// liveness join is the host's, D11.)
-fn poolStateValue(a: Allocator, rec: Value, outpoint: []const u8) !Value {
+fn poolStateValue(a: Allocator, svc: *Service, tp: []const u8, rec: Value, outpoint: []const u8) !Value {
     const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
     const lp = rec.getBytes("lpPubKey") orelse return error.BadIndex;
     var es: std.ArrayList(Entry) = .empty;
@@ -849,6 +1027,8 @@ fn poolStateValue(a: Allocator, rec: Value, outpoint: []const u8) !Value {
         .{ .key = "commissionBps", .value = rec.get("commissionBps") orelse return error.BadIndex },
         .{ .key = "validatorIdentityKey", .value = .{ .text = try hexOf(a, identity) } },
         .{ .key = "swaps", .value = .{ .uint = rec.getUint("swaps") orelse return error.BadIndex } },
+        // 0.47.0: the pool's counters (`lifetimeValue`).
+        .{ .key = "lifetime", .value = try lifetimeValue(a, svc, tp, &try poolIdOf(rec)) },
     });
     return .{ .map = es.items };
 }
@@ -860,7 +1040,7 @@ fn poolsUnder(a: Allocator, svc: *Service, prefix: []const u8, key_off: usize) !
         const rec = try svc.store.getValue(a, kv.value.cid);
         if (validatorCleared(rec)) continue;
         const op = try w.store.outpointOf(kv.key[key_off..]);
-        try out.append(a, try poolStateValue(a, rec, try outpointStr(a, op.txid, op.vout)));
+        try out.append(a, try poolStateValue(a, svc, prefix, rec, try outpointStr(a, op.txid, op.vout)));
     }
     return out.items;
 }
@@ -878,7 +1058,7 @@ fn poolsForValidator(a: Allocator, svc: *Service, tp: []const u8, prefix: []cons
         const cid = (try svc.map("pools").link(try poolKey(a, tp, op.txid, op.vout))) orelse continue;
         const rec = try svc.store.getValue(a, cid);
         if (validatorCleared(rec)) continue;
-        try out.append(a, try poolStateValue(a, rec, try outpointStr(a, op.txid, op.vout)));
+        try out.append(a, try poolStateValue(a, svc, tp, rec, try outpointStr(a, op.txid, op.vout)));
     }
     return out.items;
 }
@@ -919,7 +1099,7 @@ fn answerOutpoint(a: Allocator, svc: *Service, ch: *Chain, tp: []const u8, start
         if (try svc.map("pools").link(try poolKey(a, tp, txid, vout))) |cid| rec = try svc.store.getValue(a, cid);
     }
     if (want_beef) return .{ .output_list = try a.dupe(lookup.Output, &.{.{ .txid = txid, .vout = vout }}) };
-    const current = try poolStateValue(a, rec.?, try outpointStr(a, txid, vout));
+    const current = try poolStateValue(a, svc, tp, rec.?, try outpointStr(a, txid, vout));
     return .{ .freeform = .{ .map = try a.dupe(Entry, &.{
         .{ .key = "current", .value = current },
         .{ .key = "hops", .value = .{ .uint = hops } },
@@ -1014,7 +1194,7 @@ fn answerPools(a: Allocator, svc: *Service, _: *Chain, tp: []const u8, v: Value)
             lp = .{ .text = try hexOf(a, rec.getBytes("lpPubKey") orelse return error.BadIndex) };
             try es.appendSlice(a, &.{
                 .{ .key = "outpoint", .value = .{ .text = text } },
-                .{ .key = "current", .value = try poolStateValue(a, rec, text) },
+                .{ .key = "current", .value = try poolStateValue(a, svc, tp, rec, text) },
             });
             break;
         }
@@ -1146,42 +1326,59 @@ pub const TradeQuery = struct {
     pool: ?[36]u8 = null,
 };
 
-/// `/trades`: the token's trade rows, newest first, `q.limit` at most; read from the window alone
-/// (0.40.0): the `trades` range `[from, min(to, before))`, or (one pool) its `history` range `[from,
-/// to)`, its Swap events.
+/// `/trades`: the token's trade rows, newest first, `q.limit` at most. 0.47.0 (agent-env
+/// plans/read-optimizations-2026-11-07.md D3): stepped BACKWARD from the window's end (skein-sdk
+/// 0.15.0 `Map.rangeBack`), never the whole window: the `trades` range `[from, end)` with `end` the
+/// lesser of `to` and the `before` cursor's own key (rows strictly older than it), `q.limit` rows
+/// read; one pool's (`q.pool`) its `history` range `[from, min(to, before.at + 1))` stepped back in
+/// pages, its Swap events kept until `q.limit` of them and every row at the last one's time (one
+/// time's rows are answered in (at, txid) order, as before). The same answer as 0.40.0's.
 pub fn trades(a: Allocator, svc: *Service, tp: []const u8, q: TradeQuery) ![]Trade {
-    var rows: []Trade = undefined;
-    if (q.pool) |pid| {
-        const prefix = try cat(a, &.{ tp, &pid });
-        const lo = try cat(a, &.{ prefix, &be64(q.from orelse 0) });
-        const hi = if (q.to) |t| try cat(a, &.{ prefix, &be64(t) }) else try above(a, prefix);
-        var list: std.ArrayList(Trade) = .empty;
-        for (try svc.map("history").range(lo, hi)) |kv| {
+    if (q.limit == 0) return &.{};
+    if (q.pool) |pid| return poolTrades(a, svc, tp, pid, q);
+    const lo = try cat(a, &.{ tp, &be64(q.from orelse 0) });
+    var hi: []const u8 = if (q.to) |t| try cat(a, &.{ tp, &be64(t) }) else try above(a, tp);
+    if (q.before) |b| {
+        const ck = try tradeKey(a, tp, b.at, b.txid);
+        if (std.mem.order(u8, ck, hi) == .lt) hi = ck;
+    }
+    const kvs = try svc.map("trades").rangeBack(lo, hi, q.limit);
+    const out = try a.alloc(Trade, kvs.len);
+    for (kvs, out) |kv, *o| o.* = try tradeAt(a, svc, tp, kv);
+    return out;
+}
+
+/// The page size `poolTrades` steps back by.
+const history_page = 32;
+
+fn poolTrades(a: Allocator, svc: *Service, tp: []const u8, pid: [36]u8, q: TradeQuery) ![]Trade {
+    const prefix = try cat(a, &.{ tp, &pid });
+    const lo = try cat(a, &.{ prefix, &be64(q.from orelse 0) });
+    var end_at: ?u64 = q.to;
+    if (q.before) |b| end_at = if (end_at) |t| @min(t, b.at +| 1) else b.at +| 1;
+    var hi: []const u8 = if (end_at) |t| try cat(a, &.{ prefix, &be64(t) }) else try above(a, prefix);
+    var list: std.ArrayList(Trade) = .empty;
+    outer: while (true) {
+        const kvs = try svc.map("history").rangeBack(lo, hi, history_page);
+        for (kvs) |kv| {
             if (kv.value != .cid) return error.BadIndex;
             const rec = try svc.store.getValue(a, kv.value.cid);
             if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap")) continue;
-            try list.append(a, .{ .at = rec.getUint("at") orelse return error.BadIndex, .txid = try bytesN(32, rec, "txid"), .rec = rec });
+            const t: Trade = .{ .at = rec.getUint("at") orelse return error.BadIndex, .txid = try bytesN(32, rec, "txid"), .rec = rec };
+            if (q.before) |b| if (!tradeLt(t, .{ .at = b.at, .txid = b.txid, .rec = .null })) continue;
+            // Enough rows, and this one is older than the last kept: the page is complete.
+            if (list.items.len >= q.limit and t.at != list.items[list.items.len - 1].at) break :outer;
+            try list.append(a, t);
         }
-        std.mem.sort(Trade, list.items, {}, struct {
-            fn f(_: void, x: Trade, y: Trade) bool {
-                return tradeLt(x, y);
-            }
-        }.f);
-        rows = list.items;
-    } else {
-        var to = q.to;
-        if (q.before) |b| to = if (to) |t| @min(t, b.at +| 1) else b.at +| 1;
-        rows = try tradesIn(a, svc, tp, q.from, to);
+        if (kvs.len < history_page) break;
+        hi = kvs[kvs.len - 1].key;
     }
-    var out: std.ArrayList(Trade) = .empty;
-    var i = rows.len;
-    while (i > 0 and out.items.len < q.limit) {
-        i -= 1;
-        const r = rows[i];
-        if (q.before) |b| if (!tradeLt(r, .{ .at = b.at, .txid = b.txid, .rec = .null })) continue;
-        try out.append(a, r);
-    }
-    return out.items;
+    std.mem.sort(Trade, list.items, {}, struct {
+        fn f(_: void, x: Trade, y: Trade) bool {
+            return tradeLt(y, x);
+        }
+    }.f);
+    return list.items[0..@min(list.items.len, q.limit)];
 }
 
 /// `/trades?txid=`: the trade row of the Swap `txid` (its pool id from its continuation's record at
@@ -1244,6 +1441,10 @@ pub const Stats = struct {
     tvl_tokens: u64 = 0,
     /// Live pools.
     pools: u64 = 0,
+    /// 0.47.0: the token's counters (`TokenCounters`): its lifetime volume on each side and its trade count.
+    volume_sats: u64 = 0,
+    volume_tokens: u64 = 0,
+    trades: u64 = 0,
 };
 
 pub const hour_ms: u64 = 3_600_000;
@@ -1284,6 +1485,10 @@ pub fn stats(a: Allocator, svc: *Service, tp: []const u8, now: u64) !Stats {
         st.tvl_tokens += rec.getUint("tokenReserve") orelse return error.BadIndex;
         st.pools += 1;
     }
+    const tc = try tokenCounters(a, svc, tp);
+    st.volume_sats = tc.volume_sats;
+    st.volume_tokens = tc.volume_tokens;
+    st.trades = tc.trades;
     if (st.last_trade_price) |p| {
         if (try tradeAtOrBefore(a, svc, tp, start1h)) |t| if (priceOf(t.rec)) |q| {
             st.change1h = changeBps(q, p);

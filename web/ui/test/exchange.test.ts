@@ -219,21 +219,24 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   const [, token, path] = tok;
   const rows = (inst.pools[token!] ?? []) as Record<string, unknown>[];
   if (path === "/pools") return json({ market: inst.market, validators: inst.validators, pools: rows });
-  if (path === "/pools/beef") {
-    const ids = list(u, "pool");
-    const b = new Beef();
-    for (const t of inst.poolTxs) b.mergeRawTx(t.toBinary());
-    const pools = inst.beefGone ? [] : rows.filter((r) => ids.includes(String(r.poolId))).map(({ validatorPeerId: _, ...r }) => r);
-    return json({ pools, beef: Utils.toBase64(b.toBinary()) });
-  }
   if (path === "/positions") return json(list(u, "pool").map((k) => inst.lpPools[k] ?? { poolId: k, lpPubKey: null, status: "closed", sats: 0, tokens: 0, swaps: 0 }));
   if (path === "/terms") return json({ validator: inst.terms, market: inst.market });
   if (path === "/spends") {
     const ops = list(u, "outpoint");
-    const rec = (o: string) => inst.spends[o] ?? { outpoint: o, hops: 0, closed: false };
+    const rec = (o: string) => inst.spends[o] ?? { outpoint: o };
     return json(ops.length === 1 ? rec(ops[0]!) : ops.map(rec));
   }
-  if (path === "/tx") return inst.txs[u.searchParams.get("id") ?? ""] ? bytes(inst.txs[u.searchParams.get("id")!]!) : json({ error: "unknown transaction" }, 404);
+  if (path === "/tx") {
+    const id = u.searchParams.get("id") ?? "";
+    if (inst.txs[id]) return bytes(inst.txs[id]!);
+    // 0.47.0: the pools' transactions, self-contained (an Atomic BEEF of the one asked for); `beefGone`: the instance holds none.
+    if (!inst.beefGone && inst.poolTxs.some((t) => t.id("hex") === id)) {
+      const b = new Beef();
+      for (const t of inst.poolTxs) b.mergeRawTx(t.toBinary());
+      return bytes(b.toBinaryAtomic(id));
+    }
+    return json({ error: "unknown transaction" }, 404);
+  }
   if (path === "/call") {
     const b = JSON.parse(String(init!.body)) as { fn: string; args: unknown };
     inst.calls.push(b);
@@ -408,7 +411,7 @@ describe("exchange.ts, wired", () => {
     expect(() => quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, maxSources: 1 }, { ...h, pools: [] }, META)).toThrow(/No pool to swap against/);
   });
 
-  it("executeSwap (0.40.0): needs a wallet; the overlay pass first (ONE /amm/spends over the swap basket's rows; none, no read); a pool gone from its id's read (ONE /pools/beef?pool=) is no pool: stop no_pool", async () => {
+  it("executeSwap (0.40.0): needs a wallet; the overlay pass first (ONE /amm/spends over the swap basket's rows; none, no read); a pool whose transaction the instance does not serve (ONE /tx?id= of its listed outpoint, 0.47.0) is no pool: stop no_pool", async () => {
     const q = quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, maxSources: 1 }, await held(), META);
     await expect(executeSwap(q)).rejects.toThrow(/Connect a wallet/);
     const sent: CreateActionArgs[] = [];
@@ -430,9 +433,9 @@ describe("exchange.ts, wired", () => {
     const n = inst.requests.length;
     const r = await executeSwap(q);
     expect(r).toMatchObject({ status: "failed", stop: "no_pool", legs: [] });
-    // The stage (a buy: sats only, ONE plain createAction), the pools route read fresh, the pool by its id, nothing relayed; no stream (0.41.0).
+    // The stage (a buy: sats only, ONE plain createAction), the pools route read fresh, the pool's transaction by its listed outpoint, nothing relayed; no stream (0.41.0).
     expect(sent.map((a) => a.labels)).toEqual([["amm-swap"]]);
-    expect(since(n).filter((x) => !x.endsWith("/amm/pools"))).toEqual([`GET /@${TOKEN}/amm/pools/beef?pool=${PID}`]);
+    expect(since(n).filter((x) => !x.endsWith("/amm/pools"))).toEqual([`GET /@${TOKEN}/amm/tx?id=${PID.slice(0, 64)}`]);
     expect(since(n).filter((x) => x.endsWith("/amm/pools")).length).toBeGreaterThan(0);
     expect(streams).toEqual([]);
     expect(inst.calls).toEqual([]);
@@ -1000,7 +1003,7 @@ describe("requests per page (0.34.0)", () => {
   /** A connected wallet holding the token (on the exchange) and nothing staged. */
   const heldWallet = () => connect({ held: [{ outpoint: `${DEPLOY}.0`, satoshis: 1, spendable: true, lockingScript: tokenDeploy.outputs[0]!.lockingScript.toHex() }] });
 
-  it("Swap: load = the token list + ONE host-wide stats read + ONE plain pools read (0.41.0) and the token's pool event feed; a quote = 0; a swap = per leg the pools read, ONE /pools/beef + the host's POST /swap (0.44.0); after the swap = 0 (a pool event makes the page read the pools again)", async () => {
+  it("Swap: load = the token list + ONE host-wide stats read + ONE plain pools read (0.41.0) and the token's pool event feed; a quote = 0; a swap = per leg the pools read, ONE /tx (0.47.0) + the host's POST /swap (0.44.0); after the swap = 0 (a pool event makes the page read the pools again)", async () => {
     heldWallet();
     const offs: (() => void)[] = [];
     let h: PoolsAnswer | null = null;
@@ -1019,7 +1022,7 @@ describe("requests per page (0.34.0)", () => {
     const q = quoteSwap({ tokenId: TOKEN, side: "buy", amountIn: 20_000n, maxSlippageBps: 100, maxSources: 1 }, h ?? parsePools({}), META);
     expect(since(n)).toEqual([]);
     expect(q.legs).toHaveLength(1);
-    // A swap (0.40.0): the overlay pass, then per leg ONE /pools/beef?pool= and its POST /swap to the host (0.44.0; test/clientSwap.test.ts).
+    // A swap (0.40.0): the overlay pass, then per leg ONE /tx?id= (0.47.0) and its POST /swap to the host (0.44.0; test/clientSwap.test.ts).
     // After it: the pages' data reloads (onDataChange) read the wallet and the cached list; a pool event makes the page read the pools.
     await myTokens();
     await walletSats();

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Beef, Transaction, Utils } from "@bsv/sdk";
 import * as overlay from "../src/lib/overlay";
-import { liveOfPools, parseAllPools, parsePools, poolOutputOf, readPoolsBeef, readTerms, readTx, toPoolRow } from "../src/lib/overlay";
+import { liveOfPools, parseAllPools, parsePools, poolOutputOf, readTerms, readTx, toPoolRow } from "../src/lib/overlay";
 import * as overlayMod from "../src/lib/overlay";
 import v from "./fixtures/amm-topic-vectors.json";
 
@@ -44,27 +44,24 @@ describe("the pools routes (P1, P2)", () => {
   });
 });
 
-describe("P3 /pools/beef, P7 /terms, P9 /tx (0.44.0: no P10 /swaps)", () => {
+describe("P7 /terms, P9 /tx (0.44.0: no P10 /swaps; 0.47.0: no P3 /pools/beef)", () => {
   const fund = Transaction.fromHex(v.fund);
   const tokenDeploy = Transaction.fromHex(v.token_deploy);
   const poolDeploy = Transaction.fromHex(v.pool_deploy);
   const pd = poolDeploy.id("hex");
 
-  it("P3 (0.40.0: by pool id): the pools and ONE BEEF of their transactions (base64); a pool's output out of it as an Atomic BEEF of its transaction", async () => {
+  it("0.47.0 (D1): a pool's output out of its transaction's BEEF (P9 /tx), as an Atomic BEEF of that transaction; none or a BEEF without it, null", () => {
     const b = new Beef();
     for (const t of [fund, tokenDeploy, poolDeploy]) b.mergeRawTx(t.toBinary());
-    const asked: string[] = [];
-    const pb = await readPoolsBeef("http://x/@t/amm", ["dd_0", "ee_1"], (async (url: string, init?: RequestInit) => {
-      asked.push(`${url} ${init?.cache ?? ""}`);
-      return json({ pools: [row(`${pd}_0`)], beef: Utils.toBase64(b.toBinary()) });
-    }) as never);
-    expect(asked).toEqual([`http://x/@t/amm/pools/beef?pool=dd_0,ee_1 `]);
-    expect(pb.pools.map((p) => [p.poolId, p.lpPubKey])).toEqual([["dd_0", LP]]);
-    const out = poolOutputOf(pb, `${pd}_0`)!;
-    expect(out.outputIndex).toBe(0);
-    expect(Transaction.fromAtomicBEEF(out.beef).id("hex")).toBe(pd);
-    expect(poolOutputOf(pb, `${"ee".repeat(32)}_0`)).toBeNull();
-    expect(poolOutputOf({ pools: [], beef: [] }, `${pd}_0`)).toBeNull();
+    const bytes = b.toBinaryAtomic(pd);
+    for (const op of [`${pd}_0`, `${pd}.0`]) {
+      const out = poolOutputOf(bytes, op)!;
+      expect(out.outputIndex).toBe(0);
+      expect(Transaction.fromAtomicBEEF(out.beef).id("hex")).toBe(pd);
+    }
+    expect(poolOutputOf(bytes, `${"ee".repeat(32)}_0`)).toBeNull();
+    expect(poolOutputOf(null, `${pd}_0`)).toBeNull();
+    expect(poolOutputOf([], `${pd}_0`)).toBeNull();
   });
 
   it("P7: the validator's terms with its identity and peer, and the market; no terms, validator null", async () => {

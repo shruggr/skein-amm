@@ -133,8 +133,8 @@ a refused or unanswered leg does not count, the last leg takes all that remains)
 action stages what `amm-swap` lacks of `quote.stage` (sats only: a plain createAction; a sell's
 tokens: the module transfer). Then legs one at a time: the SERVER's pool list read fresh (0.41.0:
 `GET /@<token>/amm/pools` before EACH leg; the client keeps no list of its own), the engine's
-`nextLeg` over it (`minOut` = the quote's floor less what has filled), the pool's current output by
-its id (`/pools/beef?pool=`), the staged rows that cover the leg (largest first), built, signed,
+`nextLeg` over it (`minOut` = the quote's floor less what has filled), the pool's transaction by the
+listed outpoint's txid (`/tx?id=`, 0.47.0; `/pools/beef` is gone), the staged rows that cover the leg (largest first), built, signed,
 relayed; accepted → taken in (payout, own commission, change) before the next leg; refused
 `pool_spent` → the list read again (the relaying host took the validator's state in before it
 answered, 0.41.0); refused otherwise → that pool output excluded; no answer → the overlay

@@ -20,7 +20,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const idOf = (lp: string) => `${lp.slice(2, 66)}_0`;
 const pool = (lp: string, outpoint: string, bsv = 1_000_000, tokens = 5_000_000) => ({ poolId: idOf(lp), lpPubKey: lp, swaps: 0, outpoint, bsvReserve: bsv, tokenReserve: tokens, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, validatorPeerId: PEER });
 const tradeRow = (lp: string, txid: string) => ({ txid, poolId: idOf(lp), lpPubKey: lp, payoutPkh: "ee".repeat(20), side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 50, bsvReserve: 1019910, tokenReserve: 4902394, at: 1793000000000, height: null });
-const statsRow = (tokenId: string) => ({ tokenId, price: { sats: 20000, tokens: 97606 }, buyPrice: { sats: 20100, tokens: 97606 }, sellPrice: { sats: 19900, tokens: 97606 }, lastTradePrice: { sats: 20000, tokens: 97000 }, change1h: 125, change24h: -310, volume24hSats: 41230, volume24hTokens: 200811, buys24h: 3, sells24h: 1, lastTradeAt: 1793000000000, tvlSats: 2019910, tvlTokens: 9902394, pools: 2 });
+const statsRow = (tokenId: string) => ({ tokenId, price: { sats: 20000, tokens: 97606 }, buyPrice: { sats: 20100, tokens: 97606 }, sellPrice: { sats: 19900, tokens: 97606 }, lastTradePrice: { sats: 20000, tokens: 97000 }, change1h: 125, change24h: -310, volume24hSats: 41230, volume24hTokens: 200811, buys24h: 3, sells24h: 1, lastTradeAt: 1793000000000, tvlSats: 2019910, tvlTokens: 9902394, pools: 2, volumeSats: 512345, volumeTokens: 2600000, trades: 41 });
 
 /** A client over a fetch that answers `answer(url)` and records each URL. */
 function clientOver(answer: (u: URL) => Response) {
@@ -67,7 +67,7 @@ describe("the history readers (H1–H6)", () => {
   it("stats: GET /@<token>/amm/stats; statsAll: GET /amm/stats (ids comma-separated); a null price kept null", async () => {
     const { c, asked } = clientOver((u) => (u.pathname === "/amm/stats" ? json([statsRow(T), { ...statsRow(`${"cd".repeat(32)}_0`), price: null, change1h: null }]) : json(statsRow(T))));
     const one = await c.stats(T);
-    expect(one).toEqual({ tokenId: T, price: { sats: 20000n, tokens: 97606n }, buyPrice: { sats: 20100n, tokens: 97606n }, sellPrice: { sats: 19900n, tokens: 97606n }, lastTradePrice: { sats: 20000n, tokens: 97000n }, change1h: 125, change24h: -310, volume24hSats: 41230n, volume24hTokens: 200811n, buys24h: 3, sells24h: 1, lastTradeAt: 1793000000000, tvlSats: 2019910n, tvlTokens: 9902394n, pools: 2 });
+    expect(one).toEqual({ tokenId: T, price: { sats: 20000n, tokens: 97606n }, buyPrice: { sats: 20100n, tokens: 97606n }, sellPrice: { sats: 19900n, tokens: 97606n }, lastTradePrice: { sats: 20000n, tokens: 97000n }, change1h: 125, change24h: -310, volume24hSats: 41230n, volume24hTokens: 200811n, buys24h: 3, sells24h: 1, lastTradeAt: 1793000000000, tvlSats: 2019910n, tvlTokens: 9902394n, pools: 2, volumeSats: 512345n, volumeTokens: 2600000n, trades: 41 });
     const all = await c.statsAll();
     expect(all[1]).toMatchObject({ price: null, change1h: null });
     await c.statsAll({ ids: [T] });

@@ -1,7 +1,7 @@
 /**
  * createClient's swap (0.40.0, agent-env plans/swap-balance-build-2026-11-05.md Builder 2 item 4):
  * what is staged (what `amm-swap` lacks of the swap amount and the fee sats), the loop one leg at a
- * time (`nextLeg` over the server's pools list read before each leg (0.41.0); the pool's current output read by its id; refused
+ * time (`nextLeg` over the server's pools list read before each leg (0.41.0); the chosen pool's transaction read by its current outpoint's txid (0.47.0: `/tx`); refused
  * `pool_spent` → the list read again, otherwise → excluded; no answer → the overlay, once more, a race),
  * the stop reasons, the leftovers moved back, the progress order, one swap at a time. The leg's
  * build, the relay, the overlay pass and the swap basket are faked here (their own tests are
@@ -21,7 +21,7 @@ const SKEIN = "02" + "33".repeat(32);
 const ID_A = `${"a1".repeat(32)}_0`;
 const ID_B = `${"b2".repeat(32)}_0`;
 
-/** The pools as they are now, by pool id (what `/pools/beef?pool=` answers). */
+/** The pools as they are now, by pool id (the server's pools list). */
 let current: Map<string, PoolState>;
 const outcomes: SwapOutcome[] = [];
 const relayed: { pool: string; order?: string; last: boolean }[] = [];
@@ -38,8 +38,8 @@ let covers = true;
 let satsRows = 0;
 /** Called after each relay with the leg's pool outpoint (a test moves the pools here). */
 let afterRelay: ((pool: string) => void) | null = null;
-/** Every pool id `/pools/beef?pool=` was asked for. */
-const beefReads: string[] = [];
+/** Every txid `/tx?id=` was asked for (0.47.0: the leg's pool transaction). */
+const txReads: string[] = [];
 /** 0.41.0: the pool ids the server's pools route lists (the quote's held ones), and how often it was read. */
 let listedIds: string[] = [];
 let poolsReads = 0;
@@ -81,12 +81,11 @@ vi.mock("../src/wallet/swapPayouts", async (orig) => ({
 }));
 vi.mock("../src/lib/overlay", async (orig) => {
   const real = await orig<typeof import("../src/lib/overlay")>();
-  const row = (id: string, p: PoolState) => ({ ...p, poolId: id, lpPubKey: "", swaps: 0 });
   return {
     ...real,
-    readPoolsBeef: vi.fn(async (_b: string, ids?: string[]) => (beefReads.push(...(ids ?? [])), { pools: (ids ?? []).flatMap((id) => (current.has(id) ? [row(id, current.get(id)!)] : [])), beef: [] })),
-    // 0.40.2: the host serves a pool output only when it lists the pool there.
-    poolOutputOf: vi.fn((pb: { pools: { outpoint: string }[] }, outpoint: string) => (pb.pools.some((x) => x.outpoint === outpoint) ? { beef: [], outputIndex: 0 } : null)),
+    // 0.47.0: the leg's pool transaction, `/tx?id=` (the instance holds every pool transaction).
+    readTx: vi.fn(async (_b: string, txid: string) => (txReads.push(txid), [1])),
+    poolOutputOf: vi.fn((beef: number[] | null) => (beef ? { beef: [], outputIndex: 0 } : null)),
     readSpendsAll: vi.fn(async (_b: string, ops: string[]) => spentRead(ops)),
     // 0.41.0: the server's pools route, read before each leg: the listed pools as they are now.
     readPools: vi.fn(async () => (poolsReads++, {
@@ -137,7 +136,7 @@ beforeEach(() => {
   covers = true;
   satsRows = 0;
   afterRelay = null;
-  beefReads.length = 0;
+  txReads.length = 0;
   listedIds = [];
   poolsReads = 0;
 });
@@ -178,6 +177,8 @@ describe("executeSwap (0.40.0): one swap at a time, legs one at a time", () => {
     // Filled: nothing moved back; the overlay pass ran before the swap.
     expect(movedBack).toEqual([]);
     expect(resolveCalls).toBe(1);
+    // 0.47.0 (D1): the leg read its pool's transaction by the listed outpoint's txid, once.
+    expect(txReads).toEqual([A0.slice(0, 64)]);
   });
 
   it("what the basket already holds is used first: only the lack is staged; a sell stages its tokens with the sats; all held: no stage", async () => {

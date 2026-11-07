@@ -520,7 +520,7 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token 
 
 const reads = @import("src/reads.zig");
 
-test "spends (0.9.0): the chain state of an outpoint — a pool followed from the deploy to its current output; closed by Close; unspent" {
+test "spends (0.9.0; 0.47.0 one lookup): an outpoint's spender, no pool following — {outpoint, spentBy?}" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -532,25 +532,15 @@ test "spends (0.9.0): the chain state of an outpoint — a pool followed from th
         _ = try ch.putTx(w.beef.txidOf(raw), raw);
     }
     const pd = w.beef.txidOf(unhex(a, vec.pool_deploy));
-    const s2 = w.beef.txidOf(unhex(a, vec.swap_tokens_in));
-    // Followed: two swaps.
-    const at_deploy = try reads.spendOf(a, &ch, .{ .txid = pd, .vout = 0 });
-    try testing.expectEqual(@as(u32, 2), at_deploy.hops);
-    try testing.expect(!at_deploy.closed);
-    try testing.expectEqualSlices(u8, &s2, &at_deploy.current.?.txid);
+    // The deploy's pool output: its spender only (the first Swap), not the pool's current output.
+    const at_deploy = try reads.spendOf(&ch, .{ .txid = pd, .vout = 0 });
     try testing.expectEqualSlices(u8, &w.beef.txidOf(unhex(a, vec.swap_bsv_in)), &at_deploy.spent_by.?);
-    // An output that is not a pool (the LP's token change): unspent.
-    const change = try reads.spendOf(a, &ch, .{ .txid = pd, .vout = 2 });
-    try testing.expect(change.spent_by == null and change.current == null);
-    // Closed: the pool's last output spent by Close.
-    const cl = unhex(a, vec.close);
-    _ = try ch.putTx(w.beef.txidOf(cl), cl);
-    const after = try reads.spendOf(a, &ch, .{ .txid = pd, .vout = 0 });
-    try testing.expect(after.closed);
-    try testing.expect(after.current == null);
-    const json = try reads.spendJson(a, after);
-    try testing.expect(std.mem.indexOf(u8, json, "\"closed\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"hops\":2") != null);
+    const json = try reads.spendJson(a, at_deploy);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"outpoint\":\"{s}.0\",\"spentBy\":\"{s}\"}}", .{ &w.header.toHex(pd), &w.header.toHex(w.beef.txidOf(unhex(a, vec.swap_bsv_in))) }), json);
+    // An output nobody spent (the LP's token change): no spentBy.
+    const change = try reads.spendOf(&ch, .{ .txid = pd, .vout = 2 });
+    try testing.expect(change.spent_by == null);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"outpoint\":\"{s}.2\"}}", .{&w.header.toHex(pd)}), try reads.spendJson(a, change));
     // The query.
     const q = reads.queryOutpoint("outpoint=" ++ "ab" ** 32 ++ ".4").?;
     try testing.expectEqual(@as(u32, 4), q.vout);
@@ -758,7 +748,6 @@ test "read API (0.34.0): the routes and their filters in the manifest — plain 
     const a = arena.allocator();
     const m = try dagjson.decode(a, manifest_json);
     const want = [_][2][]const u8{
-        .{ "/pools/beef", "poolsBeef" },
         .{ "/positions", "positions" },
         .{ "/fees/validator", "validatorFees" },
         .{ "/fees/commission", "commissionFees" },
@@ -847,37 +836,6 @@ test "read API (0.34.0; 0.40.0 by pool id): P4 /positions — the lookup's {pool
     try testing.expectError(error.BadQuery, reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "poolIds", &.{"02zz"}));
 }
 
-test "read API (0.34.0; 0.40.0 by pool id): P3 /pools/beef — the pool ids' current pools (an unknown id none), every live pool with no id; one BEEF of their transactions" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try ReadEnv.init(a);
-    defer e.deinit();
-    const s2 = w.beef.txidOf(unhex(a, vec.swap_tokens_in));
-
-    const mine = try reads.currentPools(a, &e.svc, &e.ch, e.token, &.{ unknown_pool, try poolText(a) });
-    try testing.expectEqual(@as(usize, 1), mine.len);
-    try testing.expectEqualSlices(u8, &s2, &reads.rowOutpoint(mine[0]).?.txid);
-    try testing.expectEqualStrings(vec.lp, mine[0].getText("lpPubKey").?);
-    try testing.expect(mine[0].get("validatorPeerId") == null);
-    try testing.expectEqual(@as(usize, 0), (try reads.currentPools(a, &e.svc, &e.ch, e.token, &.{unknown_pool})).len);
-    const all = try reads.currentPools(a, &e.svc, &e.ch, e.token, null);
-    try testing.expectEqual(@as(usize, 1), all.len);
-
-    const beef = try ov_engine.state.beefOfMany(&e.ch, &.{s2});
-    const j = try jsonOf(a, try reads.poolsBeefJson(a, mine, beef));
-    try testing.expectEqual(@as(usize, 1), j.object.get("pools").?.array.items.len);
-    const b64 = j.object.get("beef").?.string;
-    const back = try a.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(b64));
-    try std.base64.standard.Decoder.decode(back, b64);
-    try testing.expectEqualSlices(u8, beef, back);
-    // The BEEF holds the pool's transaction and its ancestry to the proven funding.
-    const parsed = try w.beef.parse(a, back);
-    var has = false;
-    for (parsed.entries) |en| has = has or eql(u8, &en.txid, &s2);
-    try testing.expect(has);
-}
-
 test "read API (0.34.0): P8 /spends list form — one record per outpoint in query order" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -887,15 +845,15 @@ test "read API (0.34.0): P8 /spends list form — one record per outpoint in que
     const pd = w.beef.txidOf(unhex(a, vec.pool_deploy));
     const s2 = w.beef.txidOf(unhex(a, vec.swap_tokens_in));
     const ss = [_]reads.Spend{
-        try reads.spendOf(a, &e.ch, .{ .txid = s2, .vout = 0 }),
-        try reads.spendOf(a, &e.ch, .{ .txid = pd, .vout = 0 }),
+        try reads.spendOf(&e.ch, .{ .txid = s2, .vout = 0 }),
+        try reads.spendOf(&e.ch, .{ .txid = pd, .vout = 0 }),
     };
     const j = try jsonOf(a, try reads.spendsJson(a, &ss));
     try testing.expectEqual(@as(usize, 2), j.array.items.len);
     try testing.expect(j.array.items[0].object.get("spentBy") == null);
-    try testing.expectEqual(@as(i64, 0), j.array.items[0].object.get("hops").?.integer);
-    try testing.expectEqual(@as(i64, 2), j.array.items[1].object.get("hops").?.integer);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}.0", .{&w.header.toHex(s2)}), j.array.items[1].object.get("current").?.string);
+    try testing.expect(j.array.items[1].object.get("spentBy") != null);
+    // 0.47.0: no pool following.
+    for (j.array.items) |x| try testing.expectEqual(@as(usize, if (x.object.get("spentBy") == null) 1 else 2), x.object.count());
 }
 
 test "read API (0.34.0): P9 /tx — the transaction's BEEF; immutable only when proven, else the short cache; unknown none" {
@@ -1057,6 +1015,10 @@ test "history reads (0.36.0): H2 /candles — the six resolutions, prices as {sa
     try testing.expectEqual(@as(i64, 1), st.get("pools").?.integer);
     try testing.expect(st.get("tvlSats").?.integer > 0 and st.get("tvlTokens").?.integer > 0);
     try testing.expect(st.get("volume24hSats").?.integer > 20_000);
+    // 0.47.0: the token's lifetime counters (both Swaps).
+    try testing.expectEqual(@as(i64, 2), st.get("trades").?.integer);
+    try testing.expectEqual(st.get("volume24hSats").?.integer, st.get("volumeSats").?.integer);
+    try testing.expectEqual(st.get("volume24hTokens").?.integer, st.get("volumeTokens").?.integer);
 }
 
 test "pool history reads (0.40.0): /pools/at?t= — every pool listed at t, its state after its last event at or before t; /pools/history — the window's events oldest first, one pool or all, the limit; bad parameters 400" {
@@ -1150,13 +1112,12 @@ test "spends (0.40.0, VERIFY): /spends answers spentBy for a plain sats output a
     // fund:1 is a plain P2PKH output (the taker's sats), no token prefix, not a pool.
     const ft = try Transaction.parse(a, unhex(a, vec.fund));
     try testing.expectEqual(@as(usize, 25), ft.outputs[1].locking_script.bytes.len);
-    const sp = try reads.spendOf(a, &e.ch, .{ .txid = fund, .vout = 1 });
+    const sp = try reads.spendOf(&e.ch, .{ .txid = fund, .vout = 1 });
     try testing.expectEqualSlices(u8, &s1, &sp.spent_by.?);
-    try testing.expect(sp.current == null and !sp.closed and sp.hops == 0);
     const j = (try jsonOf(a, try reads.spendJson(a, sp))).object;
     try testing.expectEqualStrings(&w.header.toHex(s1), j.get("spentBy").?.string);
     // An output nobody spent (fund:3): no spentBy.
-    try testing.expect((try reads.spendOf(a, &e.ch, .{ .txid = fund, .vout = 3 })).spent_by == null);
+    try testing.expect((try reads.spendOf(&e.ch, .{ .txid = fund, .vout = 3 })).spent_by == null);
 }
 
 test "pool events (0.41.0): each emitted event's row is the `/pools/history` row byte for byte — the route's JSON is the events' rows' JSON in order" {

@@ -465,12 +465,12 @@ BUMP in chain state) transaction, else `state`; `stream` = `text/event-stream`, 
 |---|---|---|---|---|
 | P1 | `GET <origin>/amm/pools` | HOST (A) | `[{tokenId, …P2 row}]` over every enabled token | state + stream |
 | P2 | `GET <origin>/@<token>/amm/pools` | HOST (A) | `[{lpPubKey, outpoint, bsvReserve, tokenReserve, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, validatorPeerId}]` — ONLY pools whose validator is beating on `tm_color_<token>-live` now (peer ID from the beat's `from`) AND whose `commissionBps` ≥ the instance's market minimum; plus top-level `market: {commissionPkh, minCommissionBps}` and (0.34.1, David) `validators: [{identity, peerId}]` = the validators beating on the token's topic now (the pools filter unchanged) → answer shape `{market, validators, pools: [...]}` | state + stream |
-| P3 | `GET /@<token>/amm/pools/beef?pool=id1,id2` (0.40.0: by pool id, `?lp=` gone) | amm-p2p (B) | `{pools: [{…P2 row without validatorPeerId}], beef: <base64 BEEF of the current pool txs>}`; no `pool` = every live pool | state |
+| P3 | (0.47.0: gone — a pool's transaction is P9 `/tx?id=` of its current outpoint's txid, which P2 carries; Close reads the wallet's held output) | | | |
 | P4 | `GET /@<token>/amm/positions?pool=id1,id2` (0.40.0) | amm-p2p (B) via the lookup's `{poolIds}` answer | `[{poolId, lpPubKey, status: live\|rescinded\|closed, outpoint?, current?: {…P2 row}, sats, tokens, swaps}]` one per id in query order | state |
 | P5 | `GET /@<token>/amm/fees/validator?id=k1,k2` | amm-p2p (B) via `{validatorIdentityKeys}` | `[{validatorIdentityKey, sats, tokens, swaps, pools}]` | state |
 | P6 | `GET /@<token>/amm/fees/commission?pkh=h1,h2` | amm-p2p (B) via `{commissionPkhs}` | `[{commissionPkh, sats, tokens, swaps}]` | state |
 | P7 | `GET /@<token>/amm/terms` | amm-p2p (B) | `{validator: {identity, peerId, lpFeeBps, validatorFeeBps, commissionBps, minLegSats} \| null, market: {commissionPkh, minCommissionBps}}` (the two `/call` answers in one, unsigned; 0.40.0: `minLegSats` the validator's minimum leg, sats, 0 none) | state |
-| P8 | `GET /@<token>/amm/spends?outpoint=a,b` | amm-p2p (B) | `[{outpoint, spentBy?, current?, hops, closed}]` one per outpoint in query order (today's single form kept working) | state |
+| P8 | `GET /@<token>/amm/spends?outpoint=a,b` | amm-p2p (B) | `[{outpoint, spentBy?}]` one per outpoint in query order (today's single form kept working); 0.47.0: one lookup in the chain state's `spent` each — the pool-following `current`, `hops`, `closed` gone (following a pool is `/pools/history`) | state |
 | P9 | `GET /@<token>/amm/tx?id=<txid>` | amm-p2p (B) | the transaction's BEEF bytes, `application/octet-stream` (`beefFor`); 404 unknown | imm |
 | P10 | (0.44.0: gone — no swap records: the host relays, the instance logs facts, never attempts) | | | |
 | P11 | `GET /@<token>/amm/token` | unchanged | | state |
@@ -485,11 +485,9 @@ BUMP in chain state) transaction, else `state`; `stream` = `text/event-stream`, 
 List parameters are comma-separated; answers list one record per key in query order (D1). `/submit`,
 `/lookup`, `/sendMessage`, `/call` (writes) and the `.live`/`.events` host reads stay as they are.
 
-This app answers P3–P10 (amm-p2p, reads.zig; filters `poolsBeef`, `positions`, `validatorFees`,
-`commissionFees`, `readTerms`, `spends`, `tx`, `swaps`); P4–P6 are the pool lookup's own list
-answers (amm-lookup `answer`, the same code `/lookup` runs), P3's pools its `{poolIds}` records'
-`current` (live, or a rescinded pool's output the LP's Close takes back) or, with no `lp`, its
-`{tokenId}` rows. P1 and P2 (`/pools`) are the HOST's (it joins its liveness and the market's
+This app answers P4–P9 (amm-p2p, reads.zig; filters `positions`, `validatorFees`,
+`commissionFees`, `readTerms`, `spends`, `tx`; 0.44.0: no `swaps`; 0.47.0: no `poolsBeef`); P4–P6 are the pool lookup's own list
+answers (amm-lookup `answer`, the same code `/lookup` runs; 0.47.0: each pool row carries `lifetime`, the pool's counters). P1 and P2 (`/pools`) are the HOST's (it joins its liveness and the market's
 minimum to the lookup's rows; D11, D13): no route of this app. The pages (web/ui) read only these
 routes and the wallet; they send `/lookup` nowhere.
 
@@ -519,7 +517,7 @@ amounts — a buy `amountIn / amountOut`, a sell `amountOut / amountIn`):
 | H1 | `GET /@<token>/amm/trades?from=<ms>&to=<ms>&limit=<n≤500>&before=<cursor>&pool=<txid>_<vout>` | `{trades: [<row>], next: <cursor> \| null}` newest first, `from ≤ at < to` (both optional), `limit` default 100, `next` the last row's cursor when the page is full (hex of `at (u64 BE) ‖ txid`), `pool` one pool's rows (0.40.0, was `lp`); a row `{txid, poolId, lpPubKey, side, amountIn, amountOut, feeLp, feeValidator, feeCommission, bsvReserve, tokenReserve, payoutPkh, at, height}` (0.40.0: `poolId`, `payoutPkh` the call's `userPkh`), `height` where the overlay has the txid `placed` (its `<app>/state` map `placed`, written once the proof landed), else null |
 | H1 | `GET /@<token>/amm/trades?txid=<txid>` | the one row; 404 none |
 | H2 | `GET /@<token>/amm/candles?tf=1m\|5m\|15m\|1h\|4h\|1d&from=<ms>&to=<ms>` | `[{t, o, h, l, c, volumeSats, volumeTokens, n}]` one per NON-EMPTY bucket, oldest first, across all pools: `t` the bucket's start (a multiple of `tf` since the epoch), `o`/`h`/`l`/`c` prices, the volumes each side's amounts summed, `n` the trades; `from ≤ at < to`, both required; more than 5000 buckets, 400 |
-| H3 | `GET /@<token>/amm/stats` | `{tokenId, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools}` at the read's time: `lastTradePrice` (0.40.0, was `price`; the host sets `price`) the last trade's, else null; the changes in bps (integers, truncated toward zero) from the last trade at or before the window's start, null without one; volumes and counts over the trades of the last 24 h; TVL the live pools' reserves summed; `pools` the live pool count |
+| H3 | `GET /@<token>/amm/stats` | `{tokenId, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools, volumeSats, volumeTokens, trades}` at the read's time (0.47.0: the last three the token's lifetime counters, amm-lookup's `counters`; Swaps admitted before 0.47.0 not counted): `lastTradePrice` (0.40.0, was `price`; the host sets `price`) the last trade's, else null; the changes in bps (integers, truncated toward zero) from the last trade at or before the window's start, null without one; volumes and counts over the trades of the last 24 h; TVL the live pools' reserves summed; `pools` the live pool count |
 
 ## The pool id and the pool history (0.40.0)
 
@@ -545,7 +543,7 @@ Swap's event is its trade row. Nothing derived is stored; the reads read only th
 | `POST /submit` | BRC-22 (`X-Topics` a registered topic): the request waits on the submission and answers the STEAK; 400 for a BEEF that does not verify or a rejected transaction; 503 + Retry-After while undecided (skein-overlay 0.9.1; 0.7.3–0.9.0 answered `{id}`) |
 | `POST /lookup` | BRC-24: `ls_amm_<assetId>` (0.21.0) `{tokenId}`, `{tokenId, outpoint, beef?}`, `{tokenId, validatorIdentityKey}` (listed pools only); 0.33.0: `{tokenId, poolIds}` (0.40.0, was `{lpPubKeys}`), `{tokenId, validatorIdentityKeys}`, `{tokenId, commissionPkhs}` (the fee rows, "Fees" below); a token instance's `ls_color_<assetId>`; the discovery instance's `ls_color` (skein-1color README; 0.20.0) |
 | `GET /requests` | amm-p2p `requests` (0.9.0): the holders' listing requests not yet registered, newest first, `[{tokenId, from, at}]`; a read. The config app's in 0.17.0; removed in 0.19.0 |
-| `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): the chain state of an outpoint, a pool followed to its current output, `{outpoint, spentBy?, current?, hops, closed}`; a read |
+| `GET /spends?outpoint=<txid>.<vout>` | amm-p2p `spends` (0.9.0): an outpoint's spender in the chain state, `{outpoint, spentBy?}` (0.47.0: one lookup, no pool following); a read |
 | `GET /listTopicManagers`, `/listLookupServiceProviders`, `/getDocumentationFor…` | the listings (each program's `metadata` / `documentation`); reads since 0.5.0 |
 | `GET /.live/tm_color_<txid>_0-live` | the runtime's liveness read (skein #138, no program): `[{sender, at, body, from}]` newest first, the beats within the window (`body` the topic's view digest; the validator is `sender`, its peer ID `from`); 404 when the app keeps no liveness for the topic (the topic not registered) |
 | `GET /color/tokens` | color-lookup `tokens`: the token list, `{limit?, skip?}` → `[{tokenId, topic, sym, dec, icon?, txid, vout}]` (`icon` a 1Color deploy's embedded image as a data URL, skein-1color 0.9.0); a read (0.6.0) |
@@ -793,7 +791,7 @@ writes fails inside the call). Exact paths match before a prefix, so
 | `/requests` | read | `requests` → `amm-p2p.requests` | 0.9.0; the config app's in 0.17.0; removed in 0.19.0 |
 | `/spends` | read | `spends` → `amm-p2p.spends` | 0.9.0 |
 | `/token` | read | `token` → `amm-setup.token` | 0.22.0 |
-| `/pools/beef`, `/positions`, `/fees/validator`, `/fees/commission`, `/terms`, `/tx` | read | `poolsBeef`, `positions`, `validatorFees`, `commissionFees`, `readTerms`, `tx` → `amm-p2p.<the same>` | 0.34.0 ("The public read API"; 0.44.0: `/swaps` gone) |
+| `/positions`, `/fees/validator`, `/fees/commission`, `/terms`, `/tx` | read | `positions`, `validatorFees`, `commissionFees`, `readTerms`, `tx` → `amm-p2p.<the same>` | 0.34.0 ("The public read API"; 0.44.0: `/swaps` gone; 0.47.0: `/pools/beef` gone) |
 | `/trades`, `/candles`, `/stats` | read | `trades`, `candles`, `stats` → `amm-p2p.<the same>` | 0.36.0 ("The history reads") |
 | `/color/` (prefix) | read | `colorToken` → `color-lookup.token` (skein-1color 0.15.0: `/color/<tokenId>/holders?limit=&skip=` → `{count, rows: [{address, balance}]}`, the token's holders from color-lookup's balance table) | 0.37.0 |
 | `/.live/tm_color_<txid>_0-live`, `/.live/ls_amm_<txid>_0-live` | the runtime's liveness read (no program, skein #138) | | |
