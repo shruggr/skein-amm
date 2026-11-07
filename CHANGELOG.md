@@ -4,6 +4,22 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.46.2 (2026-11-07)
+
+- amm-validator proves a swap request's BEEF before it takes the pool's lock and before it signs (D6). It runs skein-sdk's
+  `spv.verify` (the verifier skein 0.3.3's door runs) with the chain state's headers and the held set (in `txs`, not
+  rejected) over every transaction but the swap. Then it checks the swap's inputs: each source is in the BEEF or held,
+  and every script verifies except the pool input's empty slot. On failure the answer is `bad_transaction`, with the
+  verifier's error name, its meaning, and the txid or input (`UnknownTxidOnly: … (<txid>)`). Nothing is signed, no lock
+  is taken, and no queue is joined (a waiter that is refused leaves its queue). This holds even while the pool is locked.
+- What changes as a result: a raw request whose funding is not held is refused `MissingInput` before signing. An
+  unsigned or badly signed funding is refused `bad_transaction ScriptFailed`, because the verifier runs before the
+  per-input check.
+- Not changed: a door refusal of the validator's own submission still does not resolve the frame thread (D7, a note
+  in main.zig). The page's txid rule is 0.45.0's.
+- bin/amm-validator.wasm CHANGED (sha256 e99ef111c215022f…); the other programs are 0.46.1's. `@dcasegr/amm-engine`
+  and `@dcasegr/amm-client` 0.46.2.
+
 ## 0.46.1 (2026-11-07)
 
 - The page build typechecks. `syncPool` names the cursor it compares, and the openex fees close test uses `LP_KEY_PROTOCOL`. The programs are 0.46.0's. `@dcasegr/amm-engine` and `@dcasegr/amm-client` 0.46.1.
