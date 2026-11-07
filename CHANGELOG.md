@@ -4,6 +4,21 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.46.3 (2026-11-07)
+
+Pins only: skein-overlay v0.21.0 and skein-1color v0.16.2 (skein-sdk 0.14.0 through them). A BEEF
+out — the chain state's `beefOf`, the engine's `beefOfMany`, the sync's per-block BUMP — carries one
+BUMP per block, selected from the chain's tree nodes in one descent (`merkle.pathsFor`), no
+`MerklePath.combine` (it rebuilt and sorted every level per merge; K ancestors in one block cost
+O(K²) and worse, and reads died "fuel exhausted" near 800 KB). No code of this repo changed.
+
+- `bin/overlay.wasm` = v0.21.0's (sha256 4616849f…), `bin/color-lookup.wasm` = v0.16.2's
+  (b2645466…); `bin/amm-lookup.wasm` (7348e2be…), `bin/amm-p2p.wasm` (35464cf5…) and
+  `bin/amm-validator.wasm` (824750cd…) rebuilt on the new SDK; `amm-setup.wasm` and
+  `color-topic.wasm` the same bytes.
+- Versions: etc/app.json, amm-setup's version test, README table and pins, @dcasegr/amm-engine and
+  @dcasegr/amm-client 0.46.3 (the client on the engine 0.46.3). zig 117, vitest 300, engine 68.
+
 ## 0.46.2 (2026-11-07)
 
 - amm-validator proves a swap request's BEEF before it takes the pool's lock and before it signs (D6). It runs skein-sdk's
