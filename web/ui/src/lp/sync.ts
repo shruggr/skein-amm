@@ -31,6 +31,8 @@ export interface SyncIo {
 export interface CollectResult {
   /** Absent when the basket had nothing to spend. */
   txid?: string;
+  /** 0.48.2: the pools whose walk stopped before catching up (their later fees are not in this collect). */
+  stopped?: { poolId: string; reason: string }[];
   sats: bigint;
   tokens: { tokenId: string; amount: bigint }[];
 }
@@ -136,38 +138,46 @@ function continuationOf(held: WalletOutput, tx: Transaction, poolId: string): Wa
 }
 
 /**
- * Walk `poolId` from the output the wallet holds. One internalize per hop that
- * still has a continuation or a fee to file. Stops when the next event does
- * not spend that output, when output 0 is not a pool, or when the transaction
- * cannot be read. Does not throw for a missing transaction.
+ * How a walk ended (0.48.2): caught up (the pool's history has nothing after the output the wallet
+ * holds), or stopped at a hop it could not take in, with the reason. A stopped walk leaves the
+ * wallet's row where it was: Close must not spend it (the pool has moved past it).
  */
-export async function syncPool(wallet: WalletInterface, poolId: string, io: SyncIo): Promise<void> {
+export type SyncResult = { caughtUp: true } | { caughtUp: false; reason: string };
+
+/**
+ * Walk `poolId` from the output the wallet holds. One internalize per hop that
+ * still has a continuation or a fee to file, each with that transaction's Atomic BEEF. Stops (and
+ * says why) when the next event's transaction cannot be read, does not spend that output, has no
+ * pool at output 0, or the wallet refuses it. A pool the wallet holds no row of: nothing to walk.
+ */
+export async function syncPool(wallet: WalletInterface, poolId: string, io: SyncIo): Promise<SyncResult> {
   const [pools, fees] = await Promise.all([basketRows(wallet, POOLS_BASKET), basketRows(wallet, FEES_BASKET)]);
   const opening = heldPoolRow(pools, poolId);
-  if (!opening) return;
+  if (!opening) return { caughtUp: true };
   let current: WalletOutput = opening;
   const knownPools = new Set(pools.map(rowKey).filter((k): k is string => k !== null));
   const knownFees = new Set(fees.map(rowKey).filter((k): k is string => k !== null));
   let cursor = serverOutpoint(current.outpoint);
-  if (!cursor) return;
+  if (!cursor) return { caughtUp: false, reason: `the wallet's row names no outpoint (${current.outpoint})` };
 
-  const apply = async (event: PoolEvent): Promise<"stop" | string> => {
+  const apply = async (event: PoolEvent): Promise<{ stop: string } | { next: string }> => {
     const raw = await io.readTx(event.txid);
-    if (!raw) return "stop";
+    if (!raw) return { stop: `the transaction ${event.txid} cannot be read from the exchange` };
     let beef: Beef;
     try {
       beef = Beef.fromBinary(raw);
     } catch {
-      return "stop";
+      return { stop: `the transaction ${event.txid}'s BEEF does not parse` };
     }
     const tx = txOf(beef, event.txid);
-    if (!tx || !spendsHeld(tx, current)) return "stop";
+    if (!tx) return { stop: `the BEEF the exchange served for ${event.txid} does not hold it` };
+    if (!spendsHeld(tx, current)) return { stop: `${event.txid} does not spend the pool output the wallet holds (${current.outpoint})` };
     const out0 = tx.outputs[0];
     const pool = out0?.lockingScript ? PoolTemplate.decode(out0.lockingScript) : null;
-    if (!pool) return "stop";
+    if (!pool) return { stop: `${event.txid}'s output 0 is not a pool` };
     const rescind = event.kind === "rescind" || PoolTemplate.rescinded(pool);
     const wantFee = event.kind === "swap" && (event.feeLp ?? 0n) > 0n && !rescind;
-    if (wantFee && !tx.outputs[2]) throw new Error("the swap names an LP fee and has no output 2");
+    if (wantFee && !tx.outputs[2]) return { stop: `${event.txid} names an LP fee and has no output 2` };
     const txid = tx.id("hex").toLowerCase();
     const contKnown = knownPools.has(pointKey(txid, 0));
     const feeKnown = !wantFee || knownFees.has(pointKey(txid, 2));
@@ -182,7 +192,7 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
       }
       if (wantFee && !feeKnown) {
         const key = storedKey(current.customInstructions);
-        if (!key) throw new Error("the pool output names no key");
+        if (!key) return { stop: "the pool output names no key" };
         // 0.48.0 (D9): the key and the pool id only; a token fee's token is its script's.
         outputs.push({
           outputIndex: 2,
@@ -193,24 +203,32 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
           },
         });
       }
-      await wallet.internalizeAction({ tx: beef.toBinary(), outputs, description: "AMM pool output filed" });
+      try {
+        // 0.48.2: the transaction's Atomic BEEF (internalizeAction takes nothing else).
+        await wallet.internalizeAction({ tx: beef.toBinaryAtomic(txid), outputs, description: "AMM pool output filed" });
+      } catch (e) {
+        return { stop: `the wallet refused ${txid}: ${e instanceof Error ? e.message : String(e)}` };
+      }
       if (!contKnown) knownPools.add(pointKey(txid, 0));
       if (wantFee && !feeKnown) knownFees.add(pointKey(txid, 2));
     }
     current = continuationOf(current, tx, poolId);
-    return `${txid}_0`;
+    return { next: `${txid}_0` };
   };
 
   for (;;) {
-    const page = await io.history(cursor);
-    if (page.events.length === 0) break;
-    const start: string = cursor;
-    for (const event of page.events) {
-      const next = await apply(event);
-      if (next === "stop") return;
-      cursor = next;
+    let page: { events: PoolEvent[] };
+    try {
+      page = await io.history(cursor);
+    } catch (e) {
+      return { caughtUp: false, reason: `the pool's history cannot be read: ${e instanceof Error ? e.message : String(e)}` };
     }
-    if (cursor === start) break;
+    if (page.events.length === 0) return { caughtUp: true };
+    for (const event of page.events) {
+      const r = await apply(event);
+      if ("stop" in r) return { caughtUp: false, reason: r.stop };
+      cursor = r.next;
+    }
   }
 }
 

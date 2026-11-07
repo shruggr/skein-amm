@@ -581,8 +581,9 @@ describe("exchange.ts, wired", () => {
     inst.lpPools[PID] = { poolId: PID, lpPubKey: v.lp, status: "live", outpoint: `${pd}_0`, current: wirePool(pd, v.pool0), sats: 0, tokens: 0, swaps: 0 };
     await myPositions();
     const n = inst.requests.length;
-    // The fake server has no history route: the catch-up stops on that read, before any BEEF.
-    await expect(closePosition({ poolId: PID })).rejects.toThrow();
+    // The fake server has no history route: the catch-up stops on that read, before any BEEF, and
+    // the Close says so (0.48.2) instead of spending the held row.
+    await expect(closePosition({ poolId: PID })).rejects.toThrow(/^could not catch up: the pool's history cannot be read/);
     expect(since(n)).toEqual([`GET /@${TOKEN}/amm/pools/history?limit=100&outpoint=${PID}`]);
     expect(since(n).some((r) => r.includes("/pools/beef"))).toBe(false);
   });
