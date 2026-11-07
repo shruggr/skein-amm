@@ -54,6 +54,10 @@ import {
   type TermsInput,
 } from "../data/exchange";
 import { NeedWallet, Notice, TokenName } from "./bits";
+import { fmtSats } from "./format";
+
+/** Whole sats with thousands separators, for display. */
+const groupSats = (n: number): string => (Number.isSafeInteger(n) ? fmtSats(BigInt(n)) : String(n));
 
 /** The claim card's sentence (0.26.0). */
 export const CLAIM_TEXT = "Nobody has claimed this exchange yet. The wallet that claims it becomes its admin: it enables tokens and sets terms.";
@@ -181,7 +185,7 @@ function EnableCard({ discovery }: { discovery: Data<Discovery> }) {
         Enable a token
       </h2>
       {list.data === null ? (
-        <p className="muted">{list.error ? `Could not read the tokens to enable: ${list.error}` : "Loading…"}</p>
+        <p className={list.error ? "bad" : "muted loading"}>{list.error ? `Could not read the tokens to enable: ${list.error}` : "Loading…"}</p>
       ) : (
         <EnableList rows={list.data} discoveryOff={discovery.data?.on === false} busy={busy} run={run} onSent={(id, r) => setDone(enableSentText(id, r))} />
       )}
@@ -303,7 +307,7 @@ function DefaultTermsCard({ defaults }: { defaults: Data<Defaults> }) {
         Default validator terms
       </h2>
       {t === undefined ? (
-        <p className="muted">{terms.error ? `Could not read the defaults: ${terms.error}` : "Reading the defaults…"}</p>
+        <p className={terms.error ? "bad" : "muted loading"}>{terms.error ? `Could not read the defaults: ${terms.error}` : "Reading the defaults…"}</p>
       ) : t ? (
         <p className="fg2">
           {tokenTermsText(t)}. A token enabled from now on starts validating at these terms.
@@ -368,7 +372,7 @@ function DefaultMarketCard({ defaults }: { defaults: Data<Defaults> }) {
         Default market minimum
       </h2>
       {m === null ? (
-        <p className="muted">{market.error ? `Could not read the defaults: ${market.error}` : "Reading the defaults…"}</p>
+        <p className={market.error ? "bad" : "muted loading"}>{market.error ? `Could not read the defaults: ${market.error}` : "Reading the defaults…"}</p>
       ) : m > 0 ? (
         <p className="fg2">Minimum commission {m} bps. A token enabled from now on lists only pools at or above it on the Swap page.</p>
       ) : (
@@ -419,8 +423,8 @@ export function priceSats(text: string): number | null | undefined {
 }
 
 /** What the price record says (0.42.0). */
-export function enablePriceText(sats: number | undefined): string {
-  return sats ? `Anyone with a wallet can enable a token for ${sats} sats. Only you can disable it.` : "Off: only you enable tokens.";
+export function enablePriceText(sats: number | undefined, fmt: (n: number) => string = String): string {
+  return sats ? `Anyone with a wallet can enable a token for ${fmt(sats)} sats. Only you can disable it.` : "Off: only you enable tokens.";
 }
 
 /** The price to enable a token (0.42.0, root only): one field; empty turns it off. */
@@ -448,9 +452,9 @@ function EnablePriceCard({ defaults }: { defaults: Data<Defaults> }) {
         Price to enable a token
       </h2>
       {defaults.data === null ? (
-        <p className="muted">{defaults.error ? `Could not read the defaults: ${defaults.error}` : "Reading the defaults…"}</p>
+        <p className={defaults.error ? "bad" : "muted loading"}>{defaults.error ? `Could not read the defaults: ${defaults.error}` : "Reading the defaults…"}</p>
       ) : (
-        <p className="fg2">{enablePriceText(defaults.data.enablePriceSats)}</p>
+        <p className="fg2">{enablePriceText(defaults.data.enablePriceSats, groupSats)}</p>
       )}
       <div className="row row-wrap">
         <div className="field">
@@ -471,8 +475,8 @@ function EnablePriceCard({ defaults }: { defaults: Data<Defaults> }) {
 }
 
 /** The exchange's wallet line (0.42.0). */
-export function exchangeWalletText(w: ExchangeWallet): string {
-  return `Exchange wallet: ${w.sats} sats`;
+export function exchangeWalletText(w: ExchangeWallet, fmt: (n: number) => string = String): string {
+  return `Exchange wallet: ${fmt(w.sats)} sats`;
 }
 
 /** What the Withdraw button says once sent (0.42.0). */
@@ -493,9 +497,9 @@ function ExchangeWalletCard({ wallet }: { wallet: Data<ExchangeWallet> }) {
         Exchange wallet
       </h2>
       {wallet.data === null ? (
-        <p className="muted">{wallet.error ? `Could not read the exchange's wallet: ${wallet.error}` : "Reading the exchange's wallet…"}</p>
+        <p className={wallet.error ? "bad" : "muted loading"}>{wallet.error ? `Could not read the exchange's wallet: ${wallet.error}` : "Reading the exchange's wallet…"}</p>
       ) : (
-        <p className="fg2">{exchangeWalletText(wallet.data)}</p>
+        <p className="fg2">{exchangeWalletText(wallet.data, groupSats)}</p>
       )}
       <div className="row row-wrap">
         <button
@@ -559,7 +563,7 @@ function DiscoveryCard({ discovery }: { discovery: Data<Discovery> }) {
         </label>
       </div>
       {d === null ? (
-        <p className="muted">{discovery.error ? `Could not read discovery: ${discovery.error}` : "Reading discovery…"}</p>
+        <p className={discovery.error ? "bad" : "muted loading"}>{discovery.error ? `Could not read discovery: ${discovery.error}` : "Reading discovery…"}</p>
       ) : (
         <p className="fg2">{discoveryText(d)}</p>
       )}
@@ -676,7 +680,7 @@ function EnabledRow({ t }: { t: RegisteredToken }) {
       <span className="req-text">
         <TokenName tokenId={t.tokenId} sym={t.sym} {...(t.icon ? { icon: t.icon } : {})} size="sm" />
         <span className="small muted">
-          {status}
+          <span className={`pill pill-${status}`}>{status}</span>
           {enabled && <TokenTermsLine terms={terms} error={termsError} note={note} />}
         </span>
       </span>
@@ -698,7 +702,7 @@ function EnabledRow({ t }: { t: RegisteredToken }) {
           confirm ? (
             <span className="row row-wrap end">
               <span className="small fg2">Stop {t.sym}&apos;s instance?</span>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => run(() => disableToken(t.tokenId))}>
+              <button type="button" className="btn btn-danger" disabled={busy} onClick={() => run(() => disableToken(t.tokenId))}>
                 {busy ? "Disabling…" : "Disable"}
               </button>
               <button type="button" className="btn btn-outline" disabled={busy} onClick={() => setConfirm(false)}>
@@ -772,7 +776,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
               Enabled
             </h2>
             {reg.data === null ? (
-              <p className="muted">Loading…</p>
+              <p className="muted loading">Loading…</p>
             ) : reg.data.length === 0 ? (
               <p className="muted">No token is enabled.</p>
             ) : (
