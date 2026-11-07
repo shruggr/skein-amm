@@ -285,11 +285,19 @@ test "admitted: a pool deploy that passes the checks is indexed once, and the an
     try testing.expectEqualStrings(try opStr(a, pd_txid, 0), entry.getText("poolId").?);
     try testing.expectEqual(@as(u64, 0), entry.get("swaps").?.uint);
     // 0.47.0: the pool's counters, `lifetime` (no Swap yet: zeros, lastTradeAt null).
-    try testing.expectEqual(@as(usize, 11), entry.map.len);
+    // 0.48.0 (D1): THE pool row (poolRowFields: `at` too) and `lifetime`, 12 fields.
+    try testing.expectEqual(@as(usize, 12), entry.map.len);
+    try testing.expectEqualStrings("poolId", entry.map[0].key);
+    try testing.expectEqualStrings("outpoint", entry.map[1].key);
+    try testing.expect(entry.get("at") != null);
     try testing.expectEqual(@as(u64, 0), entry.get("lifetime").?.get("satsIn").?.uint);
     try testing.expect(entry.get("lifetime").?.get("lastTradeAt").? == .null);
     // The dupe wrote one deploy event.
     try testing.expectEqual(@as(usize, 1), try svc.map("history").count());
+    // 0.48.0 (D1): ONE record per hop — `pools` links the deploy's history row itself.
+    const pooled = (try svc.map("pools").prefixed(&.{}))[0].value.cid;
+    try testing.expectEqualSlices(u8, (try svc.map("history").prefixed(&.{}))[0].value.cid, pooled);
+    try testing.expectEqualStrings("deploy", (try svc.store.getValue(a, pooled)).getText("kind").?);
 
     // {outpoint}: a direct hit is 0 hops.
     const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }});
@@ -426,10 +434,11 @@ test "listing (0.13.0): a continuation is listed only when it is a Swap of a lis
     try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
     try testing.expectEqualStrings(try opStr(a, hop.txid, 0), all.freeform.array[0].getText("outpoint").?);
 
-    // The record carries the ValidatorPubKey (33 zero bytes means rescinded).
+    // The record is the hop's event (0.48.0, D1): a Swap's, with the identity; no ValidatorPubKey.
     const cid = (try svc.map("pools").prefixed(try w.store.nameKey(a, e.topic, &.{})))[0].value.cid;
     const rec = try svc.store.getValue(a, cid);
-    try testing.expectEqual(@as(usize, 33), (rec.getBytes("validatorPubKey") orelse return error.TestUnexpectedResult).len);
+    try testing.expectEqualStrings("swap", rec.getText("kind").?);
+    try testing.expect(rec.get("validatorPubKey") == null);
     try testing.expectEqualSlices(u8, &key33(vec.identity), rec.getBytes("validatorIdentityKey").?);
     try testing.expect(rec.get("claim") == null);
 }
@@ -514,51 +523,27 @@ test "listing (0.13.0): the LP's Close and the validator's Rescind end the live 
     }
 }
 
-test "beat (0.12.0): the body is this skein's per-token, per-validator totals of its listed pools, kept and handed on only when it changes" {
+test "no beat (0.48.0, D5): the hooks hand the engine no beat body and the spec has no fn beat; a rescinded hop stays in `pools`, out of the live list" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var svc = try e.svc(a);
-    const token = e.token;
+    var ch = try e.chain(a);
 
-    // Nothing listed: no tokens.
-    try testing.expectEqual(@as(usize, 0), (try idx.beatValue(a, &svc)).get("tokens").?.map.len);
+    if (@hasField(lookup.Spec, "beat")) try testing.expect(idx.spec.beat == null);
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    const v1 = try idx.beatValue(a, &svc);
-    const t1 = v1.get("tokens").?.get(token).?.get(vec.identity).?;
-    try testing.expectEqual(@as(u64, vec.pool0.bsv), t1.getUint("sats").?);
-    try testing.expectEqual(@as(u64, vec.pool0.tokens), t1.getUint("tokens").?);
-    try testing.expectEqual(@as(u64, 1), t1.getUint("pools").?);
-    // What fn "beat" answers is that body, dag-cbor; the hook kept its record.
-    try testing.expectEqualSlices(u8, try cbor.encode(a, v1), try idx.beat(a, &svc));
-    const kept1 = (try svc.map("beat").link("body")).?;
-    try testing.expectEqualSlices(u8, kept1, try svc.store.putValue(a, v1));
-    if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 1), svc.beats.items.len);
-
-    // A dupe admission changes nothing: no new beat.
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expectEqualSlices(u8, kept1, (try svc.map("beat").link("body")).?);
-    if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 1), svc.beats.items.len);
-
-    // A swap moves the totals.
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
     try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("pool_deploy"), .vout = 0 }, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")));
-    const t2 = (try idx.beatValue(a, &svc)).get("tokens").?.get(token).?.get(vec.identity).?;
-    try testing.expectEqual(@as(u64, vec.pool1.bsv), t2.getUint("sats").?);
-    try testing.expectEqual(@as(u64, vec.pool1.tokens), t2.getUint("tokens").?);
-    try testing.expect(!std.mem.eql(u8, kept1, (try svc.map("beat").link("body")).?));
-
-    // The fixture Rescind spends the second Swap's output. Its record stays in `pools` with a
-    // cleared validator key, and the beat skips it.
     try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
     try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
     const cl = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
     try idx.admitted(a, &svc, e.topic, cl, &.{0}, &.{0});
     try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
+    if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 0), svc.beats.items.len);
     try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 0), (try idx.beatValue(a, &svc)).get("tokens").?.map.len);
+    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
 }
 
 test "admitted: another topic's call indexes nothing" {
@@ -781,7 +766,16 @@ fn poolIdText(a: Allocator, e: *Env) ![]const u8 {
 }
 const unknown20 = "55" ** 20;
 
-test "fee rows (0.33.0): a Swap's admission writes its row under the pool's LP key (the three fees, the asset, the commission's key hash) and its membership under the key hash; a deploy writes none" {
+/// The Swap rows (0.48.0, D2: `fees` gone): `history` rows of kind `swap`.
+fn swapRows(a: Allocator, svc: *lookup.Service) !usize {
+    var n: usize = 0;
+    for (try svc.map("history").prefixed(&.{})) |kv| {
+        if (std.mem.eql(u8, (try svc.store.getValue(a, kv.value.cid)).getText("kind") orelse "", "swap")) n += 1;
+    }
+    return n;
+}
+
+test "fee rows (0.33.0; 0.48.0: the Swap's history row): a Swap's admission writes its row (the three fees, the asset, the commission's key hash) and its membership under the key hash; a deploy writes none" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -789,13 +783,12 @@ test "fee rows (0.33.0): a Swap's admission writes its row under the pool's LP k
     defer e.deinit();
     var svc = try e.svc(a);
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expectEqual(@as(usize, 0), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 0), try swapRows(a, &svc));
     try twoSwaps(a, e, &svc);
-    try testing.expectEqual(@as(usize, 2), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 2), try swapRows(a, &svc));
     try testing.expectEqual(@as(usize, 2), try svc.map("byCommission").count());
     const tp = try w.store.nameKey(a, e.topic, &.{});
-    const cid = (try svc.map("fees").link(try cat(a, &.{ tp, &poolId(e), &e.f.txid("swap_bsv_in") }))).?;
-    const rec = try svc.store.getValue(a, cid);
+    const rec = (try idx.tradeOf(a, &svc, tp, e.f.txid("swap_bsv_in"))).?.rec;
     try testing.expectEqual(@as(u64, 60), rec.getUint("lp").?);
     try testing.expectEqual(@as(u64, 10), rec.getUint("validator").?);
     try testing.expectEqual(@as(u64, 20), rec.getUint("commission").?);
@@ -813,7 +806,7 @@ test "fee rows (0.33.0): a rejected Swap's row and membership are removed; the o
     var svc = try e.svc(a);
     try twoSwaps(a, e, &svc);
     try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    try testing.expectEqual(@as(usize, 1), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
     try testing.expectEqual(@as(usize, 1), try svc.map("byCommission").count());
     var ch = try e.chain(a);
     const ans = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
@@ -832,7 +825,7 @@ test "fee rows (0.33.0): a Swap with no commission writes its row (commission 0)
     var ch = try e.chain(a);
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
     try e.admit(a, &svc, "swap_bsv_in", try noCommission(a, e.f.tx("swap_bsv_in")), &.{ 0, 1 }, &.{0});
-    try testing.expectEqual(@as(usize, 1), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
     try testing.expectEqual(@as(usize, 0), try svc.map("byCommission").count());
     const lp = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
     try testing.expectEqual(@as(u64, 60), lp.get("sats").?.uint);
@@ -840,7 +833,7 @@ test "fee rows (0.33.0): a Swap with no commission writes its row (commission 0)
     try testing.expectEqual(@as(u64, 0), com.get("swaps").?.uint);
     // Rejected: its row goes, nothing else to remove.
     try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), try noCommission(a, e.f.tx("swap_bsv_in"))));
-    try testing.expectEqual(@as(usize, 0), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 0), try swapRows(a, &svc));
 }
 
 test "queries (0.40.0): {poolIds} — one record per pool id, its LP key, the LP fees (sats from sats-in, tokens from token-in), status live with its outpoint and current; closed after the Close; an unknown id closed with zeros" {
@@ -955,38 +948,28 @@ test "queries (0.40.0): {poolIds} — a pool the validator rescinded is `rescind
     try idx.admitted(a, &svc2, e.topic, rs, &.{0}, &.{0});
     try idx.spent(a, &svc2, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
     try idx.rejected(a, &svc2, e.topic, rs);
-    try testing.expectEqual(@as(usize, 0), try svc2.map("rescinded").count());
     const back = (try idx.answer(a, &svc2, &ch2, q)).freeform.array[0];
     try testing.expectEqualStrings("live", back.getText("status").?);
     try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), back.getText("outpoint").?);
 }
 
-test "byPool (0.40.0): every listed hop of a pool id, live and spent — a spend keeps it, a rejection removes the rejected transaction's" {
+test "hops (0.48.0, D2: `byPool` and `byValidator` gone): a pool's hops are its `pools` and `spentPools` records, its live hop its last history row's; a rejection removes the rejected transaction's" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const pid = poolId(e);
-    const member = struct {
-        fn f(al: Allocator, s: *lookup.Service, t: []const u8, k: [36]u8, txid: [32]u8) !bool {
-            return s.map("byPool").has(try cat(al, &.{ t, &k, &w.store.outpointKey(txid, 0) }));
-        }
-    }.f;
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expect(try member(a, &svc, tp, pid, e.f.txid("pool_deploy")));
-    try twoSwaps(a, e, &svc); // re-admits the deploy (a dupe), then the two Swaps and their spends
-    try testing.expectEqual(@as(usize, 3), try svc.map("byPool").count());
-    try testing.expectEqual(@as(usize, 3), try svc.map("byValidator").count()); // byValidator too: live and spent (0.33.0)
-    // Rejected: the token-in Swap's pool leaves; the spent ones stay.
+    var ch = try e.chain(a);
+    try twoSwaps(a, e, &svc); // the deploy, then the two Swaps and their spends
+    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
+    try testing.expectEqual(@as(usize, 2), try svc.map("spentPools").count());
     try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    try testing.expect(!try member(a, &svc, tp, pid, e.f.txid("swap_tokens_in")));
-    try testing.expect(try member(a, &svc, tp, pid, e.f.txid("swap_bsv_in")));
-    try testing.expect(try member(a, &svc, tp, pid, e.f.txid("pool_deploy")));
-    try testing.expectEqual(@as(usize, 2), try svc.map("byPool").count());
-    try testing.expectEqual(@as(usize, 2), try svc.map("byValidator").count());
+    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
+    try testing.expectEqual(@as(usize, 1), try svc.map("spentPools").count());
+    const ans = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
+    try testing.expectEqualStrings("live", ans.getText("status").?);
+    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_bsv_in"), 0), ans.getText("outpoint").?);
 }
 
 test "validator (0.33.0): {validatorIdentityKeys} sums the fee rows of all its pools, closed included; {validatorIdentityKey} still answers its live pools only" {
@@ -1029,7 +1012,7 @@ fn poolOf(t: bsvz.transaction.Transaction) idx.PoolFields {
 }
 
 fn tradeRec(a: Allocator, svc: *lookup.Service, tp: []const u8, txid: [32]u8) !Value {
-    return svc.store.getValue(a, (try svc.map("fees").link(try cat(a, &.{ tp, &w.store.outpointKey(w.beef.txidOf(unhex(a, vec.pool_deploy)), 0), &txid }))).?);
+    return (try idx.tradeOf(a, svc, tp, txid)).?.rec;
 }
 
 fn atKey(a: Allocator, tp: []const u8, at: u64, txid: [32]u8) ![]u8 {
@@ -1086,7 +1069,8 @@ test "trade rows (0.36.0): a sats-in Swap writes a buy, a token-in Swap a sell �
     try testing.expectEqual(p1.bsv_reserve, buy.getUint("bsvReserve").?);
     try testing.expectEqual(p1.token_reserve, buy.getUint("tokenReserve").?);
     try testing.expectEqual(@as(u64, 1_000), buy.getUint("at").?);
-    try testing.expectEqualSlices(u8, (try svc.map("fees").link(try cat(a, &.{ tp, &poolId(e), &e.f.txid("swap_bsv_in") }))).?, (try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))).?);
+    // 0.48.0 (D1): the continuation's `spentPools` record is the trade row itself.
+    try testing.expectEqualSlices(u8, (try svc.map("spentPools").link(try cat(a, &.{ tp, &w.store.outpointKey(e.f.txid("swap_bsv_in"), 0) }))).?, (try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))).?);
 
     const sell = try tradeRec(a, &svc, tp, e.f.txid("swap_tokens_in"));
     try testing.expectEqualStrings("sell", sell.getText("side").?);
@@ -1110,7 +1094,7 @@ test "trade rows (0.36.0): a sats-in Swap writes a buy, a token-in Swap a sell �
     try testing.expect((try svc2.map("trades").link(try atKey(a, tp, 5_000, e.f.txid("swap_bsv_in")))) != null);
 }
 
-test "trade rows (0.36.0): a rejected Swap's trade row leaves `trades` with its fee row; the other stays" {
+test "trade rows (0.36.0): a rejected Swap's trade row leaves `trades` with its history row; the other stays" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1122,7 +1106,7 @@ test "trade rows (0.36.0): a rejected Swap's trade row leaves `trades` with its 
     const tp = try w.store.nameKey(a, e.topic, &.{});
     try testing.expectEqual(@as(usize, 1), try svc.map("trades").count());
     try testing.expect((try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))) != null);
-    try testing.expectEqual(@as(usize, 1), try svc.map("fees").count());
+    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
 }
 
 test "history (0.36.0): trades newest first — the window, the limit and the cursor, one LP key's rows, one Swap by txid" {
@@ -1229,7 +1213,7 @@ test "history (0.36.0): candles from the trade rows — one per non-empty bucket
     try testing.expectError(error.TooManyBuckets, idx.candles(a, &svc, tp, m, 30_000, 5000 * m + 30_000));
 }
 
-test "history (0.36.0; 0.40.0): stats — the last trade's price (lastTradePrice), the changes from the prices at the windows' starts in bps, 24 h volumes and counts, the live pools' TVL; null changes without a trade that old; no trade, no price" {
+test "history (0.36.0; 0.40.0; 0.48.0 D4): stats — the last trade's price (lastTradePrice), 24 h volumes and counts; no TVL, pool count or changes (the host's); no trade, no price" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1239,41 +1223,32 @@ test "history (0.36.0; 0.40.0): stats — the last trade's price (lastTradePrice
     const tp = try w.store.nameKey(a, e.topic, &.{});
     const now: u64 = 10 * idx.day_ms;
 
-    // Nothing at all: no price, no changes.
+    // Nothing at all: no price.
     const none = try idx.stats(a, &svc, tp, now);
-    try testing.expect(none.last_trade_price == null and none.change1h == null and none.change24h == null and none.last_trade_at == null);
-    try testing.expectEqual(@as(u64, 0), none.pools);
+    try testing.expect(none.last_trade_price == null and none.last_trade_at == null);
+    try testing.expect(!@hasField(idx.Stats, "tvl_sats") and !@hasField(idx.Stats, "pools") and !@hasField(idx.Stats, "change1h"));
 
     // A live pool, no trade: no last trade price (0.40.0: the host prices from the pools).
     idx.now_ms = 1;
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    const p0 = poolOf(e.f.tx("pool_deploy"));
     const only_pool = try idx.stats(a, &svc, tp, now);
     try testing.expect(only_pool.last_trade_price == null);
-    try testing.expectEqual(@as(u64, 1), only_pool.pools);
-    try testing.expectEqual(p0.bsv_reserve, only_pool.tvl_sats);
-    try testing.expectEqual(p0.token_reserve, only_pool.tvl_tokens);
-    try testing.expect(only_pool.change24h == null);
 
     // Trades within the last hour only: no trade at either window's start.
     try putRow(a, &svc, tp, now - 30 * 60_000, 1, "buy", 200, 100); // 2
     try putRow(a, &svc, tp, now - 10 * 60_000, 2, "sell", 10, 30); // 3
     const recent = try idx.stats(a, &svc, tp, now);
     try expectPrice(30, 10, recent.last_trade_price.?);
-    try testing.expect(recent.change1h == null and recent.change24h == null);
     try testing.expectEqual(@as(u64, 230), recent.volume24h_sats);
     try testing.expectEqual(@as(u64, 110), recent.volume24h_tokens);
     try testing.expectEqual(@as(u64, 1), recent.buys24h);
     try testing.expectEqual(@as(u64, 1), recent.sells24h);
     try testing.expectEqual(now - 10 * 60_000, recent.last_trade_at.?);
 
-    // A trade 2 h ago (price 2.4) and one 2 days ago (price 1.5): the changes against them; the
-    // 2-day-old one is out of the 24 h volume.
+    // A trade 2 h ago and one 2 days ago: the 2-day-old one is out of the 24 h volume.
     try putRow(a, &svc, tp, now - 2 * idx.hour_ms, 3, "buy", 24, 10);
     try putRow(a, &svc, tp, now - 2 * idx.day_ms, 4, "sell", 10, 15);
     const s = try idx.stats(a, &svc, tp, now);
-    try testing.expectEqual(@as(i64, 2500), s.change1h.?); // 2.4 → 3: +25 %
-    try testing.expectEqual(@as(i64, 10000), s.change24h.?); // 1.5 → 3: +100 %
     try testing.expectEqual(@as(u64, 230 + 24), s.volume24h_sats);
     try testing.expectEqual(@as(u64, 2), s.buys24h);
     try testing.expectEqual(@as(u64, 1), s.sells24h);
@@ -1327,8 +1302,8 @@ test "pool id (0.40.0): the deploy's outpoint, copied forward at each Swap with 
         try testing.expectEqualSlices(u8, &pid, r.getBytes("poolId").?);
         try testing.expectEqual(@as(u64, n), r.getUint("swaps").?);
     }
-    try testing.expectEqual(@as(u64, 100), r0.getUint("admittedAt").?);
-    try testing.expectEqual(@as(u64, 2_000), r2.getUint("admittedAt").?);
+    try testing.expectEqual(@as(u64, 100), r0.getUint("at").?);
+    try testing.expectEqual(@as(u64, 2_000), r2.getUint("at").?);
     // history: tp ‖ poolId ‖ at ‖ swaps, in that order: deploy, swap, swap.
     const evs = try histOf(a, &svc, tp, null, null, pid, 500);
     try testing.expectEqualStrings("dss", try kinds(a, evs));
@@ -1338,8 +1313,8 @@ test "pool id (0.40.0): the deploy's outpoint, copied forward at each Swap with 
     try testing.expectEqualSlices(u8, &w.store.outpointKey(e.f.txid("pool_deploy"), 0), evs[0].rec.getBytes("outpoint").?);
     try testing.expectEqual(@as(u64, vec.pool0.bsv), evs[0].rec.getUint("bsvReserve").?);
     try testing.expectEqualSlices(u8, &key33(vec.lp), evs[0].rec.getBytes("lpPubKey").?);
-    // A Swap's event IS its trade row: one record under history, fees and trades.
-    const fee = (try svc.map("fees").link(try cat(a, &.{ tp, &pid, &e.f.txid("swap_bsv_in") }))).?;
+    // A Swap's event IS its trade row and its hop's record (0.48.0): one record under history, trades and spentPools.
+    const fee = (try svc.map("spentPools").link(try cat(a, &.{ tp, &w.store.outpointKey(e.f.txid("swap_bsv_in"), 0) }))).?;
     try testing.expectEqualSlices(u8, fee, (try svc.map("history").link(try cat(a, &.{ tp, &pid, &be64t(1_000), &be64t(1) }))).?);
     try testing.expectEqualSlices(u8, fee, (try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))).?);
     try testing.expectEqual(@as(usize, 0), try svc.map("closes").count());
@@ -1397,7 +1372,7 @@ test "pool history (0.40.0): a Rescind stores its output in `pools` with swaps t
     const r = try recordAt(a, &svc, tp, "pools", e.f.txid("rescind"));
     try testing.expectEqualSlices(u8, &pid, r.getBytes("poolId").?);
     try testing.expectEqual(@as(u64, 3), r.getUint("swaps").?);
-    try testing.expect(std.mem.allEqual(u8, r.getBytes("validatorPubKey").?, 0));
+    try testing.expectEqualStrings("rescind", r.getText("kind").?);
     try testing.expectEqualSlices(u8, &key33(vec.identity), r.getBytes("validatorIdentityKey").?);
     const evs = try histOf(a, &svc, tp, null, null, pid, 500);
     try testing.expectEqualStrings("dssr", try kinds(a, evs));
@@ -1425,7 +1400,6 @@ test "pool history (0.40.0): a Rescind stores its output in `pools` with swaps t
     try idx.rejected(a, &svc2, e.topic, rs);
     try testing.expectEqualStrings("dss", try kinds(a, try histOf(a, &svc2, tp, null, null, pid, 500)));
     try testing.expectEqual(@as(usize, 0), try svc2.map("closes").count());
-    try testing.expectEqual(@as(usize, 0), try svc2.map("rescinded").count());
 }
 
 test "pool history (0.40.0): a rejected Swap's event and a rejected deploy's event go with their pools" {
@@ -1444,8 +1418,7 @@ test "pool history (0.40.0): a rejected Swap's event and a rejected deploy's eve
     try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("pool_deploy"), e.f.tx("pool_deploy")));
     try testing.expectEqual(@as(usize, 0), try svc.map("history").count());
     try testing.expectEqual(@as(usize, 0), try svc.map("trades").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("fees").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("byPool").count());
+    try testing.expectEqual(@as(usize, 0), try svc.map("spentPools").count());
     try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
 }
 

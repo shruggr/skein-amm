@@ -559,7 +559,8 @@ describe("exchange.ts, wired", () => {
     expect(ia.labels).toEqual(["amm-pool-deploy"]);
     expect(ia.outputs).toHaveLength(1);
     expect(ia.outputs[0]).toMatchObject({ outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "amm-pools", tags: ["amm-pool"] } });
-    expect(JSON.parse(ia.outputs[0]!.insertionRemittance.customInstructions)).toMatchObject({ id: TOKEN, op: "amm-pool", sym: "TST", dec: "0", keyID: "lp key", protocolID: [2, "3241645161d8"] });
+    // 0.48.0 (D9): the key and the pool id only (the deploy outpoint); the symbol is the overlay's.
+    expect(JSON.parse(ia.outputs[0]!.insertionRemittance.customInstructions)).toEqual({ protocolID: [2, "3241645161d8"], keyID: "lp key", counterparty: "self", poolId: `${pd}_0` });
     // Filed already (the basket lists it), or the pool moved on: nothing filed.
     internalized = [];
     connect({ pools: [{ outpoint: `${pd}.0`, satoshis: v.pool0.bsv, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), tags: ["amm-pool"], customInstructions: ci }], actions: [action(poolDeploy.outputs[0]!.lockingScript.toHex())] });

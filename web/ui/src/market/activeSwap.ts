@@ -13,7 +13,7 @@
  *     as the LP key's `amm-lp <hex>`), the action labelled `SWAP_STAGE_LABEL`; the module selects
  *     the token inputs, adds change, signs and submits; the page submits it too, then files the
  *     token output in `amm-swap` (basket insertion, `{assetId, amount, protocolID, keyID,
- *     counterparty}`). A labelled staged token output the basket lacks (the page died before the
+ *     counterparty}`; 0.48.0 no `assetId`/`amount`, the script holds them). A labelled staged token output the basket lacks (the page died before the
  *     filing) is filed on load from the action's description (`unfiledStagedTokens`).
  *   - **Spent** by the legs (src/market/swapAction.ts), their change kept here between legs.
  *   - **Move back** (`moveBack`, as 0.29.3): ONE createAction through the wallet's BRC-207 module,
@@ -190,7 +190,7 @@ export async function stage(
   try {
     const r = await wallet.internalizeAction({
       tx,
-      outputs: [{ outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ assetId, amount, protocolID: SWAP_PROTOCOL, keyID, counterparty: "self" }) } }],
+      outputs: [{ outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ protocolID: SWAP_PROTOCOL, keyID, counterparty: "self" }) } }],
       description: describe(`AMM swap: ${sym} into the swap basket`),
       labels: ["amm-swap"],
     });
@@ -237,7 +237,7 @@ export async function unfiledStagedTokens(wallet: WalletInterface): Promise<Unfi
 export async function fileStagedToken(wallet: WalletInterface, u: UnfiledStaged, beef: number[]): Promise<boolean> {
   const r = await wallet.internalizeAction({
     tx: beef,
-    outputs: [{ outputIndex: u.vout, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ assetId: sdkTokenId(u.tokenId), amount: u.amount, protocolID: SWAP_PROTOCOL, keyID: u.keyID, counterparty: "self" }) } }],
+    outputs: [{ outputIndex: u.vout, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ protocolID: SWAP_PROTOCOL, keyID: u.keyID, counterparty: "self" }) } }],
     description: "AMM swap: a staged token filed",
     labels: ["amm-swap"],
   });

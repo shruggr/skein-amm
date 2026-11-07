@@ -109,7 +109,7 @@ import { formatAmount } from "./lp/amounts.js";
 import { basketRows } from "./lp/wallet.js";
 import { buildInventory, decodeTokenRow, deployIcon } from "./lp/inventory.js";
 import { imageDataUrl } from "./lp/images.js";
-import { deployPool } from "./lp/poolDeploy.js";
+import { deployPool, poolCustomInstructions, poolRowTokenId } from "./lp/poolDeploy.js";
 import { rebalancePool } from "./lp/rebalance.js";
 import { historyPoolRows, mergePoolRows, positionRowsOf, type PositionRow } from "./lp/positions.js";
 import { isPoolRow } from "./lp/poolRows.js";
@@ -531,19 +531,6 @@ export function legCarrySats(leg: Pick<Leg, "liquidityFee" | "validationFee" | "
  */
 export const SPEC_OP_WALLET_BALANCE = "893b7646de0e1c9f741bd6e9169b76a8847ae34adef7bef1e6a285371206d2e8";
 
-/** A filed row's customInstructions with the token's symbol and decimals in (as a deploy files them), unless they are there. */
-function withMeta(customInstructions: string | undefined, sym: string | undefined, dec: number | undefined): string | undefined {
-  if (!customInstructions) return customInstructions;
-  try {
-    const ci = JSON.parse(customInstructions) as Record<string, unknown>;
-    if (ci.sym !== undefined || (sym === undefined && dec === undefined)) return customInstructions;
-    const { id, op, ...rest } = ci;
-    return JSON.stringify({ id, op, ...(sym ? { sym } : {}), ...(dec !== undefined ? { dec: String(dec) } : {}), ...rest });
-  } catch {
-    return customInstructions;
-  }
-}
-
 /** The topic a token's pools are admitted under (BRC-207; skein-amm 0.8.0): derived, never typed. */
 export function topicOf(tokenId: TokenId): string {
   return `tm_color_${sdkTokenId(tokenId)}`;
@@ -554,7 +541,7 @@ export function lookupOf(tokenId: TokenId): string {
   return `ls_color_${sdkTokenId(tokenId)}`;
 }
 
-/** The AMM lookup's service of a token, `ls_amm_<assetId>` (0.21.0): a token instance's config names it, so it beats its prices on `ls_amm_<assetId>-live` (skein-overlay 0.17.0: a configured lookup beats). */
+/** The AMM lookup's service of a token, `ls_amm_<assetId>` (0.21.0): a token instance's config names it (0.48.0: it beats no body of its own). */
 export function ammLookupOf(tokenId: TokenId): string {
   return ammLookupService(tokenId);
 }
@@ -1397,7 +1384,9 @@ function makeClient(opts: ClientOptions, s: Shared) {
     try {
       const beef = await readTx(base, op.txid, f);
       if (!beef) return;
-      const customInstructions = withMeta(h.customInstructions, meta.sym, meta.dec);
+      // 0.48.0 (D9): the key and the pool id only (the deploy's outpoint); the symbol is the overlay's.
+      const key = storedKey(h.customInstructions);
+      const customInstructions = key ? poolCustomInstructions({ protocolID: key.protocolID, keyID: key.keyID, poolId: key.poolId ?? `${op.txid}_${op.vout}` }) : h.customInstructions;
       await wallet.internalizeAction({
         tx: beef,
         outputs: [{ outputIndex: op.vout, protocol: "basket insertion", insertionRemittance: { basket: POOLS_BASKET, ...(h.tags ? { tags: h.tags } : {}), ...(customInstructions ? { customInstructions } : {}) } }],
@@ -1468,10 +1457,12 @@ function makeClient(opts: ClientOptions, s: Shared) {
     const held = heldPoolRow(rows, req.poolId);
     if (!held?.lockingScript) throw new Error("No such position");
     const key = storedKey(held.customInstructions);
-    if (!key?.id) throw new Error("No such position");
+    // 0.48.0 (D9): the token is the held output's script's (a row filed before, its `id`).
+    const tokenId = poolRowTokenId(held);
+    if (!key || !tokenId) throw new Error("No such position");
     if (!key.protocolID || !key.keyID) throw new Error("the pool output names no key");
-    const base = await tokenBaseOf(key.id);
-    const m = (await tokenMeta()).get(key.id);
+    const base = await tokenBaseOf(tokenId);
+    const m = (await tokenMeta()).get(tokenId);
     await syncPool(wallet, req.poolId, {
       history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
       readTx: (txid) => readTx(base, txid, freshFetch),
@@ -1489,7 +1480,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
     if (!beef) throw new Error("the pool output's transaction is not on this exchange");
     const prepared = await prepareClose({
       wallet,
-      tokenId: key.id,
+      tokenId,
       meta: m ? { sym: m.sym, dec: m.dec } : undefined,
       poolOutput: { beef, outputIndex: vout },
       lpKey: key2,
@@ -1520,19 +1511,21 @@ function makeClient(opts: ClientOptions, s: Shared) {
     const seen = new Set<string>();
     for (const row of rows) {
       if (!isPoolRow(row)) continue;
-      let ci: { id?: string; poolId?: string } = {};
+      let ci: { poolId?: string } = {};
       try {
-        ci = JSON.parse(row.customInstructions ?? "{}") as { id?: string; poolId?: string };
+        ci = JSON.parse(row.customInstructions ?? "{}") as { poolId?: string };
       } catch {
         continue;
       }
-      if (typeof ci.id !== "string") continue;
+      // 0.48.0 (D9): the token is the row's script's (a row filed before, its `id`).
+      const tokenId = poolRowTokenId(row);
+      if (!tokenId) continue;
       const named = typeof ci.poolId === "string" ? ci.poolId : row.outpoint.replace(".", "_");
       const parsed = parseOutpoint(named);
       const id = parsed ? `${parsed.txid}_${parsed.vout}` : named.toLowerCase();
       if (seen.has(id)) continue;
       seen.add(id);
-      const base = await tokenBaseOf(ci.id);
+      const base = await tokenBaseOf(tokenId);
       await syncPool(wallet, id, {
         history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
         readTx: (txid) => readTx(base, txid, freshFetch),

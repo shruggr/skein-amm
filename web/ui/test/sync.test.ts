@@ -204,11 +204,12 @@ describe("syncPool", () => {
     const [continuation, fee] = filed[0]!.outputs;
     expect(continuation).toMatchObject({ outputIndex: 0, insertionRemittance: { basket: POOLS_BASKET, tags: [POOL_TAG] } });
     const contCi = JSON.parse(continuation!.insertionRemittance!.customInstructions!);
-    expect(contCi).toMatchObject({ ...HELD, poolId: POOL_ID });
+    // 0.48.0 (D9): the key and the pool id only, whatever the held row carried.
+    expect(contCi).toEqual({ protocolID: HELD.protocolID, keyID: HELD.keyID, counterparty: "self", poolId: POOL_ID });
     expect(fee).toMatchObject({ outputIndex: 2, insertionRemittance: { basket: FEES_BASKET } });
     expect(fee!.insertionRemittance).not.toHaveProperty("tags");
     const feeCi = JSON.parse(fee!.insertionRemittance!.customInstructions!);
-    expect(feeCi).toEqual({ protocolID: HELD.protocolID, keyID: HELD.keyID, counterparty: "self", poolId: POOL_ID, id: TOKEN_ID });
+    expect(feeCi).toEqual({ protocolID: HELD.protocolID, keyID: HELD.keyID, counterparty: "self", poolId: POOL_ID });
     expect(feeCi).not.toHaveProperty("op");
     expect(io.asked).toEqual([POOL_ID, swapCursor]);
 
@@ -256,7 +257,7 @@ describe("syncPool", () => {
     expect(filed[0]!.outputs[0]!.insertionRemittance!.basket).toBe(POOLS_BASKET);
   });
 
-  it("files a token fee from output 2 and takes the token id off that output", async () => {
+  it("files a token fee from output 2 (its token that output's script's, no id in the row)", async () => {
     const tokenFee = tokenP2pkhScript(TOKEN_ID, 7n, PUB);
     const tx = spend(poolDeploy, 0, [
       { satoshis: poolDeploy.outputs[0]!.satoshis!, lockingScript: cont },
@@ -271,7 +272,8 @@ describe("syncPool", () => {
     await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs));
     const fee = internalized(bag)[0]!.outputs[1]!;
     expect(fee.outputIndex).toBe(2);
-    expect(JSON.parse(fee.insertionRemittance!.customInstructions!).id).toBe(TOKEN_ID);
+    // 0.48.0 (D9): no `id` — the token fee's token is its own script's.
+    expect(JSON.parse(fee.insertionRemittance!.customInstructions!)).not.toHaveProperty("id");
     expect(JSON.parse(fee.insertionRemittance!.customInstructions!)).not.toHaveProperty("op");
   });
 

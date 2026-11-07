@@ -584,7 +584,7 @@ export async function prepareSwap(i: PrepareSwapInput): Promise<PreparedSwap> {
     } else {
       const keyID = changeKeyID(inputs.tokens[0]!.outpoint);
       const pub = await swapKey(keyID);
-      const ci = swapInstructions({ assetId: sdkId, amount: tokenChange, protocolID: SWAP_PROTOCOL, keyID, counterparty: "self", order });
+      const ci = swapInstructions({ protocolID: SWAP_PROTOCOL, keyID, counterparty: "self", order });
       tokenChangeKey = { pkh: pkhOfKey(pub), out: (outputIndex, lockingScript) => ({ kind: "basket", outputIndex, satoshis: 1, lockingScript, customInstructions: ci }) };
     }
   }

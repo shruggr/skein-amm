@@ -36,7 +36,7 @@ export { swapKeyIdOfDescription } from "./market/activeSwap.js";
 export { changeKeyID } from "./market/swapAction.js";
 /** An order's payout, own-commission and last-leg change derivation: from the order's key input. */
 export { legDerivation } from "./market/swapAction.js";
-/** customInstructions of an `amm-swap` token row (asset, amount, the key that spends it; a change row's `order`). */
+/** customInstructions of an `amm-swap` token row (the key that spends it; a change row's `order`; 0.48.0: the asset and amount are the script's). */
 export { swapInstructions } from "./wallet/color.js";
 /** customInstructions of an `amm-swap` sats row (`sats: true`, its key; a change row's `order`). */
 export { swapSatsInstructions } from "./wallet/color.js";
@@ -60,8 +60,10 @@ export { POOL_TAG } from "./lp/poolDeploy.js";
 export { POOL_OP } from "./lp/poolDeploy.js";
 /** Whether a basket row is an `amm-pools` position row (its tag or its customInstructions `op`). */
 export { isPoolRow } from "./lp/poolDeploy.js";
-/** customInstructions of an `amm-pools` row: the token, the LP key, the validator, its fees and nonce. */
+/** customInstructions of an `amm-pools` row (0.48.0): the LP key and the pool id, `{protocolID, keyID, counterparty, poolId}`. */
 export { poolCustomInstructions } from "./lp/poolDeploy.js";
+/** The token a pool row's output is of (0.48.0): its script's asset id, else a row filed before's `id`. */
+export { poolRowTokenId } from "./lp/poolDeploy.js";
 /** The label of a pool deploy's action (`amm-pool-deploy`): the positions reader's history. */
 export { POOL_DEPLOY_LABEL } from "./lp/positions.js";
 /** How long the page waits for one swap leg's answer before it closes the request (0.44.0: the host's relay stops with it), ms. */

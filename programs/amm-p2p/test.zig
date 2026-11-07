@@ -1007,13 +1007,12 @@ test "history reads (0.36.0): H2 /candles — the six resolutions, prices as {sa
     try testing.expectEqualStrings(e.token, st.get("tokenId").?.string);
     try testing.expect(st.get("lastTradePrice").?.object.get("sats").?.integer > 0);
     try testing.expect(st.get("price") == null); // 0.40.0: the host's
-    try testing.expect(st.get("change1h").? == .null);
-    try testing.expect(st.get("change24h").? == .null);
+    // 0.48.0 (D4): no changes, TVL or pool count (the host's).
+    for ([_][]const u8{ "change1h", "change24h", "tvlSats", "tvlTokens", "pools" }) |k| try testing.expect(st.get(k) == null);
+    try testing.expectEqual(@as(usize, 10), st.count());
     try testing.expectEqual(@as(i64, 1), st.get("buys24h").?.integer);
     try testing.expectEqual(@as(i64, 1), st.get("sells24h").?.integer);
     try testing.expectEqual(@as(i64, 7_000), st.get("lastTradeAt").?.integer);
-    try testing.expectEqual(@as(i64, 1), st.get("pools").?.integer);
-    try testing.expect(st.get("tvlSats").?.integer > 0 and st.get("tvlTokens").?.integer > 0);
     try testing.expect(st.get("volume24hSats").?.integer > 20_000);
     // 0.47.0: the token's lifetime counters (both Swaps).
     try testing.expectEqual(@as(i64, 2), st.get("trades").?.integer);

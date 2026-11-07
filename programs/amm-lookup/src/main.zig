@@ -54,8 +54,8 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     \\The fees are rows written as each Swap is admitted (removed on a rejection), from this lookup's
     \\0.33.0 on: Swaps admitted before have none. An unknown key answers zeros.
     \\
-    \\Its beat on `ls_amm_<assetId>-live` (dag-cbor): `{tokens: {<assetId>: {<validator identity>: {sats, tokens,
-    \\pools}}}}`, this overlay's listed pools summed per token and validator: the prices.
+    \\No beat body of its own (0.48.0): the host and the pages read the validators' beats on
+    \\`tm_color_<assetId>-live`.
     \\
     ;
 }

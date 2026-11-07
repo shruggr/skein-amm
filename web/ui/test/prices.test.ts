@@ -70,7 +70,8 @@ describe("the positions' pool rows", () => {
       { outpoint: `${"55".repeat(32)}.1`, satoshis: 1, tags: [], customInstructions: JSON.stringify({ id: T, amt: "5" }) },
     ]);
     expect(rows).toEqual([
-      { deployOutpoint: `${"33".repeat(32)}.0`, tokenId: T, sym: "TST", dec: 2, lpKey: { protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self" }, validatorIdentity: A },
+      // 0.48.0 (D9): rows filed before (with `id`, `sym`, `dec`, `amm`) still read; the symbol and decimals are the overlay's.
+      { deployOutpoint: `${"33".repeat(32)}.0`, tokenId: T, lpKey: { protocolID: [2, "3241645161d8"], keyID: "k", counterparty: "self" }, validatorIdentity: A },
       { deployOutpoint: `${"44".repeat(32)}.0`, tokenId: U, lpKey: { protocolID: [0, "onesat"], keyID: "old", counterparty: "self" } },
     ]);
   });

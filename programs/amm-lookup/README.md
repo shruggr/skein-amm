@@ -23,6 +23,18 @@ create (one token topic per instance); the index stays one head,
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
 ```
 
+## 0.48.0: one record per hop; fewer maps; no beat (agent-env plans/data-model-cleanup-2026-11-07.md)
+
+This supersedes the map list and the record shapes below. `pools` and `spentPools` link each hop's
+EVENT record (a deploy's, a Swap's or a rescind's: the `history` row itself); there is no separate
+pool record (D1). One renderer, `poolRowFields`, gives the pool row of the live list, the positions'
+`current`, `/pools/at`, the history and the events; the live list and `current` add `lifetime`. The
+maps are `pools`, `spentPools`, `byCommission`, `trades`, `history`, `closes`, `counters` (D2): a
+pool's LP and validator fee sums are its `history` Swap rows, its live hop its last `history` row's,
+a Swap by txid its continuation's record; `fees`, `byPool`, `byValidator`, `rescinded` and `beat`
+are gone. No beat body (D5). `/stats` (amm-p2p) answers the last fill, the volumes and the counts
+only (D4).
+
 ## 0.13.0: the pool attests itself; the next key; Rescind (David Case, 2026-10-22)
 
 This supersedes 0.11.0 below (docs/AMM.md "The listing"). The validator's nonce and affirmation are in every pool's state (no payload). A pool output is **listed** when (a) it attests itself (src/pool.zig `affirmed`: not rescinded; its ValidatorPubKey is the ValidatorIdentity's child keyed by its Nonce, derived here with bsvz, not trusted; its Affirmation is that key's signature of message v2), or (b) its transaction calls Swap (the pool input's last push, `methodOf`) on a listed pool of the token and its ValidatorPubKey is the identity's child keyed by that spent outpoint (`nextKeyOf`). Never listed: a rescinded pool (ValidatorPubKey 33 zero bytes, the validator's Rescind), a pool-shaped output of a Close (whose outputs are free), a continuation naming another key, a deploy under a key of the LP's own (v0.11.0's defect: its signature verified, its key was not derived). A listed pool leaves the listing on the LP's Close or the validator's Rescind.

@@ -33,7 +33,7 @@ import { PoolTemplate } from "../pool/index.js";
 import { parseOutpoint, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId.js";
 import { POOLS_BASKET } from "../wallet/color.js";
 import { POOL_TAG, isPoolRow } from "./poolRows.js";
-import { lpKeyIdOfDescription, lpProtocolOfDescription, poolCustomInstructions, type BasketRow } from "./poolDeploy.js";
+import { lpKeyIdOfDescription, lpProtocolOfDescription, poolCustomInstructions, poolRowTokenId, type BasketRow } from "./poolDeploy.js";
 
 /** The wallet key that is a pool's LpPubKey (a BRC-29 key to self, or a pre-BRC-29 1Sat key). */
 export interface LpKeyRef {
@@ -46,11 +46,10 @@ export interface LpKeyRef {
 export interface PositionRow {
   /** The deploy's pool output, `<txid>.<vout>`. */
   deployOutpoint: string;
-  /** `<txid>_<vout>` */
+  /** `<txid>_<vout>` (0.48.0: from the filed output's script; a row filed before, its `id`). */
   tokenId: string;
-  sym?: string;
-  dec?: number;
   lpKey: LpKeyRef;
+  /** The validator's identity: the filed output's pool state (a row filed before 0.48.0 without a script, its `amm`). */
   validatorIdentity?: string;
   /** 0.32.0: the pool's LpPubKey, from the filed output's script (the pool's state); what the LP fees are asked by. */
   lpPubKey?: string;
@@ -79,13 +78,12 @@ export async function historyPoolRows(wallet: WalletInterface): Promise<BasketRo
           const protocolID = lpProtocolOfDescription(o.outputDescription);
           const pool = keyID && protocolID && o.lockingScript ? PoolTemplate.decode(o.lockingScript) : null;
           if (pool && keyID && protocolID) {
-            const tokenId = sdkTokenId(tokenIdOfWire(Utils.toArray(pool.args.assetId, "hex")));
             out.push({
               outpoint,
               satoshis: o.satoshis,
               lockingScript: o.lockingScript!,
               tags: [POOL_TAG],
-              customInstructions: poolCustomInstructions({ tokenId, protocolID, keyID, args: pool.args, validatorIdentity: pool.state.validatorIdentity, ...(pool.state.nonce ? { nonce: pool.state.nonce } : {}), poolId: outpoint.replace(".", "_") }),
+              customInstructions: poolCustomInstructions({ protocolID, keyID, poolId: outpoint.replace(".", "_") }),
             });
             continue;
           }
@@ -126,26 +124,23 @@ export function positionRowsOf(rows: BasketRow[]): PositionRow[] {
     if (!op) continue;
     try {
       const ci = JSON.parse(r.customInstructions ?? "{}") as {
-        id?: string;
-        sym?: string;
-        dec?: string | number;
         protocolID?: WalletProtocol;
         keyID?: string;
         counterparty?: string;
         poolId?: string;
         amm?: { validatorIdentity?: string };
       };
-      if (!Array.isArray(ci.protocolID) || typeof ci.keyID !== "string" || typeof ci.id !== "string") continue;
-      const tid = parseOutpoint(ci.id.replace("_", "."));
+      if (!Array.isArray(ci.protocolID) || typeof ci.keyID !== "string") continue;
+      const tokenId = poolRowTokenId(r);
+      if (!tokenId) continue;
       const filed = r.lockingScript ? PoolTemplate.decode(r.lockingScript) : null;
       const deploy = typeof ci.poolId === "string" ? parseOutpoint(ci.poolId) : null;
+      const validatorIdentity = filed?.state.validatorIdentity ?? (typeof ci.amm?.validatorIdentity === "string" ? ci.amm.validatorIdentity : undefined);
       out.push({
         deployOutpoint: deploy ? `${deploy.txid}.${deploy.vout}` : `${op.txid}.${op.vout}`,
-        tokenId: tid ? tokenIdText(tid) : ci.id,
-        ...(ci.sym ? { sym: ci.sym } : {}),
-        ...(ci.dec !== undefined ? { dec: Number(ci.dec) } : {}),
+        tokenId,
         lpKey: { protocolID: ci.protocolID, keyID: ci.keyID, counterparty: typeof ci.counterparty === "string" ? ci.counterparty : "self" },
-        ...(typeof ci.amm?.validatorIdentity === "string" ? { validatorIdentity: ci.amm.validatorIdentity } : {}),
+        ...(validatorIdentity ? { validatorIdentity } : {}),
         ...(filed ? { lpPubKey: filed.state.lpPubKey } : {}),
       });
     } catch {

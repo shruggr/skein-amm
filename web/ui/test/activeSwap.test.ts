@@ -173,7 +173,7 @@ describe("staging (0.40.0): ONE wallet action — sats only a plain createAction
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { outputs: { outputIndex: number; insertionRemittance: { basket: string; customInstructions: string } }[]; labels: string[] };
     expect(ia.labels).toEqual(["amm-swap"]);
     expect(ia.outputs.map((o) => [o.outputIndex, o.insertionRemittance.basket])).toEqual([[0, "amm-swap"]]);
-    expect(JSON.parse(ia.outputs[0]!.insertionRemittance.customInstructions)).toEqual({ assetId: TOKEN, amount: "42", protocolID: SWAP, keyID: tokenKey, counterparty: "self" });
+    expect(JSON.parse(ia.outputs[0]!.insertionRemittance.customInstructions)).toEqual({ protocolID: SWAP, keyID: tokenKey, counterparty: "self" }); // 0.48.0 (D9): the script holds the asset and amount
     expect(s).toMatchObject({ filed: true, errors: [], sats: { outpoint: `${s.txid}.1`, satoshis: 9_000, keyID: satsKey }, tokens: { outpoint: `${s.txid}.0`, amount: 42n, keyID: tokenKey } });
     // Filed, the token row reads back as a leg's token input.
     const tx = Transaction.fromAtomicBEEF(s.tx);
@@ -213,7 +213,7 @@ describe("staging (0.40.0): ONE wallet action — sats only a plain createAction
     t.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(script) });
     expect(await fileStagedToken(w, found[0]!, t.toAtomicBEEF(true))).toBe(true);
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { outputs: { outputIndex: number; insertionRemittance: { basket: string; customInstructions: string } }[] };
-    expect(ia.outputs.map((o) => [o.outputIndex, o.insertionRemittance.basket, JSON.parse(o.insertionRemittance.customInstructions)])).toEqual([[0, "amm-swap", { assetId: TOKEN, amount: "42", protocolID: SWAP, keyID, counterparty: "self" }]]);
+    expect(ia.outputs.map((o) => [o.outputIndex, o.insertionRemittance.basket, JSON.parse(o.insertionRemittance.customInstructions)])).toEqual([[0, "amm-swap", { protocolID: SWAP, keyID, counterparty: "self" }]]);
   });
 
   it("nothing to stage, or a wallet that refuses: an error, nothing filed", async () => {

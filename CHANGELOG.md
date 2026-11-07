@@ -4,6 +4,34 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.48.0 (2026-11-07)
+
+The data model, second batch (agent-env plans/data-model-cleanup-2026-11-07.md, D1–D5, D9).
+
+- D1: ONE record per pool hop. `pools` and `spentPools` link the hop's EVENT record (a deploy's, a Swap's,
+  a rescind's: the `history` row); the separate pool record (`kind: amm-pool`, `validatorPubKey`,
+  `admittedAt`) is gone (a rescinded hop is its event's kind). One renderer, `poolRowFields`, for the pool
+  row of the live list, the positions' `current`, `/pools/at`, the history and the events; the live list and
+  `current` add `lifetime` (their key order and an `at` field change).
+  An index written before 0.48.0 holds pool records under `pools` / `spentPools`; 0.48.0 does not read them
+  (no fallback): an instance upgraded in place answers its pool reads with errors until it is re-indexed.
+- D2: maps `fees`, `byPool`, `byValidator`, `rescinded` gone. `{poolIds}` sums a pool's `history` Swap rows and
+  takes its live hop from its last `history` row; `{validatorIdentityKeys}` reads the token's listed hops
+  (`pools`, `spentPools`); `{validatorIdentityKey}` filters the live pools; `/trades?txid=` is the Swap's
+  continuation record. The answers are the same. `byCommission` stays (see the release notes:
+  `commissionOutputs` not built).
+- D4: the instance's `/stats` answers `tokenId, lastTradePrice, volume24hSats, volume24hTokens, buys24h,
+  sells24h, lastTradeAt, volumeSats, volumeTokens, trades`; `tvlSats`, `tvlTokens`, `pools`, `change1h`,
+  `change24h` are the host's.
+- D5: the lookup's beat body (`beatValue`, the `beat` map, the full scan per hook, `Spec.beat`) is gone.
+- D9 (client): customInstructions — `amm-pools` and `openex fees` `{protocolID, keyID, counterparty, poolId}`;
+  `amm-swap` token rows `{protocolID, keyID, counterparty, order?}`; sats rows unchanged. Readers take the
+  token from the output's script (`poolRowTokenId`), the symbol and decimals from the overlay; rows filed before
+  still read. The output descriptions keep their key ids (see the release notes). `poolCustomInstructions` and
+  `swapInstructions` take only the key fields (an API change of @dcasegr/amm-client).
+- Pins: skein-overlay v0.22.0, skein-1color v0.17.1. `bin/amm-validator.wasm` the same bytes as 0.47.0.
+- Versions: etc/app.json, amm-setup's version test, README, @dcasegr/amm-engine and @dcasegr/amm-client 0.48.0.
+
 ## 0.47.0 (2026-11-07)
 
 Read-path optimizations and admission counters (agent-env plans/read-optimizations-2026-11-07.md D1–D6).

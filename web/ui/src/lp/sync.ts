@@ -14,7 +14,7 @@ import { signP2pkhWithWallet } from "../market/swapAction.js";
 import { inputIndexOf, runAppSignedAction } from "../wallet/action.js";
 import { FEES_BASKET, POOLS_BASKET, newReceivingKey } from "../wallet/color.js";
 import { identityKeyOf, internalizePayout, newBrc29Payout } from "../wallet/brc29.js";
-import { POOL_TAG, tokenP2pkhScript } from "./poolDeploy.js";
+import { POOL_TAG, poolCustomInstructions, tokenP2pkhScript } from "./poolDeploy.js";
 import { basketBeef, basketRows } from "./wallet.js";
 
 export { FEES_BASKET };
@@ -89,7 +89,14 @@ export function heldPoolRow(rows: WalletOutput[], poolId: string): WalletOutput 
   return undefined;
 }
 
+/**
+ * A continuation's customInstructions (0.48.0, D9): the key the held row names and the pool id —
+ * `{protocolID, keyID, counterparty, poolId}`, whatever else a row filed before carried. A held row
+ * naming no key: its customInstructions as they are, the pool id added.
+ */
 function withPoolId(customInstructions: string | undefined, poolId: string): string {
+  const key = storedKey(customInstructions);
+  if (key) return poolCustomInstructions({ protocolID: key.protocolID, keyID: key.keyID, poolId: key.poolId ?? poolId });
   let ci: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(customInstructions ?? "{}") as unknown;
@@ -176,21 +183,13 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
       if (wantFee && !feeKnown) {
         const key = storedKey(current.customInstructions);
         if (!key) throw new Error("the pool output names no key");
-        const feeOut = tx.outputs[2]!;
-        const color = decodeOneColor(feeOut.lockingScript.toBinary());
-        const tokenId = color?.idBytes && color.role !== "deploy" ? tokenIdOfWire(color.idBytes) : key.id;
+        // 0.48.0 (D9): the key and the pool id only; a token fee's token is its script's.
         outputs.push({
           outputIndex: 2,
           protocol: "basket insertion",
           insertionRemittance: {
             basket: FEES_BASKET,
-            customInstructions: JSON.stringify({
-              protocolID: key.protocolID,
-              keyID: key.keyID,
-              counterparty: key.counterparty,
-              poolId,
-              ...(tokenId ? { id: tokenId } : {}),
-            }),
+            customInstructions: JSON.stringify({ protocolID: key.protocolID, keyID: key.keyID, counterparty: key.counterparty, poolId }),
           },
         });
       }

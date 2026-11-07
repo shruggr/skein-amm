@@ -26,11 +26,10 @@
 //! skip a zero validator key, so it is not a listed live pool. A listed pool leaves the live
 //! listing when its output is spent with no listed continuation: the LP's Close.
 //!
-//! The beat (skein-overlay 0.12.0, David Case 2026-10-09: beats are libp2p service discovery):
-//! this service's beat body on `ls_amm_<assetId>-live` carries, per token, this skein's per-validator
-//! totals of its listed pools, `{tokens: {<assetId>: {<validator identity hex>: {sats, tokens,
-//! pools}}}}` (dag-cbor), re-declared by a hook whenever it changes (`Service.beat`). The page
-//! combines the beats it holds, live validators only.
+//! No beat of its own (0.48.0, agent-env plans/data-model-cleanup-2026-11-07.md D5): the 0.12.0
+//! body on `ls_amm_<assetId>-live` (per-validator totals, a scan of every live pool per hook) had
+//! no reader; the host and the pages read `tm_color_<assetId>-live`. The engine still declares a
+//! configured lookup's beacon (skein-overlay `configured.zig`), with an empty body (no fn "beat").
 const std = @import("std");
 const w = @import("chain");
 const lookup = @import("lookup");
@@ -54,28 +53,27 @@ pub const service_name = "ls_amm";
 
 /// `pools`: the live (unspent) listed pools: checked, and an affirmed deploy's or the
 /// continuation of a listed pool. `spentPools`: the listed pools a spend consumed, kept so
-/// `rejected` can give back exactly what was indexed before, without re-judging it. `beat`:
-/// `body → <the last beat body's record>`, so a hook beats only when the body changes. (0.9.0's
-/// `claims` and `spentClaims` are gone with the claim, 0.11.0.)
+/// `rejected` can give back exactly what was indexed before, without re-judging it. ONE RECORD PER
+/// HOP (0.48.0, agent-env plans/data-model-cleanup-2026-11-07.md D1): both link the hop's EVENT
+/// record (below: a deploy's, a Swap's or a rescind's), the history row itself; there is no second
+/// "pool record". (0.9.0's `claims` and `spentClaims` are gone with the claim, 0.11.0; 0.48.0 the
+/// `beat` map with the beat.)
 /// The pool id (0.40.0, David Case 2026-11-05): the deploy's outpoint (36 bytes, txid ‖ vout BE,
 /// as the index keys outpoints), assigned here at the deploy and copied forward at each admitted
 /// Swap (`poolId` in every pool record, with `swaps`: 0 at the deploy, +1 per Swap); the LP public
 /// key is a field, a lookup key nowhere.
-/// The fee rows (0.33.0; 0.40.0 by pool id): `fees`: `tp ‖ poolId ‖ swap txid → <the Swap's event
-/// record>`, one per Swap admitted; `byCommission`: `commissionPkh ‖ tp ‖ swap txid → <the same
-/// record>` when the commission is not 0. `rescinded` stays in the map list and is not written:
-/// a Rescind's output is a pool output, stored in `pools` by its outpoint, and its record keeps
-/// the validator key (33 zero bytes means rescinded; the identity key stays).
-/// `byPool` (0.40.0, was 0.33.0's `byLp`): `tp ‖ poolId ‖ outpoint → null`, every listed hop of the
-/// pool, live or spent, removed only when the transaction that listed it is rejected; `byValidator`
-/// likewise (its single-key query still answers the live pools only).
+/// The commission rows (0.33.0; 0.40.0 by pool id): `byCommission`: `commissionPkh ‖ tp ‖ swap txid →
+/// <the Swap's event record>` when the commission is not 0. A Rescind's output is a pool output,
+/// stored in `pools` by its outpoint; its event's kind is `rescind` (its validator key cleared).
+/// 0.48.0 (D2): `fees` (the Swap rows of `history` again, by pool), `byPool` (a pool's live hop is
+/// its last `history` row's), `byValidator` and `rescinded` (never written) are gone.
 /// The pool history (0.40.0, David Case 2026-11-05): one EVENT RECORD per deploy, Swap, close and
 /// rescind, `{kind: "deploy"|"swap"|"close"|"rescind", poolId, txid, at, swaps, outpoint?,
 /// bsvReserve?, tokenReserve?, lpPubKey, liquidityFeeBps, validationFeeBps, commissionBps,
 /// validatorIdentityKey}` (`at` the admitting step's time in ms; the outpoint and reserves the pool's
 /// after the event, none for a close); a Swap's carries its trade fields too (`lp`, `validator`,
 /// `commission`, `bsvIn`, `commissionPkh`, `side`, `amountIn`, `amountOut`, `payoutPkh`): ONE record
-/// linked from `history`, `fees` and `trades`. `history`: `tp ‖ poolId ‖ at (u64 BE) ‖ seq (u64
+/// linked from `history`, `trades` and (0.48.0) `pools` / `spentPools`. `history`: `tp ‖ poolId ‖ at (u64 BE) ‖ seq (u64
 /// BE) → <event>` (seq the event sequence: a close's the swap count + 1; a rescind's `swaps` is
 /// already the next count and the key uses that number); `closes`: `tp ‖ at (u64 BE) ‖ poolId → <event>` for a close or a rescind;
 /// `trades`: `tp ‖ at (u64 BE) ‖ swap txid → <the Swap's event>`. A rejection removes every row its
@@ -90,7 +88,7 @@ pub const service_name = "ls_amm";
 /// {kind: "amm-token-counters", volumeSats, volumeTokens, trades}` (each trade's sats side and token
 /// side); `v ‖ tp ‖ validator identity (33) → {kind: "amm-validator-counters", swaps, feeSats,
 /// feeTokens}`. No backfill: Swaps admitted before 0.47.0 are not counted.
-pub const maps = [_][]const u8{ "pools", "byValidator", "spentPools", "beat", "fees", "byCommission", "rescinded", "byPool", "trades", "history", "closes", "counters" };
+pub const maps = [_][]const u8{ "pools", "spentPools", "byCommission", "trades", "history", "closes", "counters" };
 
 /// The step's time (ms), the clock of the step whose hook this call runs in: the in-VM call input's
 /// `now` (skein docs/VM.md, "call": the time of the entry that drove the step; replay-exact), set by
@@ -123,9 +121,8 @@ fn topicPrefix(a: Allocator, topic: []const u8) ![]u8 {
 
 // ---------------------------------------------------------------- recognising a pool output
 
-/// A pool output's fields, as pool.zig parses them, plus where it is. The
-/// ValidatorPubKey is stored so a reader can see a cleared key (33 zero
-/// bytes: rescinded). Nothing is found by it.
+/// A pool output's fields, as pool.zig parses them, plus where it is. (0.48.0: the
+/// ValidatorPubKey is not kept; a rescinded hop is its event's kind, `rescind`.)
 pub const PoolFields = struct {
     txid: [32]u8,
     vout: u32,
@@ -137,8 +134,6 @@ pub const PoolFields = struct {
     /// by the commission they offer.
     commission_bps: i64,
     lp: [33]u8,
-    /// The pool output's ValidatorPubKey. 33 zero bytes means rescinded.
-    validator: [33]u8,
     identity: [33]u8,
     /// The pool's id (0.40.0): its deploy's outpoint key; `poolAt` sets the output's own, the
     /// caller copies a Swap's from the pool it spent.
@@ -163,7 +158,6 @@ pub fn poolAt(txid: [32]u8, vout: u32, script: []const u8, satoshis: u64) ?PoolF
         .validation_fee_bps = p.validator_fee_bps,
         .commission_bps = p.commission_bps,
         .lp = p.lp,
-        .validator = p.validator,
         .identity = p.identity,
         .pool_id = w.store.outpointKey(txid, vout),
     };
@@ -173,32 +167,9 @@ fn intValue(v: i64) Value {
     return if (v >= 0) .{ .uint = @intCast(v) } else .{ .nint = @intCast(-1 - v) };
 }
 
-/// The record stored under `pools`' value (its own CID, linked from the
-/// map): every field pool.zig parses, including `validatorPubKey`, plus (0.40.0) `poolId`, `swaps`
-/// and `admittedAt` (the admitting step's time, `now_ms`).
-fn recordValue(a: Allocator, pf: PoolFields) !Value {
-    return .{ .map = try a.dupe(Entry, &.{
-        .{ .key = "kind", .value = .{ .text = "amm-pool" } },
-        .{ .key = "txid", .value = .{ .bytes = try a.dupe(u8, &pf.txid) } },
-        .{ .key = "vout", .value = .{ .uint = pf.vout } },
-        .{ .key = "bsvReserve", .value = .{ .uint = pf.bsv_reserve } },
-        .{ .key = "tokenReserve", .value = .{ .uint = pf.token_reserve } },
-        .{ .key = "liquidityFeeBps", .value = intValue(pf.liquidity_fee_bps) },
-        .{ .key = "validationFeeBps", .value = intValue(pf.validation_fee_bps) },
-        .{ .key = "commissionBps", .value = intValue(pf.commission_bps) },
-        .{ .key = "lpPubKey", .value = .{ .bytes = try a.dupe(u8, &pf.lp) } },
-        .{ .key = "validatorPubKey", .value = .{ .bytes = try a.dupe(u8, &pf.validator) } },
-        .{ .key = "validatorIdentityKey", .value = .{ .bytes = try a.dupe(u8, &pf.identity) } },
-        .{ .key = "poolId", .value = .{ .bytes = try a.dupe(u8, &pf.pool_id) } },
-        .{ .key = "swaps", .value = .{ .uint = pf.swaps } },
-        .{ .key = "admittedAt", .value = .{ .uint = now_ms } },
-    }) };
-}
-
-/// A stored pool record whose validator key is 33 zero bytes (rescinded).
-fn validatorCleared(rec: Value) bool {
-    const k = rec.getBytes("validatorPubKey") orelse return false;
-    return k.len == 33 and std.mem.allEqual(u8, k, 0);
+/// A hop's event record of a rescind (its validator key cleared, 0.13.0): not a listed live pool.
+fn isRescind(rec: Value) bool {
+    return std.mem.eql(u8, rec.getText("kind") orelse "", "rescind");
 }
 
 fn intOf(v: ?Value) !i64 {
@@ -221,18 +192,19 @@ fn poolIdOf(rec: Value) ![36]u8 {
     return bytesN(36, rec, "poolId");
 }
 
-/// A pool record (`recordValue`) read back as its fields.
+/// A hop's event record (`pools`, `spentPools`: a deploy's, a Swap's or a rescind's, with its
+/// outpoint) read back as the pool's fields.
 fn fieldsOf(rec: Value) !PoolFields {
+    const op = try w.store.outpointOf(&try bytesN(36, rec, "outpoint"));
     return .{
-        .txid = try bytesN(32, rec, "txid"),
-        .vout = std.math.cast(u32, rec.getUint("vout") orelse return error.BadIndex) orelse return error.BadIndex,
+        .txid = op.txid,
+        .vout = op.vout,
         .bsv_reserve = rec.getUint("bsvReserve") orelse return error.BadIndex,
         .token_reserve = rec.getUint("tokenReserve") orelse return error.BadIndex,
         .liquidity_fee_bps = try intOf(rec.get("liquidityFeeBps")),
         .validation_fee_bps = try intOf(rec.get("validationFeeBps")),
         .commission_bps = try intOf(rec.get("commissionBps")),
         .lp = try bytesN(33, rec, "lpPubKey"),
-        .validator = try bytesN(33, rec, "validatorPubKey"),
         .identity = try bytesN(33, rec, "validatorIdentityKey"),
         .pool_id = try poolIdOf(rec),
         .swaps = rec.getUint("swaps") orelse return error.BadIndex,
@@ -262,10 +234,6 @@ fn poolKey(a: Allocator, tp: []const u8, txid: [32]u8, vout: u32) ![]u8 {
     return cat(a, &.{ tp, &w.store.outpointKey(txid, vout) });
 }
 
-fn identityKey(a: Allocator, identity: []const u8, tp: []const u8, txid: [32]u8, vout: u32) ![]u8 {
-    return cat(a, &.{ identity, tp, &w.store.outpointKey(txid, vout) });
-}
-
 fn identityOf(a: Allocator, svc: *Service, cid: []const u8) ![]const u8 {
     const rec = try svc.store.getValue(a, cid);
     const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
@@ -273,26 +241,14 @@ fn identityOf(a: Allocator, svc: *Service, cid: []const u8) ![]const u8 {
     return identity;
 }
 
-/// Index a pool record (`cid`) as live at `key`.
+/// Index a hop's event record (`cid`) as the live pool at `txid:vout`.
 fn linkPool(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8, vout: u32, cid: []const u8) !void {
     // A re-admission of the same outpoint (a dupe hook call): replace, not duplicate.
     _ = try removePool(a, svc, tp, txid, vout);
     try svc.map("pools").putLink(try poolKey(a, tp, txid, vout), cid);
-    try svc.map("byValidator").add(try identityKey(a, try identityOf(a, svc, cid), tp, txid, vout));
-    try svc.map("byPool").add(try byPoolKey(a, tp, &try poolIdOf(try svc.store.getValue(a, cid)), txid, vout));
 }
 
-/// `byPool`'s key (0.40.0): `tp ‖ poolId ‖ outpoint`.
-fn byPoolKey(a: Allocator, tp: []const u8, pid: []const u8, txid: [32]u8, vout: u32) ![]u8 {
-    return cat(a, &.{ tp, pid, &w.store.outpointKey(txid, vout) });
-}
-
-fn putPool(a: Allocator, svc: *Service, tp: []const u8, pf: PoolFields) !void {
-    try linkPool(a, svc, tp, pf.txid, pf.vout, try svc.store.putValue(a, try recordValue(a, pf)));
-}
-
-/// Drop a live pool; → its record's CID, when it was indexed. Its `byValidator` and `byPool`
-/// memberships stay (0.33.0: a spent pool is still that validator's and that pool's; `rejected` drops them).
+/// Drop a live pool; → its record's CID, when it was indexed.
 fn removePool(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8, vout: u32) !?[]const u8 {
     const key = try poolKey(a, tp, txid, vout);
     const cid = (try svc.map("pools").link(key)) orelse return null;
@@ -342,10 +298,6 @@ fn rescindOf(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, lp: [33
 const Listing = union(enum) { deploy, swap: usize };
 
 // ---------------------------------------------------------------- the events (0.40.0): fee rows, trade rows, the history
-
-fn feeKey(a: Allocator, tp: []const u8, pid: []const u8, txid: [32]u8) ![]u8 {
-    return cat(a, &.{ tp, pid, &txid });
-}
 
 fn commissionKey(a: Allocator, pkh: []const u8, tp: []const u8, txid: [32]u8) ![]u8 {
     return cat(a, &.{ pkh, tp, &txid });
@@ -425,12 +377,15 @@ fn linkEvent(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, pf:
 
 /// An event that is not a Swap (deploy, close, rescind): written and linked. A close's history
 /// sequence is the swap count + 1. A rescind's `swaps` is already the next count, so its sequence
-/// is that number. Both a close and a rescind are linked under `closes`.
-fn putEvent(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, kind: []const u8, pf: PoolFields, txid: [32]u8, with_output: bool) !void {
+/// is that number. Both a close and a rescind are linked under `closes`. → the record's CID (a
+/// deploy's or a rescind's is also its hop's `pools` record, 0.48.0).
+fn putEvent(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, kind: []const u8, pf: PoolFields, txid: [32]u8, with_output: bool) ![]const u8 {
     const es = try eventFields(a, kind, pf, txid, with_output);
     const seq_ends = std.mem.eql(u8, kind, "close");
     const in_closes = seq_ends or std.mem.eql(u8, kind, "rescind");
-    try linkEvent(a, svc, topic, tp, pf, try svc.store.putValue(a, .{ .map = es.items }), seq_ends, in_closes);
+    const cid = try svc.store.putValue(a, .{ .map = es.items });
+    try linkEvent(a, svc, topic, tp, pf, cid, seq_ends, in_closes);
+    return cid;
 }
 
 // ---------------------------------------------------------------- the pool events (0.41.0)
@@ -546,25 +501,34 @@ fn revertRow(a: Allocator, txid: [32]u8, pid: [36]u8, live: ?Value) !Value {
 /// — the event's fields and the trade's: the fees (src/pool.zig `feesOf`'s, read where the relay's
 /// pair check lays them out, `feeLayout`), the amount in (the call's), the amount out (the change of
 /// the other asset's reserve between `was` and the continuation), `payoutPkh` (the call's
-/// `userPkh`) — under `fees` (`tp ‖ poolId ‖ txid`), `trades` (time) and `history`, and (a
-/// commission not 0) its membership under the commission's key hash. A Swap whose fee outputs are
-/// not the contract's writes nothing.
-fn putTrade(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, tx: lookup.Tx, input: usize, cont: PoolFields, was: Value) !void {
-    const f = (try pool.feesOf(a, tx.tx, input)) orelse return;
-    const call = (try pool.parseSwapCall(a, tx.tx.inputs[input].unlocking_script.bytes)) orelse return;
+/// `userPkh`) — under `trades` (time) and `history`, and (a commission not 0) its membership under
+/// the commission's key hash. → its CID, the continuation's `pools` record too (0.48.0, D1). A Swap
+/// whose fee outputs are not the contract's writes no row: its continuation's record is the event's
+/// fields alone (no trade fields), linked from `pools` only, as before 0.48.0 a pool record was.
+fn putTrade(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, tx: lookup.Tx, input: usize, cont: PoolFields, was: Value) ![]const u8 {
+    const bare = struct {
+        fn f(al: Allocator, sv: *Service, c: PoolFields, txid: [32]u8) ![]const u8 {
+            return sv.store.putValue(al, .{ .map = (try eventFields(al, "swap", c, txid, true)).items });
+        }
+    }.f;
+    const f = (try pool.feesOf(a, tx.tx, input)) orelse return bare(a, svc, cont, tx.txid);
+    const call = (try pool.parseSwapCall(a, tx.tx.inputs[input].unlocking_script.bytes)) orelse return bare(a, svc, cont, tx.txid);
     const before = if (f.bsv_in) was.getUint("tokenReserve") orelse return error.BadIndex else was.getUint("bsvReserve") orelse return error.BadIndex;
     const after = if (f.bsv_in) cont.token_reserve else cont.bsv_reserve;
-    if (after > before) return;
-    const fkey = try feeKey(a, tp, &cont.pool_id, tx.txid);
-    // A re-admission of the same Swap (a dupe hook call): its earlier time rows go, one row stays.
-    if (try svc.map("fees").link(fkey)) |old| {
+    if (after > before) return bare(a, svc, cont, tx.txid);
+    // A re-admission of the same Swap (a dupe hook call): its earlier rows go, one row stays (the
+    // earlier record is its continuation's, at output 0, live or spent).
+    const k0 = try poolKey(a, tp, tx.txid, 0);
+    if ((try svc.map("pools").link(k0)) orelse (try svc.map("spentPools").link(k0))) |old| {
         const orec = try svc.store.getValue(a, old);
-        if (orec.getUint("at")) |at0| {
-            _ = try svc.map("trades").remove(try tradeKey(a, tp, at0, tx.txid));
-            _ = try svc.map("history").remove(try historyKey(a, tp, &cont.pool_id, at0, cont.swaps));
+        if (orec.get("amountIn") != null) {
+            if (orec.getUint("at")) |at0| {
+                _ = try svc.map("trades").remove(try tradeKey(a, tp, at0, tx.txid));
+                _ = try svc.map("history").remove(try historyKey(a, tp, &cont.pool_id, at0, cont.swaps));
+            }
+            // 0.47.0: its earlier count unwound (counted once).
+            try countTrade(a, svc, tp, orec, false);
         }
-        // 0.47.0: its earlier count unwound (counted once).
-        if (orec.get("amountIn") != null) try countTrade(a, svc, tp, orec, false);
     }
     var es = try eventFields(a, "swap", cont, tx.txid, true);
     try es.appendSlice(a, &.{
@@ -580,10 +544,10 @@ fn putTrade(a: Allocator, svc: *Service, topic: []const u8, tp: []const u8, tx: 
     });
     const rec = try svc.store.putValue(a, .{ .map = es.items });
     try countTrade(a, svc, tp, .{ .map = es.items }, true);
-    try svc.map("fees").putLink(fkey, rec);
     try svc.map("trades").putLink(try tradeKey(a, tp, now_ms, tx.txid), rec);
     try linkEvent(a, svc, topic, tp, cont, rec, false, false);
     if (f.commission > 0) try svc.map("byCommission").putLink(try commissionKey(a, &f.commission_pkh, tp, tx.txid), rec);
+    return rec;
 }
 
 // ---------------------------------------------------------------- the counters (0.47.0)
@@ -746,20 +710,17 @@ fn lifetimeValue(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !
     return .{ .map = es.items };
 }
 
-/// A rejected Swap's fee row, its time row and its commission membership, gone (the pool id from
-/// its continuation's record at output 0, live or spent; the key hash and the time from the row).
-/// Its `history` row goes with its continuation's record (`rejected`).
+/// A rejected Swap's time row and its commission membership, gone, and its counts unwound — read
+/// from its own record, its continuation's at output 0 (live or spent; 0.48.0: the `fees` row
+/// went with D2). Its `history` row goes with the continuation's record (`rejected`).
 fn removeTrade(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx) !void {
     if (tx.tx.outputs.len == 0) return;
     const k0 = try poolKey(a, tp, tx.txid, 0);
-    const pc = (try svc.map("pools").link(k0)) orelse (try svc.map("spentPools").link(k0)) orelse return;
-    const pid = try poolIdOf(try svc.store.getValue(a, pc));
-    const key = try feeKey(a, tp, &pid, tx.txid);
-    const cid = (try svc.map("fees").link(key)) orelse return;
+    const cid = (try svc.map("pools").link(k0)) orelse (try svc.map("spentPools").link(k0)) orelse return;
     const rec = try svc.store.getValue(a, cid);
+    if (rec.get("amountIn") == null) return;
     // 0.47.0: its counts unwound, by the row itself.
-    if (rec.get("amountIn") != null) try countTrade(a, svc, tp, rec, false);
-    _ = try svc.map("fees").remove(key);
+    try countTrade(a, svc, tp, rec, false);
     if (rec.getUint("at")) |at| _ = try svc.map("trades").remove(try tradeKey(a, tp, at, tx.txid));
     if (rec.getBytes("commissionPkh")) |pkh| _ = try svc.map("byCommission").remove(try commissionKey(a, pkh, tp, tx.txid));
 }
@@ -782,7 +743,7 @@ fn lastEvent(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !?Las
 /// topic. Each listed pool's event (0.40.0): a deploy's (its own outpoint the pool id, 0 swaps), a
 /// Swap's (the id copied from the pool it spent, swaps + 1); a validator's Rescind its `rescind`
 /// event. A validator's Rescind stores its output in `pools` (its `swaps` the next count) and writes
-/// its `rescind` event. Then the beat, when the listed totals changed.
+/// its `rescind` event. 0.48.0 (D1): the hop's event record is what `pools` links.
 pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, _: []const u32) anyerror!void {
     const id = tokenIdOf(topic) orelse return; // not a token topic: nothing of ours
     if (outputs_to_admit.len == 0) return;
@@ -797,31 +758,29 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
             // count (the hop is the pool's last). The record keeps the cleared validator key.
             pf.pool_id = try poolIdOf(was);
             pf.swaps = (was.getUint("swaps") orelse return error.BadIndex) + 1;
-            try putEvent(a, svc, topic, tp, "rescind", pf, tx.txid, true);
-            try putPool(a, svc, tp, pf);
+            try linkPool(a, svc, tp, pf.txid, pf.vout, try putEvent(a, svc, topic, tp, "rescind", pf, tx.txid, true));
             continue;
         };
         const why = (try listedAt(a, svc, tp, tx, vout)) orelse continue;
-        switch (why) {
+        const cid = switch (why) {
             // The event first: it reads the spent pool's reserves before the continuation is indexed.
-            .swap => |i| {
+            .swap => |i| blk: {
                 const op = tx.tx.inputs[i].previous_outpoint;
                 const was = try svc.store.getValue(a, (try svc.map("pools").link(try poolKey(a, tp, op.txid.bytes, op.index))).?);
                 pf.pool_id = try poolIdOf(was);
                 pf.swaps = (was.getUint("swaps") orelse return error.BadIndex) + 1;
-                try putTrade(a, svc, topic, tp, tx, i, pf, was);
+                break :blk try putTrade(a, svc, topic, tp, tx, i, pf, was);
             },
-            .deploy => {
+            .deploy => blk: {
                 // A re-admission (a dupe hook call): its earlier event row goes.
-                if (try svc.map("pools").link(try poolKey(a, tp, tx.txid, vout))) |old| if ((try svc.store.getValue(a, old)).getUint("admittedAt")) |at0| {
+                if (try svc.map("pools").link(try poolKey(a, tp, tx.txid, vout))) |old| if ((try svc.store.getValue(a, old)).getUint("at")) |at0| {
                     _ = try svc.map("history").remove(try historyKey(a, tp, &pf.pool_id, at0, 0));
                 };
-                try putEvent(a, svc, topic, tp, "deploy", pf, tx.txid, true);
+                break :blk try putEvent(a, svc, topic, tp, "deploy", pf, tx.txid, true);
             },
-        }
-        try putPool(a, svc, tp, pf);
+        };
+        try linkPool(a, svc, tp, pf.txid, pf.vout, cid);
     }
-    try beatIfChanged(a, svc);
 }
 
 /// A previous coin was consumed: if it was a pool we indexed, it leaves
@@ -841,9 +800,8 @@ pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Ou
             std.mem.eql(u8, &(try poolIdOf(try svc.store.getValue(a, c))), &pf.pool_id)
         else
             false;
-        if (!continued) try putEvent(a, svc, topic, tp, "close", pf, spender.txid, false);
+        if (!continued) _ = try putEvent(a, svc, topic, tp, "close", pf, spender.txid, false);
     }
-    try beatIfChanged(a, svc);
 }
 
 /// A judgement of `topic` was removed by a rejection: `tx`'s own pools are
@@ -852,9 +810,9 @@ pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Ou
 /// "Settlement: `admits` propagates") — it does not re-call `admitted` for
 /// the coins a rejection gives back — so they come back from `spentPools`,
 /// as indexed (and checked) when first admitted. Every row `tx` wrote goes (0.40.0): its Swap's
-/// fee, trade and commission rows, its pools' `byValidator`, `byPool` and `history` rows (a deploy's
-/// or a Swap's event), and the end row it wrote for a pool it spent (its close, or its rescind with
-/// the rescinded record), from `history` and `closes`.
+/// trade and commission rows, its pools' `history` rows (a deploy's or a Swap's event), and the end
+/// row it wrote for a pool it spent (its close, or its rescind with the rescinded record), from
+/// `history` and `closes`.
 pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyerror!void {
     const tp = try topicPrefix(a, topic);
     // 0.41.0: the pools whose rows `tx` wrote, in order, each with its listed record after the undo
@@ -865,18 +823,15 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
         const key = try poolKey(a, tp, tx.txid, @intCast(vout));
         const was = (try removePool(a, svc, tp, tx.txid, @intCast(vout))) orelse try svc.map("spentPools").link(key);
         _ = try svc.map("spentPools").remove(key);
-        // 0.33.0: the rejected transaction's pools leave `byValidator` and `byPool` (a spend keeps them there).
         if (was) |cid| {
             const rec = try svc.store.getValue(a, cid);
             const pid = try poolIdOf(rec);
-            _ = try svc.map("byValidator").remove(try identityKey(a, try identityOf(a, svc, cid), tp, tx.txid, @intCast(vout)));
-            _ = try svc.map("byPool").remove(try byPoolKey(a, tp, &pid, tx.txid, @intCast(vout)));
-            if (rec.getUint("admittedAt")) |at| {
+            if (rec.getUint("at")) |at| {
                 _ = try svc.map("history").remove(try historyKey(a, tp, &pid, at, rec.getUint("swaps") orelse 0));
                 // A rescind output's history sequence is its `swaps`, and `closes` is keyed at the
                 // same time. The input loop below then sees the previous Swap, so the closes row
                 // goes here.
-                if (validatorCleared(rec)) _ = try svc.map("closes").remove(try closesKey(a, tp, at, &pid));
+                if (isRescind(rec)) _ = try svc.map("closes").remove(try closesKey(a, tp, at, &pid));
             }
             try touch(a, &touched, pid, null);
         }
@@ -893,7 +848,6 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
             if (is_rescind or std.mem.eql(u8, kind, "close")) {
                 _ = try svc.map("history").remove(ev.key);
                 _ = try svc.map("closes").remove(try closesKey(a, tp, ev.rec.getUint("at") orelse return error.BadIndex, &pid));
-                if (is_rescind) _ = try svc.map("rescinded").remove(try cat(a, &.{ tp, &pid }));
             }
         };
         _ = try svc.map("spentPools").remove(key);
@@ -901,7 +855,6 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
         try touch(a, &touched, pid, try svc.store.getValue(a, cid));
     }
     for (touched.items) |t| try emitPool(a, svc, topic, try revertRow(a, tx.txid, t.pid, t.live));
-    try beatIfChanged(a, svc);
 }
 
 /// `pid` among the pools a rejection touched (`rejected`): once each, in order; a pool given back
@@ -912,68 +865,6 @@ fn touch(a: Allocator, list: anytype, pid: [36]u8, live: ?Value) !void {
         return;
     };
     try list.append(a, .{ .pid = pid, .live = live });
-}
-
-// ---------------------------------------------------------------- the beat (0.12.0)
-
-/// One validator's listed pools of one token, summed.
-pub const Totals = struct { sats: u64 = 0, tokens: u64 = 0, pools: u64 = 0 };
-
-/// The beat body over the listed pools: dag-cbor `{tokens: {<assetId `<txid>_<vout>`>:
-/// {<validator identity, hex>: {sats, tokens, pools}}}}`, every listed pool of every token this
-/// skein serves, per validator. Its record (`beatRecord`) is what `beat` keeps.
-pub fn beatValue(a: Allocator, svc: *Service) !Value {
-    var tokens: std.ArrayList(Entry) = .empty;
-    var cur_tp: ?[]const u8 = null;
-    var vals: std.StringArrayHashMapUnmanaged(Totals) = .empty;
-    const flush = struct {
-        fn f(al: Allocator, out: *std.ArrayList(Entry), tp: []const u8, vs: *std.StringArrayHashMapUnmanaged(Totals)) !void {
-            if (vs.count() == 0) return;
-            const topic = tp[1..];
-            const id = tokenIdOf(topic) orelse return;
-            const es = try al.alloc(Entry, vs.count());
-            for (vs.keys(), vs.values(), es) |k, t, *e| e.* = .{ .key = k, .value = .{ .map = try al.dupe(Entry, &.{
-                .{ .key = "sats", .value = .{ .uint = t.sats } },
-                .{ .key = "tokens", .value = .{ .uint = t.tokens } },
-                .{ .key = "pools", .value = .{ .uint = t.pools } },
-            }) } };
-            try out.append(al, .{ .key = try std.fmt.allocPrint(al, "{s}_{d}", .{ &w.header.toHex(id.txid), id.vout }), .value = .{ .map = es } });
-            vs.clearRetainingCapacity();
-        }
-    }.f;
-    for (try svc.map("pools").prefixed(&.{})) |kv| {
-        if (kv.key.len < 1 + 36 or kv.value != .cid) continue;
-        const tp = kv.key[0 .. 1 + @as(usize, kv.key[0])];
-        if (cur_tp == null or !std.mem.eql(u8, cur_tp.?, tp)) {
-            if (cur_tp) |c| try flush(a, &tokens, c, &vals);
-            cur_tp = tp;
-        }
-        const rec = try svc.store.getValue(a, kv.value.cid);
-        if (validatorCleared(rec)) continue;
-        const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
-        const gop = try vals.getOrPut(a, try hexOf(a, identity));
-        if (!gop.found_existing) gop.value_ptr.* = .{};
-        gop.value_ptr.sats += rec.getUint("bsvReserve") orelse 0;
-        gop.value_ptr.tokens += rec.getUint("tokenReserve") orelse 0;
-        gop.value_ptr.pools += 1;
-    }
-    if (cur_tp) |c| try flush(a, &tokens, c, &vals);
-    return .{ .map = try a.dupe(Entry, &.{.{ .key = "tokens", .value = .{ .map = tokens.items } }}) };
-}
-
-/// The beat body's bytes (dag-cbor), for fn "beat" at the beacon's declaration.
-pub fn beat(a: Allocator, svc: *Service) anyerror![]const u8 {
-    return cbor.encode(a, try beatValue(a, svc));
-}
-
-/// After a hook: when the body changed since the last beat, keep it (`beat` map) and hand it to
-/// the engine (`Service.beat`, skein-overlay 0.12.0), which re-declares `<service>-live`'s beacon (`ls_amm_<assetId>-live`).
-fn beatIfChanged(a: Allocator, svc: *Service) !void {
-    const v = try beatValue(a, svc);
-    const rec = try svc.store.putValue(a, v);
-    if (try svc.map("beat").link("body")) |prev| if (std.mem.eql(u8, prev, rec)) return;
-    try svc.map("beat").putLink("body", rec);
-    if (comptime @hasDecl(Service, "beat")) try svc.beat(svc.name, try cbor.encode(a, v));
 }
 
 // ---------------------------------------------------------------- rendering an answer
@@ -1008,67 +899,40 @@ pub fn poolIdText(a: Allocator, pid: []const u8) ![]const u8 {
     return outpointStr(a, op.txid, op.vout);
 }
 
-/// The engine's PoolState shape (amm-poc-engine/web/engine/src/types.ts)
-/// plus the outpoint string, the pool's commissionBps, (0.34.0) its LpPubKey (hex) and (0.40.0) its
-/// id (`poolId`, `<txid>_<vout>`) and `swaps`, from an indexed record. (0.34.0: no `lastSeen`: the
-/// liveness join is the host's, D11.)
-fn poolStateValue(a: Allocator, svc: *Service, tp: []const u8, rec: Value, outpoint: []const u8) !Value {
-    const identity = rec.getBytes("validatorIdentityKey") orelse return error.BadIndex;
-    const lp = rec.getBytes("lpPubKey") orelse return error.BadIndex;
+/// A live pool as the live list and the positions answer it (0.48.0, D1: THE pool row,
+/// `poolRowFields`, the same as `/pools/at`, the history and the events carry), then (0.47.0) the
+/// pool's counters as `lifetime` (`lifetimeValue`).
+fn poolStateValue(a: Allocator, svc: *Service, tp: []const u8, rec: Value) !Value {
     var es: std.ArrayList(Entry) = .empty;
-    try es.appendSlice(a, &.{
-        .{ .key = "poolId", .value = .{ .text = try poolIdText(a, &try poolIdOf(rec)) } },
-        .{ .key = "lpPubKey", .value = .{ .text = try hexOf(a, lp) } },
-        .{ .key = "outpoint", .value = .{ .text = outpoint } },
-        .{ .key = "bsvReserve", .value = rec.get("bsvReserve") orelse return error.BadIndex },
-        .{ .key = "tokenReserve", .value = rec.get("tokenReserve") orelse return error.BadIndex },
-        .{ .key = "liquidityFeeBps", .value = rec.get("liquidityFeeBps") orelse return error.BadIndex },
-        .{ .key = "validationFeeBps", .value = rec.get("validationFeeBps") orelse return error.BadIndex },
-        .{ .key = "commissionBps", .value = rec.get("commissionBps") orelse return error.BadIndex },
-        .{ .key = "validatorIdentityKey", .value = .{ .text = try hexOf(a, identity) } },
-        .{ .key = "swaps", .value = .{ .uint = rec.getUint("swaps") orelse return error.BadIndex } },
-        // 0.47.0: the pool's counters (`lifetimeValue`).
-        .{ .key = "lifetime", .value = try lifetimeValue(a, svc, tp, &try poolIdOf(rec)) },
-    });
+    try poolRowFields(a, &es, rec);
+    try es.append(a, .{ .key = "lifetime", .value = try lifetimeValue(a, svc, tp, &try poolIdOf(rec)) });
     return .{ .map = es.items };
 }
 
-fn poolsUnder(a: Allocator, svc: *Service, prefix: []const u8, key_off: usize) ![]Value {
+/// The live pools under `tp` (a rescinded hop never listed; `identity`: that validator's only), in outpoint order.
+fn livePools(a: Allocator, svc: *Service, tp: []const u8, identity: ?[]const u8) ![]Value {
     var out: std.ArrayList(Value) = .empty;
-    for (try svc.map("pools").prefixed(prefix)) |kv| {
+    for (try svc.map("pools").prefixed(tp)) |kv| {
         if (kv.value != .cid) return error.BadIndex;
         const rec = try svc.store.getValue(a, kv.value.cid);
-        if (validatorCleared(rec)) continue;
-        const op = try w.store.outpointOf(kv.key[key_off..]);
-        try out.append(a, try poolStateValue(a, svc, prefix, rec, try outpointStr(a, op.txid, op.vout)));
+        if (isRescind(rec)) continue;
+        if (identity) |k| if (!std.mem.eql(u8, rec.getBytes("validatorIdentityKey") orelse "", k)) continue;
+        try out.append(a, try poolStateValue(a, svc, tp, rec));
     }
     return out.items;
 }
 
 fn answerAll(a: Allocator, svc: *Service, tp: []const u8) !lookup.Answer {
-    return .{ .freeform = .{ .array = try poolsUnder(a, svc, tp, tp.len) } };
+    return .{ .freeform = .{ .array = try livePools(a, svc, tp, null) } };
 }
 
-/// `byValidator`'s values are membership-only (`.null`): resolve each hit
-/// back through `pools` for the record.
-fn poolsForValidator(a: Allocator, svc: *Service, tp: []const u8, prefix: []const u8) ![]Value {
-    var out: std.ArrayList(Value) = .empty;
-    for (try svc.map("byValidator").prefixed(prefix)) |kv| {
-        const op = try w.store.outpointOf(kv.key[prefix.len..]);
-        const cid = (try svc.map("pools").link(try poolKey(a, tp, op.txid, op.vout))) orelse continue;
-        const rec = try svc.store.getValue(a, cid);
-        if (validatorCleared(rec)) continue;
-        try out.append(a, try poolStateValue(a, svc, tp, rec, try outpointStr(a, op.txid, op.vout)));
-    }
-    return out.items;
-}
-
+/// `{validatorIdentityKey}`: that validator's live pools of the token (0.48.0: the live pools read
+/// and filtered by the identity, `byValidator` gone with D2).
 fn answerValidator(a: Allocator, svc: *Service, tp: []const u8, hex: []const u8) !lookup.Answer {
     if (hex.len == 0 or hex.len % 2 != 0) return error.BadQuery;
     const identity = try a.alloc(u8, hex.len / 2);
     _ = std.fmt.hexToBytes(identity, hex) catch return error.BadQuery;
-    const prefix = try cat(a, &.{ identity, tp });
-    return .{ .freeform = .{ .array = try poolsForValidator(a, svc, tp, prefix) } };
+    return .{ .freeform = .{ .array = try livePools(a, svc, tp, identity) } };
 }
 
 /// `{outpoint}`: that pool, or its newest continuation, found by following
@@ -1099,7 +963,7 @@ fn answerOutpoint(a: Allocator, svc: *Service, ch: *Chain, tp: []const u8, start
         if (try svc.map("pools").link(try poolKey(a, tp, txid, vout))) |cid| rec = try svc.store.getValue(a, cid);
     }
     if (want_beef) return .{ .output_list = try a.dupe(lookup.Output, &.{.{ .txid = txid, .vout = vout }}) };
-    const current = try poolStateValue(a, svc, tp, rec.?, try outpointStr(a, txid, vout));
+    const current = try poolStateValue(a, svc, tp, rec.?);
     return .{ .freeform = .{ .map = try a.dupe(Entry, &.{
         .{ .key = "current", .value = current },
         .{ .key = "hops", .value = .{ .uint = hops } },
@@ -1153,6 +1017,16 @@ fn sumUnder(a: Allocator, svc: *Service, map_name: []const u8, prefix: []const u
     }
 }
 
+/// A pool's Swaps summed (0.48.0, D2: its `history` rows of kind `swap`, the rows `fees` held).
+fn sumSwaps(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8, field: []const u8, sum: *Sum) !void {
+    for (try svc.map("history").prefixed(try cat(a, &.{ tp, pid }))) |kv| {
+        if (kv.value != .cid) return error.BadIndex;
+        const rec = try svc.store.getValue(a, kv.value.cid);
+        if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap")) continue;
+        sum.add(rec, field);
+    }
+}
+
 fn sumEntries(s: Sum) [3]Entry {
     return .{
         .{ .key = "sats", .value = .{ .uint = s.sats } },
@@ -1162,41 +1036,32 @@ fn sumEntries(s: Sum) [3]Entry {
 }
 
 /// `{poolIds}` (0.40.0, was `{lpPubKeys}`): per pool id `{poolId, lpPubKey, status, outpoint?,
-/// current?, sats, tokens, swaps}` — the LP fees of its Swaps (`fees` under the id) and its state:
-/// `live` (its live hop: `outpoint`, `current` the `PoolState`), `rescinded` (that hop's validator
-/// key is 33 zero bytes; `current` that output's pool state), else `closed` (spent, or no pool of
-/// the id here: an unknown id answers `closed` with zeros and `lpPubKey` null). The hop is found
-/// through `byPool` (the pool's hops, live and spent; the one still in `pools`).
+/// current?, sats, tokens, swaps}` — the LP fees of its Swaps (its `history` rows of kind `swap`,
+/// 0.48.0) and its state: `live` (its live hop: `outpoint`, `current` the pool row), `rescinded`
+/// (that hop is a rescind's; `current` that output's pool row), else `closed` (spent, or no pool of
+/// the id here: an unknown id answers `closed` with zeros and `lpPubKey` null). The hop is the
+/// pool's last `history` row's (0.48.0, D2: `byPool` gone), when `pools` holds its outpoint.
 fn answerPools(a: Allocator, svc: *Service, _: *Chain, tp: []const u8, v: Value) !lookup.Answer {
     const ids = try poolIdList(a, v);
     const out = try a.alloc(Value, ids.len);
     for (ids, out) |*pid, *o| {
         var sum: Sum = .{};
-        try sumUnder(a, svc, "fees", try cat(a, &.{ tp, pid }), "lp", &sum);
+        try sumSwaps(a, svc, tp, pid, "lp", &sum);
         var es: std.ArrayList(Entry) = .empty;
         try es.append(a, .{ .key = "poolId", .value = .{ .text = try poolIdText(a, pid) } });
         var lp: Value = .null;
         var status: []const u8 = "closed";
-        // The pool's listed hops (`byPool`, live and spent): the live one is in `pools`.
-        const prefix = try cat(a, &.{ tp, pid });
-        for (try svc.map("byPool").prefixed(prefix)) |kv| {
-            const op = try w.store.outpointOf(kv.key[prefix.len..]);
-            const pk = try poolKey(a, tp, op.txid, op.vout);
-            const cid = (try svc.map("pools").link(pk)) orelse {
-                if (lp == .null) if (try svc.map("spentPools").link(pk)) |sc| {
-                    lp = .{ .text = try hexOf(a, (try svc.store.getValue(a, sc)).getBytes("lpPubKey") orelse return error.BadIndex) };
-                };
-                continue;
+        if (try lastEvent(a, svc, tp, pid)) |ev| {
+            lp = .{ .text = try hexOf(a, ev.rec.getBytes("lpPubKey") orelse return error.BadIndex) };
+            if (ev.rec.getBytes("outpoint")) |opk| if (try svc.map("pools").link(try cat(a, &.{ tp, opk }))) |cid| {
+                const rec = try svc.store.getValue(a, cid);
+                const op = try w.store.outpointOf(opk);
+                status = if (isRescind(rec)) "rescinded" else "live";
+                try es.appendSlice(a, &.{
+                    .{ .key = "outpoint", .value = .{ .text = try outpointStr(a, op.txid, op.vout) } },
+                    .{ .key = "current", .value = try poolStateValue(a, svc, tp, rec) },
+                });
             };
-            const rec = try svc.store.getValue(a, cid);
-            const text = try outpointStr(a, op.txid, op.vout);
-            status = if (validatorCleared(rec)) "rescinded" else "live";
-            lp = .{ .text = try hexOf(a, rec.getBytes("lpPubKey") orelse return error.BadIndex) };
-            try es.appendSlice(a, &.{
-                .{ .key = "outpoint", .value = .{ .text = text } },
-                .{ .key = "current", .value = try poolStateValue(a, svc, tp, rec, text) },
-            });
-            break;
         }
         try es.insert(a, 1, .{ .key = "lpPubKey", .value = lp });
         try es.append(a, .{ .key = "status", .value = .{ .text = status } });
@@ -1207,8 +1072,9 @@ fn answerPools(a: Allocator, svc: *Service, _: *Chain, tp: []const u8, v: Value)
 }
 
 /// `{validatorIdentityKeys}`: per key `{validatorIdentityKey, sats, tokens, swaps, pools}` — the
-/// validator fees over the fee rows of all its pools, closed included (`byValidator`, live and spent
-/// → each pool's id → its rows); `pools` the distinct pools counted.
+/// validator fees over the Swaps of all its pools, closed included; `pools` the distinct pools
+/// counted. 0.48.0 (D2, `byValidator` gone): its pools are the listed hops of the token (`pools`
+/// and `spentPools`) naming it, by pool id; each pool's Swaps its `history` rows.
 fn answerValidators(a: Allocator, svc: *Service, tp: []const u8, v: Value) !lookup.Answer {
     const keys = try hexList(a, v, 33);
     const out = try a.alloc(Value, keys.len);
@@ -1216,17 +1082,16 @@ fn answerValidators(a: Allocator, svc: *Service, tp: []const u8, v: Value) !look
         var sum: Sum = .{};
         var pools: u64 = 0;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
-        const prefix = try cat(a, &.{ k, tp });
-        for (try svc.map("byValidator").prefixed(prefix)) |kv| {
-            const op = try w.store.outpointOf(kv.key[prefix.len..]);
-            const pk = try poolKey(a, tp, op.txid, op.vout);
-            const cid = (try svc.map("pools").link(pk)) orelse (try svc.map("spentPools").link(pk)) orelse continue;
-            const pid = try a.dupe(u8, &try poolIdOf(try svc.store.getValue(a, cid)));
+        for ([_][]const u8{ "pools", "spentPools" }) |m| for (try svc.map(m).prefixed(tp)) |kv| {
+            if (kv.value != .cid) return error.BadIndex;
+            const rec = try svc.store.getValue(a, kv.value.cid);
+            if (!std.mem.eql(u8, rec.getBytes("validatorIdentityKey") orelse "", k)) continue;
+            const pid = try a.dupe(u8, &try poolIdOf(rec));
             // One pool's hops share its id and its rows: summed once.
             if ((try seen.getOrPut(a, pid)).found_existing) continue;
-            try sumUnder(a, svc, "fees", try cat(a, &.{ tp, pid }), "validator", &sum);
+            try sumSwaps(a, svc, tp, pid, "validator", &sum);
             pools += 1;
-        }
+        };
         const se = sumEntries(sum);
         o.* = .{ .map = try a.dupe(Entry, &.{ .{ .key = "validatorIdentityKey", .value = .{ .text = try hexOf(a, k) } }, se[0], se[1], se[2], .{ .key = "pools", .value = .{ .uint = pools } } }) };
     }
@@ -1381,14 +1246,14 @@ fn poolTrades(a: Allocator, svc: *Service, tp: []const u8, pid: [36]u8, q: Trade
     return list.items[0..@min(list.items.len, q.limit)];
 }
 
-/// `/trades?txid=`: the trade row of the Swap `txid` (its pool id from its continuation's record at
-/// output 0, live or spent); null none.
+/// `/trades?txid=`: the trade row of the Swap `txid`: its continuation's record at output 0, live or
+/// spent (0.48.0, D1/D2: the hop's record IS the Swap's event; `fees` gone), when it is a Swap's with
+/// its trade; null none.
 pub fn tradeOf(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8) !?Trade {
     const k0 = try poolKey(a, tp, txid, 0);
-    const pc = (try svc.map("pools").link(k0)) orelse (try svc.map("spentPools").link(k0)) orelse return null;
-    const pid = try poolIdOf(try svc.store.getValue(a, pc));
-    const cid = (try svc.map("fees").link(try feeKey(a, tp, &pid, txid))) orelse return null;
+    const cid = (try svc.map("pools").link(k0)) orelse (try svc.map("spentPools").link(k0)) orelse return null;
     const rec = try svc.store.getValue(a, cid);
+    if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap") or rec.get("side") == null) return null;
     return .{ .at = rec.getUint("at") orelse return null, .txid = txid, .rec = rec };
 }
 
@@ -1424,23 +1289,18 @@ pub fn candles(a: Allocator, svc: *Service, tp: []const u8, tf: u64, from: u64, 
     return out.items;
 }
 
-/// `/stats` (D3): the token at `now` (ms), from its trade rows of the last 24 h and its live pools.
+/// `/stats` (D3): the token at `now` (ms), from its trade rows of the last 24 h and its counters.
+/// 0.48.0 (agent-env plans/data-model-cleanup-2026-11-07.md D4): only what the host does not
+/// recompute — the last fill, the volumes (24 h and lifetime), the buy, sell and trade counts. The
+/// TVL, the pool count, the price and its changes are the host's (its liveness-filtered list).
 pub const Stats = struct {
     /// The last trade's price (0.40.0: `lastTradePrice`; the host sets `price`); null without one.
     last_trade_price: ?Price,
-    /// The change from the price at the window's start (the last trade at or before it) to the last
-    /// trade's, in bps (truncated toward zero); null without a trade at the window's start.
-    change1h: ?i64,
-    change24h: ?i64,
     volume24h_sats: u64 = 0,
     volume24h_tokens: u64 = 0,
     buys24h: u64 = 0,
     sells24h: u64 = 0,
     last_trade_at: ?u64,
-    tvl_sats: u64 = 0,
-    tvl_tokens: u64 = 0,
-    /// Live pools.
-    pools: u64 = 0,
     /// 0.47.0: the token's counters (`TokenCounters`): its lifetime volume on each side and its trade count.
     volume_sats: u64 = 0,
     volume_tokens: u64 = 0,
@@ -1460,11 +1320,10 @@ pub fn changeBps(then: Price, now: Price) i64 {
     return std.math.cast(i64, bps) orelse (if (bps < 0) std.math.minInt(i64) else std.math.maxInt(i64));
 }
 
-/// 0.40.0: read from the windows alone — the last trade at or before `now` and at each window's
-/// start (`Map.floor`), the 24 h volumes from that window's range.
+/// 0.40.0: read from the windows alone — the last trade at or before `now` (`Map.floor`), the 24 h
+/// volumes from that window's range; 0.47.0 the token's counters.
 pub fn stats(a: Allocator, svc: *Service, tp: []const u8, now: u64) !Stats {
-    var st: Stats = .{ .last_trade_price = null, .change1h = null, .change24h = null, .last_trade_at = null };
-    const start1h = now -| hour_ms;
+    var st: Stats = .{ .last_trade_price = null, .last_trade_at = null };
     const start24h = now -| day_ms;
     if (try tradeAtOrBefore(a, svc, tp, now)) |r| {
         st.last_trade_price = priceOf(r.rec);
@@ -1477,26 +1336,10 @@ pub fn stats(a: Allocator, svc: *Service, tp: []const u8, now: u64) !Stats {
         st.volume24h_tokens += v.tokens;
         if (std.mem.eql(u8, r.rec.getText("side") orelse "", "buy")) st.buys24h += 1 else st.sells24h += 1;
     }
-    for (try svc.map("pools").prefixed(tp)) |kv| {
-        if (kv.value != .cid) return error.BadIndex;
-        const rec = try svc.store.getValue(a, kv.value.cid);
-        if (validatorCleared(rec)) continue;
-        st.tvl_sats += rec.getUint("bsvReserve") orelse return error.BadIndex;
-        st.tvl_tokens += rec.getUint("tokenReserve") orelse return error.BadIndex;
-        st.pools += 1;
-    }
     const tc = try tokenCounters(a, svc, tp);
     st.volume_sats = tc.volume_sats;
     st.volume_tokens = tc.volume_tokens;
     st.trades = tc.trades;
-    if (st.last_trade_price) |p| {
-        if (try tradeAtOrBefore(a, svc, tp, start1h)) |t| if (priceOf(t.rec)) |q| {
-            st.change1h = changeBps(q, p);
-        };
-        if (try tradeAtOrBefore(a, svc, tp, start24h)) |t| if (priceOf(t.rec)) |q| {
-            st.change24h = changeBps(q, p);
-        };
-    }
     return st;
 }
 
@@ -1572,11 +1415,11 @@ pub fn poolRecord(a: Allocator, svc: *Service, tp: []const u8, txid: [32]u8, vou
     return try svc.store.getValue(a, cid);
 }
 
-/// The history cursor of a pool record: the event at `(admittedAt, swaps)` is excluded by a scan
-/// that starts strictly after this position. The pool id is the record's.
+/// The history cursor of a hop's record (its event): the event at `(at, swaps)` is excluded by a
+/// scan that starts strictly after this position. The pool id is the record's.
 pub fn cursorOf(rec: Value) !EventCursor {
     return .{
-        .at = rec.getUint("admittedAt") orelse return error.BadIndex,
+        .at = rec.getUint("at") orelse return error.BadIndex,
         .pid = try poolIdOf(rec),
         .seq = rec.getUint("swaps") orelse return error.BadIndex,
     };
@@ -1639,19 +1482,10 @@ pub fn answer(a: Allocator, svc: *Service, ch: *Chain, query: Value) anyerror!lo
     return answerAll(a, svc, tp);
 }
 
-/// The service: its maps, its index, the queries, the hooks, and (skein-overlay 0.12.0) its beat
-/// body at the beacon's declaration — wired only where the engine's lookup module has it.
-pub const spec: lookup.Spec = if (@hasField(lookup.Spec, "beat")) .{
+/// The service: its maps, its index, the queries, the hooks (0.48.0: no beat body, D5).
+pub const spec: lookup.Spec = .{
     .maps = &maps,
     // Its index, whatever name it is served as (skein-overlay 0.11.0): the head `<app>/ls_amm`, as before.
-    .index = service_name,
-    .answer = answer,
-    .admitted = admitted,
-    .spent = spent,
-    .rejected = rejected,
-    .beat = beat,
-} else .{
-    .maps = &maps,
     .index = service_name,
     .answer = answer,
     .admitted = admitted,

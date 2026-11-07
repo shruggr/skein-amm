@@ -592,7 +592,7 @@ describe("the swap transaction", () => {
     const pub = side.publicKey({ protocolID: SWAP_KEYS, keyID, counterparty: "self", forSelf: true });
     expect(prepared.swap.outputs[5]!.lockingScript.toHex()).toBe(tokenP2pkhScriptOf(SDK_ID, 10_000n, pub));
     expect(prepared.swap.outputs[5]!.satoshis).toBe(1);
-    expect(JSON.parse(prepared.tokenChange.customInstructions)).toEqual({ assetId: SDK_ID, amount: "10000", protocolID: SWAP_KEYS, keyID, counterparty: "self", order: tokenRowOp });
+    expect(JSON.parse(prepared.tokenChange.customInstructions)).toEqual({ protocolID: SWAP_KEYS, keyID, counterparty: "self", order: tokenRowOp }); // 0.48.0 (D9)
     expect(prepared.plan.args.slice(6)).toEqual([Utils.toHex(PublicKey.fromString(pub).toHash() as number[]), 10_000n]);
     const final = await validatorSigns(prepared, prepared.swap.toBinary(), vkey);
     for (const i of [0, 1, 2]) expect(spendValid(final, i)).toBe(true);

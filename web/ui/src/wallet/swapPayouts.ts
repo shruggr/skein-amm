@@ -87,7 +87,7 @@ export async function legTakeInOf(wallet: WalletInterface, tx: Transaction, toke
     const script = out.lockingScript.toHex();
     const token = decodeOneColor(out.lockingScript.toBinary());
     if (token && tokenChange && tokenP2pkhScript(sdkId, token.amount, tokenChange.pub) === script) {
-      outs.push({ outputIndex: vout, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ assetId: sdkId, amount: token.amount, protocolID: SWAP_PROTOCOL, keyID: tokenChange.keyID, counterparty: "self", order }) } });
+      outs.push({ outputIndex: vout, protocol: "basket insertion", insertionRemittance: { basket: SWAP_BASKET, customInstructions: swapInstructions({ protocolID: SWAP_PROTOCOL, keyID: tokenChange.keyID, counterparty: "self", order }) } });
       continue;
     }
     if (!token && satsChange && p2pkhHexOf(satsChange.pub) === script) {

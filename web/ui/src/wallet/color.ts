@@ -48,11 +48,13 @@ export const SWAP_PROTOCOL: WalletProtocol = [2, "amm swap"];
 export const LIST_LIMIT = 10000;
 
 /**
- * customInstructions of an `amm-swap` token row: the asset, the amount and the key that spends it;
- * 0.40.0, a leg's token change also `order` (the order's key input, `<txid>.<vout>`).
+ * customInstructions of an `amm-swap` token row: the key that spends it; 0.40.0, a leg's token
+ * change also `order` (the order's key input, `<txid>.<vout>`). 0.48.0 (agent-env
+ * plans/data-model-cleanup-2026-11-07.md D9): no `assetId` or `amount` — the output's 1Color script
+ * holds both (a row filed before with them still reads).
  */
-export function swapInstructions(o: { assetId: string; amount: bigint; protocolID: WalletProtocol; keyID: string; counterparty: string; order?: string }): string {
-  return JSON.stringify({ assetId: o.assetId, amount: String(o.amount), protocolID: o.protocolID, keyID: o.keyID, counterparty: o.counterparty, ...(o.order ? { order: o.order } : {}) });
+export function swapInstructions(o: { protocolID: WalletProtocol; keyID: string; counterparty: string; order?: string }): string {
+  return JSON.stringify({ protocolID: o.protocolID, keyID: o.keyID, counterparty: o.counterparty, ...(o.order ? { order: o.order } : {}) });
 }
 
 /**

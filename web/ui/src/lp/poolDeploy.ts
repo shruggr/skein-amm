@@ -240,31 +240,32 @@ export function tokenP2pkhScript(tokenId: string, amount: bigint, pubKey: string
   return toHex(prefix) + new P2PKH().lock(PublicKey.fromString(pubKey).toAddress()).toHex();
 }
 
-/** customInstructions of a pool output the wallet holds as LP (`amm-pools`). */
+/**
+ * customInstructions of a pool output the wallet holds as LP (`amm-pools`, 0.48.0, agent-env
+ * plans/data-model-cleanup-2026-11-07.md D9): what spends it and names its pool, nothing else —
+ * `{protocolID, keyID, counterparty, poolId}`. The token, the reserves, the fees, the validator and
+ * its nonce are in the output's script; the symbol and decimals are the overlay's, by pool id. Rows
+ * filed before 0.48.0 (with `id`, `op`, `sym`, `dec`, `amm`) still read.
+ */
 export function poolCustomInstructions(o: {
-  tokenId: string;
-  sym?: string;
-  dec?: number;
   protocolID: WalletProtocol;
   keyID: string;
-  args: PoolArgs;
-  validatorIdentity: string;
-  /** The validator's nonce (0.13.0), hex; absent for a pool before it. */
-  nonce?: string;
   /** The deploy outpoint, `<txid>_<vout>`. Copied onto each continuation the wallet files. */
-  poolId?: string;
+  poolId: string;
 }): string {
-  return JSON.stringify({
-    id: o.tokenId,
-    op: POOL_OP,
-    ...(o.sym ? { sym: o.sym } : {}),
-    ...(o.dec !== undefined ? { dec: String(o.dec) } : {}),
-    protocolID: o.protocolID,
-    keyID: o.keyID,
-    counterparty: "self",
-    ...(o.poolId ? { poolId: o.poolId } : {}),
-    amm: { role: "lp", validatorIdentity: o.validatorIdentity, lpFeeBps: String(o.args.lpFeeBps), validatorFeeBps: String(o.args.validatorFeeBps), commissionBps: String(o.args.commissionBps), ...(o.nonce ? { nonce: o.nonce } : {}) },
-  });
+  return JSON.stringify({ protocolID: o.protocolID, keyID: o.keyID, counterparty: "self", poolId: o.poolId });
+}
+
+/** The token a pool row's output is of (0.48.0, D9): its script's asset id, else (a row filed before) its customInstructions' `id`. */
+export function poolRowTokenId(row: { lockingScript?: string; customInstructions?: string }): string | null {
+  const pool = row.lockingScript ? PoolTemplate.decode(row.lockingScript) : null;
+  if (pool) return sdkTokenId(tokenIdOfWire(Utils.toArray(pool.args.assetId, "hex")));
+  try {
+    const ci = JSON.parse(row.customInstructions ?? "{}") as { id?: unknown };
+    return typeof ci.id === "string" ? sdkTokenId(ci.id) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +418,7 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
       outputIndex: 0,
       basket: POOLS_BASKET,
       tags: [POOL_TAG],
-      customInstructions: poolCustomInstructions({ tokenId: sdkId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity, nonce: affirmation.nonce, poolId: `${txid}_0` }),
+      customInstructions: poolCustomInstructions({ protocolID: lpKey.protocolID, keyID: lpKey.keyID, poolId: `${txid}_0` }),
     },
     filed: false,
     submitted: "not submitted",

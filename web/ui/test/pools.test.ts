@@ -318,21 +318,17 @@ describe("pool deploy (0.13.0): the validator's affirmation, then one createActi
     expect(submitted.map((x) => x.topic)).toEqual([`tm_color_${SDK_ID}`]);
     expect(d.submitted).toBe(`admitted under tm_color_${SDK_ID} (outputs 0, 1)`);
 
-    // The position row: output 0 into amm-pools, the LP key, the validator's terms and nonce.
+    // The position row: output 0 into amm-pools, the LP key and the pool id (0.48.0).
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { tx: number[]; outputs: { insertionRemittance: { basket: string; tags: string[]; customInstructions: string } }[]; labels: string[] };
     expect(ia.tx).toEqual(d.tx);
     expect(ia.labels).toEqual(["amm-pool-deploy"]);
     expect(ia.outputs).toEqual([{ outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "amm-pools", tags: ["amm-pool"], customInstructions: d.filing.customInstructions } }]);
+    // 0.48.0 (D9): what spends it and names its pool; the token, fees, validator and nonce are the script's.
     expect(JSON.parse(d.filing.customInstructions)).toEqual({
-      id: SDK_ID,
-      op: "amm-pool",
-      sym: "TST",
-      dec: "0",
       protocolID: [1, "openex fees"],
       keyID: lpReq.keyID,
       counterparty: "self",
       poolId: `${d.txid}_0`,
-      amm: { role: "lp", validatorIdentity: v.identity, lpFeeBps: "30", validatorFeeBps: "5", commissionBps: String(v.commissionBps), nonce: v.nonce },
     });
     expect(d.filed).toBe(true);
     expect(calls.some((c) => c.method === "abortAction" || c.method === "relinquishOutput")).toBe(false);
@@ -596,7 +592,7 @@ describe("rebalance (0.38.0, D11): the old pool closed and a new one deployed in
     const ia = calls.find((c) => c.method === "internalizeAction")!.args as { outputs: unknown[]; labels: string[] };
     expect(ia.labels).toEqual(["amm-pool-deploy"]);
     expect(ia.outputs).toEqual([{ outputIndex: 0, protocol: "basket insertion", insertionRemittance: { basket: "amm-pools", tags: ["amm-pool"], customInstructions: r.filing.customInstructions } }]);
-    expect(JSON.parse(r.filing.customInstructions)).toMatchObject({ id: SDK_ID, op: "amm-pool", keyID: lpReq.keyID, amm: { nonce } });
+    expect(JSON.parse(r.filing.customInstructions)).toEqual({ protocolID: [1, "openex fees"], keyID: lpReq.keyID, counterparty: "self", poolId: `${r.txid}_0` });
     expect(JSON.parse(r.filing.customInstructions).poolId).toBe(`${r.txid}_0`);
     expect(r.filed).toBe(true);
     expect(r.errors).toEqual([]);

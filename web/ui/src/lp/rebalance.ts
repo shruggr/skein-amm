@@ -192,7 +192,7 @@ export async function rebalancePool(i: RebalanceInput): Promise<RebalancedPool> 
       outputIndex: 0,
       basket: POOLS_BASKET,
       tags: [POOL_TAG],
-      customInstructions: poolCustomInstructions({ tokenId: sdkId, ...meta, protocolID: lpKey.protocolID, keyID: lpKey.keyID, args: plan.args, validatorIdentity: plan.state.validatorIdentity, nonce: affirmation.nonce, poolId: `${signed.txid}_0` }),
+      customInstructions: poolCustomInstructions({ protocolID: lpKey.protocolID, keyID: lpKey.keyID, poolId: `${signed.txid}_0` }),
     },
     filed: false,
     submitted: "not submitted",

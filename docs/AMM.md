@@ -415,12 +415,19 @@ The queries, every one naming its token (`tokenId`; programs/amm-lookup README, 
 | `{tokenId, commissionPkhs: [<hex 20>]}` | `[{commissionPkh, sats, tokens, swaps}]`: the commissions paid to each key hash |
 
 A list query answers one record per key, in order; an unknown key answers zeros (`status: "closed"`,
-`pools` 0). Every one is prefix scans over the lookup's indexes (`byPool`, `byValidator`,
-`byCommission`, `fees`), no scan of all pools. The pages (Liquidity) load the positions with
+`pools` 0). 0.48.0 (agent-env plans/data-model-cleanup-2026-11-07.md D2): `byPool`, `byValidator`
+and `fees` are gone — a pool's fees are its `history` Swap rows, its live hop its last `history`
+row's, a validator's pools the token's listed hops (`pools`, `spentPools`) naming it; `byCommission`
+stays. The pages (Liquidity) load the positions with
 `{poolIds}` (0.40.0), once per token with all the wallet's pool ids for it: the state and the fees of each,
 nothing read per position until the LP acts on one (Close, Recover).
 
 ## Prices (0.9.0)
+
+0.48.0 (D5): this section is history. The AMM lookup beats no body of its own (no fn `beat`, no
+`beat` map, no scan of every live pool per hook): nothing read it; the host and the pages read the
+validators' beats on `tm_color_<assetId>-live`. The engine still declares the configured lookup's
+`ls_amm_<assetId>-live` beacon (skein-overlay `configured.zig`), with an empty body.
 
 David Case, 2026-10-09: "Pricing lives in the AMM LOOKUP's own beacon";
 "beats are libp2p service discovery". `ls_amm_<assetId>`, configured at the
@@ -505,7 +512,8 @@ commission, bsvIn, commissionPkh, bsvReserve, tokenReserve, at}` — `side` `buy
 (the other asset's reserve before minus after); the three fees in the input asset; the reserves the
 continuation holds after the Swap; `at` the admitting step's time in ms (the in-VM call input's
 `now`, the time of the entry that drove the step: per host, replay-exact). Keys: `trades: tp ‖ at
-(u64 BE) ‖ swap txid`, and the 0.33.0 `fees` / `byCommission` keys, all linking the one record. A
+(u64 BE) ‖ swap txid`, and the 0.33.0 `byCommission` key, all linking the one record (0.48.0: the
+continuation's `pools` / `spentPools` record too, D1; `fees` gone, D2). A
 rejection removes it.
 
 **The routes** (amm-p2p, filters `trades`, `candles`, `stats`; JSON; cache `state`; amounts integers
@@ -517,7 +525,7 @@ amounts — a buy `amountIn / amountOut`, a sell `amountOut / amountIn`):
 | H1 | `GET /@<token>/amm/trades?from=<ms>&to=<ms>&limit=<n≤500>&before=<cursor>&pool=<txid>_<vout>` | `{trades: [<row>], next: <cursor> \| null}` newest first, `from ≤ at < to` (both optional), `limit` default 100, `next` the last row's cursor when the page is full (hex of `at (u64 BE) ‖ txid`), `pool` one pool's rows (0.40.0, was `lp`); a row `{txid, poolId, lpPubKey, side, amountIn, amountOut, feeLp, feeValidator, feeCommission, bsvReserve, tokenReserve, payoutPkh, at, height}` (0.40.0: `poolId`, `payoutPkh` the call's `userPkh`), `height` where the overlay has the txid `placed` (its `<app>/state` map `placed`, written once the proof landed), else null |
 | H1 | `GET /@<token>/amm/trades?txid=<txid>` | the one row; 404 none |
 | H2 | `GET /@<token>/amm/candles?tf=1m\|5m\|15m\|1h\|4h\|1d&from=<ms>&to=<ms>` | `[{t, o, h, l, c, volumeSats, volumeTokens, n}]` one per NON-EMPTY bucket, oldest first, across all pools: `t` the bucket's start (a multiple of `tf` since the epoch), `o`/`h`/`l`/`c` prices, the volumes each side's amounts summed, `n` the trades; `from ≤ at < to`, both required; more than 5000 buckets, 400 |
-| H3 | `GET /@<token>/amm/stats` | `{tokenId, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools, volumeSats, volumeTokens, trades}` at the read's time (0.47.0: the last three the token's lifetime counters, amm-lookup's `counters`; Swaps admitted before 0.47.0 not counted): `lastTradePrice` (0.40.0, was `price`; the host sets `price`) the last trade's, else null; the changes in bps (integers, truncated toward zero) from the last trade at or before the window's start, null without one; volumes and counts over the trades of the last 24 h; TVL the live pools' reserves summed; `pools` the live pool count |
+| H3 | `GET /@<token>/amm/stats` | (0.48.0, D4: the instance's own route answers `{tokenId, lastTradePrice, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, volumeSats, volumeTokens, trades}`; the TVL, the pool count, the price and its changes are the open-exchange host's, which answers this path with them merged.) Before 0.48.0: `{tokenId, lastTradePrice, change1h, change24h, volume24hSats, volume24hTokens, buys24h, sells24h, lastTradeAt, tvlSats, tvlTokens, pools, volumeSats, volumeTokens, trades}` at the read's time (0.47.0: the last three the token's lifetime counters, amm-lookup's `counters`; Swaps admitted before 0.47.0 not counted): `lastTradePrice` (0.40.0, was `price`; the host sets `price`) the last trade's, else null; the changes in bps (integers, truncated toward zero) from the last trade at or before the window's start, null without one; volumes and counts over the trades of the last 24 h; TVL the live pools' reserves summed; `pools` the live pool count |
 
 ## The pool id and the pool history (0.40.0)
 
