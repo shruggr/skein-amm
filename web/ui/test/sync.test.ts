@@ -195,12 +195,13 @@ describe("syncPool", () => {
   it("files the continuation and the satoshi fee in one internalize, then a second walk files nothing", async () => {
     const bag = syncWallet({ pools: [deployRow()] });
     const { io } = oneHop();
-    await syncPool(bag.wallet, POOL_ID, io);
+    expect(await syncPool(bag.wallet, POOL_ID, io)).toEqual({ caughtUp: true });
     const filed = internalized(bag);
     expect(filed).toHaveLength(1);
     expect(filed[0]!.description).toBe("AMM pool output filed");
     expect(filed[0]!).not.toHaveProperty("labels");
-    expect(Beef.fromBinary(filed[0]!.tx).atomicTxid).toBeFalsy();
+    // 0.48.2: the transaction's Atomic BEEF (the toolbox refuses any other).
+    expect(Beef.fromBinary(filed[0]!.tx).atomicTxid).toBe(swap.id("hex"));
     const [continuation, fee] = filed[0]!.outputs;
     expect(continuation).toMatchObject({ outputIndex: 0, insertionRemittance: { basket: POOLS_BASKET, tags: [POOL_TAG] } });
     const contCi = JSON.parse(continuation!.insertionRemittance!.customInstructions!);
@@ -285,7 +286,9 @@ describe("syncPool", () => {
     ]);
     const bag = syncWallet({ pools: [deployRow()] });
     const io = ioOf(pages, txs);
-    await syncPool(bag.wallet, POOL_ID, io);
+    const r = await syncPool(bag.wallet, POOL_ID, io);
+    expect(r).toMatchObject({ caughtUp: false });
+    expect((r as { reason: string }).reason).toContain("does not spend the pool output the wallet holds");
     expect(internalized(bag)).toHaveLength(0);
     expect(io.asked).toEqual([POOL_ID]);
   });
@@ -298,7 +301,7 @@ describe("syncPool", () => {
     const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(tx, "swap", { feeLp: 60n })]]]);
     const txs = new Map([[tx.id("hex"), rawBeef(tx, [poolDeploy])]]);
     const bag = syncWallet({ pools: [deployRow()] });
-    await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs));
+    expect(await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs))).toEqual({ caughtUp: false, reason: `${tx.id("hex")}'s output 0 is not a pool` });
     expect(internalized(bag)).toHaveLength(0);
   });
 
@@ -306,11 +309,11 @@ describe("syncPool", () => {
     const missing = "ab".repeat(32);
     const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(swap, "swap", { feeLp: 60n, txid: missing })]]]);
     const bag = syncWallet({ pools: [deployRow()] });
-    await expect(syncPool(bag.wallet, POOL_ID, ioOf(pages, new Map()))).resolves.toBeUndefined();
+    await expect(syncPool(bag.wallet, POOL_ID, ioOf(pages, new Map()))).resolves.toEqual({ caughtUp: false, reason: `the transaction ${missing} cannot be read from the exchange` });
     expect(internalized(bag)).toHaveLength(0);
   });
 
-  it("a swap that names an LP fee and has no output 2 throws before the known-skip", async () => {
+  it("a swap that names an LP fee and has no output 2 stops the walk before the known-skip", async () => {
     const tx = spend(poolDeploy, 0, [
       { satoshis: poolDeploy.outputs[0]!.satoshis!, lockingScript: cont },
       { satoshis: 1000, lockingScript: payout },
@@ -322,14 +325,23 @@ describe("syncPool", () => {
       pools: [deployRow(), { outpoint: `${txid}.0`, satoshis: 1, lockingScript: "00", customInstructions: "{}" }],
       fees: [{ outpoint: `${txid}.2`, satoshis: 1, lockingScript: "00", customInstructions: "{}" }],
     });
-    await expect(syncPool(bag.wallet, POOL_ID, ioOf(pages, txs))).rejects.toThrow("the swap names an LP fee and has no output 2");
+    expect(await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs))).toEqual({ caughtUp: false, reason: `${txid} names an LP fee and has no output 2` });
     expect(internalized(bag)).toHaveLength(0);
+  });
+
+  it("stops, with the wallet's reason, when the wallet refuses the hop", async () => {
+    const bag = syncWallet({ pools: [deployRow()] });
+    (bag.wallet as unknown as { internalizeAction: () => Promise<never> }).internalizeAction = async () => {
+      throw new Error("must be a complete, exactly framed Atomic BEEF");
+    };
+    const r = await syncPool(bag.wallet, POOL_ID, oneHop().io);
+    expect(r).toEqual({ caughtUp: false, reason: `the wallet refused ${swap.id("hex")}: must be a complete, exactly framed Atomic BEEF` });
   });
 
   it("does nothing when the wallet holds no output of the pool", async () => {
     const bag = syncWallet();
     const io = oneHop().io;
-    await syncPool(bag.wallet, POOL_ID, io);
+    expect(await syncPool(bag.wallet, POOL_ID, io)).toEqual({ caughtUp: true });
     expect(io.asked).toEqual([]);
     expect(internalized(bag)).toHaveLength(0);
   });

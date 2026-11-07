@@ -1448,7 +1448,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
 
   /**
    * Closes a position (src/lp/close.ts): the wallet catches up from the pool output it holds,
-   * then spends that output. Its BEEF is `GET /@<token>/amm/tx?id=` of the transaction the wallet
+   * then spends that output; a catch-up that stops refuses the Close ("could not catch up: <reason>",
+   * 0.48.2) rather than spend a row the pool has moved past. Its BEEF is `GET /@<token>/amm/tx?id=` of the transaction the wallet
    * lists. The page's submit at the host root (D19). The wallet pays the miner fee.
    */
   async function closePosition(req: CloseRequest): Promise<CloseResult> {
@@ -1463,10 +1464,12 @@ function makeClient(opts: ClientOptions, s: Shared) {
     if (!key.protocolID || !key.keyID) throw new Error("the pool output names no key");
     const base = await tokenBaseOf(tokenId);
     const m = (await tokenMeta()).get(tokenId);
-    await syncPool(wallet, req.poolId, {
+    const synced = await syncPool(wallet, req.poolId, {
       history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
       readTx: (txid) => readTx(base, txid, freshFetch),
     });
+    // 0.48.2: a walk that stopped leaves the held row behind the pool: never spend it.
+    if (!synced.caughtUp) throw new Error(`could not catch up: ${synced.reason}`);
     const again = heldPoolRow(await basketRows(wallet, POOLS_BASKET), req.poolId);
     if (!again?.lockingScript) throw new Error("No such position");
     const key2 = storedKey(again.customInstructions);
@@ -1503,12 +1506,14 @@ function makeClient(opts: ClientOptions, s: Shared) {
   /**
    * Collects the LP fees: the same catch-up over every pool the wallet holds, then one action
    * spending the `openex fees` basket. Satoshis go to one BRC-29 address; each token's sum goes
-   * to one `p color` output. The pools stay open.
+   * to one `p color` output. The pools stay open. A pool whose walk stops is named in `stopped`
+   * (0.48.2) and its later fees are not in the collect.
    */
   async function collectFees(): Promise<CollectResult> {
     const { wallet } = needWallet();
     const rows = await basketRows(wallet, POOLS_BASKET);
     const seen = new Set<string>();
+    const stopped: { poolId: string; reason: string }[] = [];
     for (const row of rows) {
       if (!isPoolRow(row)) continue;
       let ci: { poolId?: string } = {};
@@ -1526,14 +1531,15 @@ function makeClient(opts: ClientOptions, s: Shared) {
       if (seen.has(id)) continue;
       seen.add(id);
       const base = await tokenBaseOf(tokenId);
-      await syncPool(wallet, id, {
+      const synced = await syncPool(wallet, id, {
         history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
         readTx: (txid) => readTx(base, txid, freshFetch),
       });
+      if (!synced.caughtUp) stopped.push({ poolId: id, reason: synced.reason });
     }
     const r = await collectBasket(wallet);
     if (r.txid) emit();
-    return r;
+    return stopped.length ? { ...r, stopped } : r;
   }
 
   /**
