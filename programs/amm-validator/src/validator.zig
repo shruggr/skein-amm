@@ -3,6 +3,8 @@
 //! `swap` call, `affirm` for the `affirm` call (0.11.0: a proposed pool checked against the
 //! terms and signed before the LP's wallet builds the deploy).
 //!
+//! First (D6, 2026-11-07; messages.zig `proveRequest`, before the pool's lock): the request's BEEF
+//! passes the door's verifier with the held set (submit.zig `requestProblem`), else `bad_transaction`.
 //! A spend is signed only if, in order:
 //!   1. the transaction parses and spends the named pool outpoint;
 //!   2. the pool is an output this instance's overlay holds, and it is a

@@ -243,3 +243,84 @@ fn addBump(a: std.mem.Allocator, bumps: *std.ArrayList(w.bsvz.spv.MerklePath), p
     try bumps.append(a, p);
     return bumps.items.len - 1;
 }
+
+/// D6 (David 2026-11-07): the request's BEEF proven as this instance's door will prove the submission,
+/// before the pool's lock and the signature — skein-sdk's verifier (chain `spv.verify`, what skein
+/// 0.3.3's `kernel.beef` runs) with `rootAt` the chain state's headers and `knownRaw` the held set
+/// (`holds`: in the chain state's `txs`, not rejected), over every transaction of the request but the
+/// subject; then the subject's own inputs as the verifier reads an unproven transaction's: each
+/// source earlier in the BEEF or held, each script verified but the pool input's (`pool`: its slot is
+/// ours, empty until we sign). `ancestry` null: a raw request, every source held. Null when it
+/// passes; else the refusal's text, the verifier's error name first, then what it means, and the
+/// transaction or input it is about where known (an unknown txid-only entry, a missing source).
+pub fn requestProblem(a: std.mem.Allocator, ancestry: ?beef.Beef, subject: w.bsvz.transaction.Transaction, pool: struct { txid: [32]u8, vout: u32 }, ch: anytype) !?[]const u8 {
+    const Ch = @TypeOf(ch);
+    const Ctx = struct {
+        ch: Ch,
+        /// The last txid `knownRaw` was asked for and does not hold: what an UnknownTxidOnly or a
+        /// MissingInput is about.
+        unknown: ?[32]u8 = null,
+        fn rootAt(ptr: *anyopaque, height: u32) anyerror!?[32]u8 {
+            const c: *@This() = @ptrCast(@alignCast(ptr));
+            return c.ch.chain().rootAt(height);
+        }
+        fn knownRaw(ptr: *anyopaque, _: std.mem.Allocator, txid: [32]u8) anyerror!?[]const u8 {
+            const c: *@This() = @ptrCast(@alignCast(ptr));
+            const raw = if (try holds(c.ch, txid)) try c.ch.txRaw(txid) else null;
+            if (raw == null) c.unknown = txid;
+            return raw;
+        }
+    };
+    var ctx = Ctx{ .ch = ch };
+    const vctx: w.spv.Context = .{ .ptr = &ctx, .rootAtFn = Ctx.rootAt, .knownRawFn = Ctx.knownRaw };
+    const subject_txid = (try subject.txid(a)).bytes;
+    if (ancestry) |b| {
+        var rest: std.ArrayList(beef.Entry) = .empty;
+        for (b.entries) |e| if (!std.mem.eql(u8, &e.txid, &subject_txid)) try rest.append(a, e);
+        var others = b;
+        others.entries = rest.items;
+        others.atomic = null;
+        _ = w.spv.verify(a, others, vctx) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return try why(a, e, ctx.unknown, null),
+        };
+    }
+    for (subject.inputs, 0..) |in, k| {
+        const src_txid = in.previous_outpoint.txid.bytes;
+        ctx.unknown = null;
+        const in_beef: ?beef.Entry = if (ancestry) |b| (if (b.find(src_txid)) |e| e.* else null) else null;
+        const src_raw = (if (in_beef) |e| (e.raw orelse try Ctx.knownRaw(&ctx, a, src_txid)) else try Ctx.knownRaw(&ctx, a, src_txid)) orelse
+            return try why(a, error.MissingInput, src_txid, k);
+        const src = w.bsvz.transaction.Transaction.parse(a, src_raw) catch return try why(a, error.MissingInput, src_txid, k);
+        if (in.previous_outpoint.index >= src.outputs.len) return try why(a, error.MissingInput, src_txid, k);
+        if (in.previous_outpoint.index == pool.vout and std.mem.eql(u8, &src_txid, &pool.txid)) continue;
+        const ok = w.bsvz.script.interpreter.verifyPrevout(.{
+            .allocator = a,
+            .tx = &subject,
+            .input_index = k,
+            .previous_output = src.outputs[in.previous_outpoint.index],
+            .unlocking_script = in.unlocking_script,
+        }) catch false;
+        if (!ok) return try why(a, error.ScriptFailed, null, k);
+    }
+    return null;
+}
+
+/// The refusal's text for a verifier error (the meanings skein's door gives them, door.zig `spvWhy`).
+fn why(a: std.mem.Allocator, e: anyerror, txid: ?[32]u8, input: ?usize) ![]const u8 {
+    const meaning = switch (e) {
+        error.UnknownHeader => "a BUMP's height has no header in chain/state",
+        error.RootMismatch => "a BUMP's merkle root is not the header's at its height in chain/state",
+        error.NotInBump => "a transaction marked with a BUMP is not in it",
+        error.MissingInput => "a transaction no BUMP proves spends an output of a transaction neither before it in the BEEF nor held here",
+        error.UnknownTxidOnly => "a txid-only entry for a transaction this instance does not hold (only a held one may be named by txid alone)",
+        error.ScriptFailed => "an unlocking script of a transaction no BUMP proves does not verify",
+        error.NotParentsFirst => "its transactions spend in a cycle: no order puts parents first",
+        else => "the BEEF's check failed",
+    };
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(a, "{s}: {s}", .{ @errorName(e), meaning });
+    if (txid) |t| try out.print(a, " ({s})", .{&w.header.toHex(t)});
+    if (input) |k| try out.print(a, " (the swap's input {d})", .{k});
+    return out.items;
+}

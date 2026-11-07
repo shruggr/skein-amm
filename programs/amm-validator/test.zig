@@ -777,7 +777,7 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitte
     try testing.expectEqualSlices(u8, want, body.getBytes("tx").?);
 }
 
-test "submission: a request BEEF whose funding the node never held, proven in the BEEF, is accepted; as raw bytes, the engine pauses it on the missing parent (skein-overlay 0.7.2: every missing parent pauses)" {
+test "submission: a request BEEF whose funding the node never held, proven in the BEEF, is accepted; as raw bytes it is refused bad_transaction before signing (D6: the door would refuse its submission, MissingInput)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -787,17 +787,18 @@ test "submission: a request BEEF whose funding the node never held, proven in th
     const fund = txidOf(m.f.raw("fund"));
     try testing.expect((try (try m.node.chain()).txRaw(fund)) == null); // unknown to the node
 
-    // The raw request: every check passes (the funding input's signature is
-    // only "present" without its source), it is signed and submitted, and the
-    // engine pauses it: an input neither held nor in the BEEF. Nothing is
-    // answered yet (the pause is internal); the call waits.
+    // The raw request: its funding input spends fund, neither held nor in a BEEF — the door would
+    // refuse the submission (MissingInput), so the request is refused before anything (D6, 0.46.2):
+    // bad_transaction, the verifier's error and the txid, nothing signed, nothing submitted.
     const raw_req = try request(a, m.f.raw("swap_bsv_in"), 0);
     try m.f.oracle.record(a, m.f.raw("swap_bsv_in"), 0);
+    m.f.oracle.calls = 0;
     const r = try m.respond(a, raw_req);
-    try testing.expect(r.next == .submit);
-    const paused = try m.node.received(r.next.submit);
-    try testing.expect(paused == .paused);
-    try testing.expectEqual(@as(usize, 0), m.node.sent.answers.items.len);
+    try expectRefused(r.reply, .bad_transaction);
+    try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "MissingInput: "));
+    try testing.expect(std.mem.indexOf(u8, r.reply.refused.detail.?, &w.header.toHex(fund)) != null);
+    try testing.expect(r.next == .answer);
+    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
 
     // The same request as a BEEF carrying fund with its BUMP (on a node that saw no pause): launched, and admitted.
     var ms2 = w.store.MemStore.init(testing.allocator);
@@ -1492,6 +1493,12 @@ const RelayPair = struct { funding: []const u8, swap: []const u8 };
 const FundingSig = enum { signed, unsigned, bad };
 
 fn relayPair(a: std.mem.Allocator, f: *Fx, funding_sig: FundingSig) !RelayPair {
+    return relayPairSalted(a, f, funding_sig, 0);
+}
+
+/// `relayPair` with the funding's change `salt` sats smaller (a fee that much larger): another taker's
+/// request, every signature valid, a distinct transaction.
+fn relayPairSalted(a: std.mem.Allocator, f: *Fx, funding_sig: FundingSig, salt: u64) !RelayPair {
     const fund = try Transaction.parse(a, f.raw("fund"));
     const pd = try Transaction.parse(a, f.raw("pool_deploy"));
     const base = try Transaction.parse(a, f.raw("swap_bsv_in"));
@@ -1513,7 +1520,7 @@ fn relayPair(a: std.mem.Allocator, f: *Fx, funding_sig: FundingSig) !RelayPair {
     }});
     ft.outputs = try a.dupe(bsvz.transaction.Output, &.{
         .{ .satoshis = @intCast(exact), .locking_script = bsvz.script.Script.init(taker_lock) },
-        .{ .satoshis = @intCast(500_000 - exact - 300), .locking_script = bsvz.script.Script.init(taker_lock) },
+        .{ .satoshis = @intCast(500_000 - exact - 300 - salt), .locking_script = bsvz.script.Script.init(taker_lock) },
     });
     if (funding_sig != .unsigned) try signP2pkh(a, &ft, 0, fund.outputs[1].locking_script.bytes, @intCast(fund.outputs[1].satoshis), taker_priv);
     if (funding_sig == .bad) {
@@ -1719,7 +1726,7 @@ test "submission BEEF (0.45.0): the pool's transaction and every held parent by 
     try testing.expectEqual(fb.entries.len, rescinded.entries.len);
 }
 
-test "relay request refused: an unsigned funding input, a bad funding signature, a pool already spent — nothing signed, nothing to broadcast" {
+test "relay request refused: an unsigned funding input, a bad funding signature (bad_transaction, ScriptFailed: the door's verifier before the lock, D6), a pool already spent — nothing signed, nothing to broadcast" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1731,8 +1738,8 @@ test "relay request refused: an unsigned funding input, a bad funding signature,
     {
         const p = try relayPair(a, m.f, .unsigned);
         const r = try m.respond(a, try relayBeef(a, m, p));
-        try expectRefused(r.reply, .missing_signature);
-        try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "parent "));
+        try expectRefused(r.reply, .bad_transaction); // D6: the door's verifier, before step 8
+        try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "ScriptFailed: "));
         try testing.expect(r.next == .answer);
         try testing.expectEqual(@as(usize, 0), r.broadcast.len);
         try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
@@ -1741,8 +1748,8 @@ test "relay request refused: an unsigned funding input, a bad funding signature,
     {
         const p = try relayPair(a, m.f, .bad);
         const r = try m.respond(a, try relayBeef(a, m, p));
-        try expectRefused(r.reply, .bad_signature);
-        try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "parent "));
+        try expectRefused(r.reply, .bad_transaction); // D6: the door's verifier, before step 8
+        try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "ScriptFailed: "));
         try testing.expectEqual(@as(usize, 0), r.broadcast.len);
         try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
     }
@@ -2157,7 +2164,7 @@ test "answers carry the BEEF (0.41.0): accepted — the BEEF the validator submi
     try testing.expectEqualSlices(u8, ok.ok.beef.?, okb.getBytes("beef").?);
 
     // Another taker's request for the pool the swap spent: pool_spent, the newest state and its BEEF.
-    const stale = try withUnlocking(a, try request(a, want, 0), 1, &.{0x00});
+    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
     const r = try m.respond(a, stale);
     try expectRefused(r.reply, .pool_spent);
     const live = r.reply.refused.newest.?.live;
@@ -2223,7 +2230,7 @@ test "pool_spent past the LP's Close (0.41.1): the refusal carries the closing t
     const close = txidOf(m.f.raw("close"));
 
     // A stale request for the deploy's pool: pool_spent, the newest state closed by the Close, its BEEF.
-    const stale = try withUnlocking(a, try request(a, m.f.raw("swap_bsv_in"), 0), 1, &.{0x00});
+    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
     const r = try m.respond(a, stale);
     try expectRefused(r.reply, .pool_spent);
     const c = r.reply.refused.newest.?.closed;
@@ -2375,7 +2382,7 @@ test "pool lock: the first rejected → the waiter is checked and signed and tak
     const r2 = try relayBeef(a, m, try relayPair(a, m.f, .signed));
     try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
     // A third, the same pool: in the queue after the second.
-    const stale = try withUnlocking(a, try request(a, m.f.raw("swap_bsv_in"), 0), 1, &.{0x00});
+    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
     try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
     try testing.expectEqual(@as(usize, 2), locks.entries.items[0].waiters.items.len);
 
@@ -2438,7 +2445,7 @@ test "pool lock: per pool — a lock on another pool never holds a swap; a waite
     // comes, it rests; the next waiter (T3) finds the expired one gone and is checked.
     const r2 = try relayBeef(a, m, try relayPair(a, m.f, .signed));
     try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
-    const stale = try withUnlocking(a, try request(a, m.f.raw("swap_bsv_in"), 0), 1, &.{0x00});
+    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
     try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
     try th.rest(T2); // the local relay's deadline: timeout, done
     _ = try m.node.status(ev, "RECEIVED");
@@ -2449,4 +2456,55 @@ test "pool lock: per pool — a lock on another pool never holds a swap; a waite
     // Only the other pool's lock is left.
     try testing.expectEqual(@as(usize, 1), locks.entries.items.len);
     try testing.expect(locks.entries.items[0].pool.eql(other));
+}
+
+test "proven before the lock (D6, 0.46.2): a request naming by txid a transaction this instance does not hold is refused bad_transaction at once — the verifier's error and the txid, nothing signed, no lock taken, no queue joined, even while its pool is locked; the same request with that transaction raw (proven) waits as before" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const m = try Mined.init(a, &ms);
+    var th: Threads = .{ .a = a };
+    var locks: pool_lock.Locks = .{};
+    const fund = txidOf(m.f.raw("fund"));
+    try testing.expect((try (try m.node.chain()).txRaw(fund)) == null); // unknown to the node
+
+    // The request as a page holding a stale view sends it: fund by txid alone, the funding raw, the swap.
+    const p = try relayPair(a, m.f, .signed);
+    const unheld = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{
+        .{ .txid = fund, .format = .txid_only },
+        .{ .txid = txidOf(p.funding), .format = .raw, .raw = p.funding },
+        .{ .txid = txidOf(p.swap), .format = .raw, .raw = p.swap },
+    }) });
+
+    // With the pool free: refused at once, nothing signed, no lock record.
+    m.f.oracle.calls = 0;
+    const r = (try lockedStep(m, a, &locks, &th, unheld, m.pool_op, T1)).?;
+    try expectRefused(r.reply, .bad_transaction);
+    const why = r.reply.refused.detail.?;
+    try testing.expect(std.mem.startsWith(u8, why, "UnknownTxidOnly: "));
+    try testing.expect(std.mem.indexOf(u8, why, &w.header.toHex(fund)) != null);
+    try testing.expect(r.next == .answer);
+    try testing.expectEqual(@as(usize, 0), r.broadcast.len);
+    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
+    try testing.expectEqual(@as(usize, 0), locks.entries.items.len);
+    try testing.expectEqual(@as(usize, 0), th.awaited.items.len);
+
+    // With the pool locked by a swap in flight: still refused at once — it does not wait, joins no queue.
+    const r1 = try m.swapRequest(a);
+    const s1 = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T1)).?;
+    try testing.expect(s1.next == .submit);
+    m.f.oracle.calls = 0;
+    const r2 = (try lockedStep(m, a, &locks, &th, unheld, m.pool_op, T2)).?;
+    try expectRefused(r2.reply, .bad_transaction);
+    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
+    try testing.expect(locks.waitingIn(T2) == null);
+    try testing.expectEqual(@as(usize, 1), locks.entries.items.len);
+    try testing.expectEqualStrings(T1, locks.entries.items[0].holder.?.thread);
+    try testing.expectEqual(@as(usize, 0), locks.entries.items[0].waiters.items.len);
+
+    // The same swap with fund raw and proven (the relay's BEEF): proven, so it waits on the holder.
+    try testing.expect((try lockedStep(m, a, &locks, &th, try relayBeef(a, m, p), m.pool_op, T2)) == null);
+    try testing.expectEqual(@as(usize, 1), locks.entries.items[0].waiters.items.len);
 }

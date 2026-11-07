@@ -247,6 +247,9 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op, me:
             // app, which registers and broadcasts every unproven transaction in it, the taker's nosend
             // funding parent with the swap (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF";
             // `served.broadcast` names them), and answers this message when it is admitted or rejected.
+            // D7 (not built): a door refusal of this message never reaches the awaited record, so the
+            // frame thread would rest unanswered and the lock held — where its resolution would go;
+            // D6's pre-check (messages.zig `proveRequest`) refuses such a request before it gets here.
             const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, sub.beef, sub.topic));
             try vm.awaitRecord(m);
             return answerWait(a);

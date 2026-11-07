@@ -225,6 +225,7 @@ pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Se
     switch (op) {
         .swap => {
             const req = parseSpend(body) orelse return .{ .reply = refuse(.bad_request, "want {tx: bytes, pool: \"<txid>_<vout>\"}") };
+            if (try proveRequest(a, req, d)) |r| return .{ .reply = r };
             return finishSpend(a, try validator.spend(a, op, req, d.config, d.view, d.oracle), d, req.pool);
         },
         .affirm => {
@@ -244,11 +245,27 @@ pub fn respondLocked(a: std.mem.Allocator, op: validator.Op, body: Value, d: Dep
     if (op != .swap) return try respond(a, op, body, d);
     const req = parseSpend(body) orelse return try respond(a, op, body, d);
     const sub = validator.subjectOf(a, req.tx) orelse return try respond(a, op, body, d);
+    // D6: proven before the lock — a request the door would refuse waits for nothing, and leaves a
+    // queue it waited in (its thread finishes with this answer).
+    if (try proveRequest(a, req, d)) |r| {
+        locks.leave(me);
+        return .{ .reply = r };
+    }
     const h = lock.requestHash(sub.raw);
     if ((try locks.gate(a, d.view, req.pool, h, me, th)) == .wait) return null;
-    const served = try respond(a, op, body, d);
+    // Proven above: `spend` and the submission, as `respond` makes them.
+    const served = try finishSpend(a, try validator.spend(a, op, req, d.config, d.view, d.oracle), d, req.pool);
     if (served.next == .submit) try locks.take(a, req.pool, served.reply.ok.txid.?, h, me);
     return served;
+}
+
+/// D6 (David 2026-11-07): the request's BEEF proven with the door's verifier and the held set
+/// (submit.zig `requestProblem`) before anything else of a swap — refused `bad_transaction` with the
+/// verifier's error text, nothing signed, no lock. A body that is no transaction is `spend`'s to refuse.
+fn proveRequest(a: std.mem.Allocator, req: validator.SpendRequest, d: Deps) !?Reply {
+    const sub = validator.subjectOf(a, req.tx) orelse return null;
+    const why = (try submit.requestProblem(a, sub.ancestry, sub.tx, .{ .txid = req.pool.txid, .vout = req.pool.vout }, d.st.ch)) orelse return null;
+    return refuse(.bad_transaction, why);
 }
 
 // ---------------------------------------------------------------- the answer after the step

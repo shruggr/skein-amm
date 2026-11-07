@@ -210,6 +210,13 @@ pub const Locks = struct {
         return .proceed;
     }
 
+    /// Thread `me` answered without the lock (D6: its request refused before it): out of any queue.
+    pub fn leave(self: *Locks, me: []const u8) void {
+        const i = self.waitingIn(me) orelse return;
+        removeWaiter(&self.entries.items[i], me);
+        self.dropIfEmpty(i);
+    }
+
     /// The step that signed and submits (`Next.submit`): the pool `pool` locked by thread `me`,
     /// the transaction `txid` in flight; the queue already there kept.
     pub fn take(self: *Locks, a: Allocator, pool: Outpoint, txid: [32]u8, h: [32]u8, me: []const u8) !void {
