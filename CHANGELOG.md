@@ -4,6 +4,27 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.48.2 (2026-11-07)
+
+The reindex re-cut (agent-env plans/reindex-2026-11-07.md "RE-CUT") and two LP catch-up fixes agreed with
+David.
+
+- Pins: skein-overlay 0.23.1, skein-1color 0.17.3 (one index head: the walk calls the hooks exactly as
+  admission does — no second head, no switch, no hook mode, no lookup fn `reindex`). `bin/overlay.wasm`,
+  `bin/color-lookup.wasm` theirs; `bin/amm-lookup.wasm`, `bin/amm-validator.wasm`, `bin/amm-p2p.wasm`
+  rebuilt; `bin/amm-setup.wasm` the same bytes.
+- amm-lookup: a hook's time (a trade row's and a history row's `at`, their keys) is the hook argument's
+  `at` — the time its transaction was admitted (skein-overlay 0.23.1) — not the step's `now`: a reindex
+  gives every row the time admission gave it. A hook call without `at` fails. `lookupVersion` stays 1.
+- The LP catch-up (`syncPool`, web/ui/src/lp/sync.ts): each hop is taken in with that transaction's
+  Atomic BEEF (`beef.toBinaryAtomic(txid)`; the toolbox refuses any other, harness proof 13). The walk
+  returns how it ended, `{caughtUp: true}` or `{caughtUp: false, reason}` (a transaction the exchange
+  cannot serve, one that does not spend the held output, output 0 not a pool, a fee named without output
+  2, the history unreadable, the wallet's refusal); nothing throws out of it. Close refuses on a stop:
+  `could not catch up: <reason>`, never spending the row the pool has moved past; `collectFees` collects
+  what is filed and names the stopped pools in `stopped`.
+- Versions: etc/app.json, amm-setup's version test, README, @dcasegr/amm-engine and @dcasegr/amm-client 0.48.2.
+
 ## 0.48.1 (2026-11-07)
 
 Reindex (agent-env plans/reindex-2026-11-07.md, D5).

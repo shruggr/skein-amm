@@ -61,16 +61,20 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
 }
 
 pub fn main() u8 {
-    stepTime();
+    stepTime() catch return 1; // a hook without its `at`: not this engine's call
     return lookup.main(idx.spec);
 }
 
-/// The step's time for the hooks (0.36.0, a trade row's `at`): the in-VM call input's `now`, the time
-/// of the entry that drove the step (skein docs/VM.md, "call"; replay-exact). The input is read
-/// again by `lookup.main`.
-fn stepTime() void {
+/// The time for the hooks (a trade row's and a history row's `at`): 0.48.2, the hook argument's `at`
+/// — the time its transaction was admitted (skein-overlay 0.23.1), so a reindex re-applies the time
+/// admission gave it; any other call, the in-VM call input's `now` (skein docs/VM.md, "call"). The
+/// input is read again by `lookup.main`.
+fn stepTime() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.wasm_allocator);
     defer arena_state.deinit();
-    const in = vm.input(arena_state.allocator()) catch return;
-    idx.now_ms = in.getUint("now") orelse 0;
+    const a = arena_state.allocator();
+    const in = try vm.input(a);
+    const func = in.getText("fn") orelse "";
+    const hook = std.mem.eql(u8, func, "admitted") or std.mem.eql(u8, func, "spent") or std.mem.eql(u8, func, "rejected");
+    idx.now_ms = if (hook) lookup.atOf(try vm.callArg(a, in)) orelse return error.BadArgs else in.getUint("now") orelse 0;
 }

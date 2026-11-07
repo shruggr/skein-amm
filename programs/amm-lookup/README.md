@@ -23,6 +23,13 @@ create (one token topic per instance); the index stays one head,
 zig build test-amm-lookup    # from the repo root: the checks, the index, the queries, natively
 ```
 
+## 0.48.2: one index head; the hook's time (skein-overlay 0.23.1)
+
+The reindex walk calls these hooks exactly as admission does, into `<app>/ls_amm` itself (no
+`.reindex` head, no `reindex: true`). A hook's time — a trade row's and a history row's `at` and their
+keys — is the hook argument's `at`, the time its transaction was admitted, so a re-run over the history
+gives the same index byte for byte. A hook called without `at` fails.
+
 ## 0.48.1: reindex (skein-overlay 0.23.0; agent-env plans/reindex-2026-11-07.md)
 
 The index can be derived again from `tm_color_<assetId>`'s admitted history in place: root's `{fn:

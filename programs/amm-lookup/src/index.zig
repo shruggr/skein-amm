@@ -90,9 +90,9 @@ pub const service_name = "ls_amm";
 /// feeTokens}`. No backfill: Swaps admitted before 0.47.0 are not counted.
 pub const maps = [_][]const u8{ "pools", "spentPools", "byCommission", "trades", "history", "closes", "counters" };
 
-/// The step's time (ms), the clock of the step whose hook this call runs in: the in-VM call input's
-/// `now` (skein docs/VM.md, "call": the time of the entry that drove the step; replay-exact), set by
-/// main.zig before the hook runs. A trade row's `at`.
+/// The time (ms) a hook's transaction was admitted: the hook argument's `at` (0.48.2, skein-overlay
+/// 0.23.1: the admitting step's time; a reindex passes the same), set by main.zig before the hook
+/// runs. A trade row's and a history row's `at`.
 pub var now_ms: u64 = 0;
 
 fn cat(a: Allocator, parts: []const []const u8) ![]u8 {

@@ -771,11 +771,14 @@ run a function is `roles`: `{"root": ["register", "registerLookup", "deregisterL
 10. event `deploy`, `kernel.beef` → `amm-setup.deploy` (0.22.0,
     shruggr/skein-amm#5, skein #164): the token's deploy, the door's
     envelope in the record ("The token's setup")
-11. `reindex` → `overlay.reindex` (0.48.1, skein-overlay 0.23.0; `reindex`
-    under `roles.root`): root's `{fn: "reindex", args: {service}}` — the
-    engine derives `ls_amm_<assetId>`'s or `ls_color_<assetId>`'s index again
-    from `tm_color_<assetId>`'s admitted history in place, one transaction per
-    step, the index's head switched in its last step (skein-overlay
+11. `reindex` → `overlay.reindex` (0.48.1, skein-overlay 0.23.0; 0.48.2,
+    skein-overlay 0.23.1: one index head; `reindex` under `roles.root`): root's
+    `{fn: "reindex", args: {service}}` — the engine derives
+    `ls_amm_<assetId>`'s or `ls_color_<assetId>`'s index again from
+    `tm_color_<assetId>`'s admitted history in place, one transaction per step,
+    the hooks called exactly as admission called them with the time admission
+    gave them, into the index the reads answer from (the host keeps the
+    instance shut while it runs) (skein-overlay
     docs/OVERLAY.md "Reindex a lookup service"). The manifest's
     `lookupVersion` (1: the 0.48.0 record shape) is the version of the
     lookups' record shape, raised by a release that changes it: the
