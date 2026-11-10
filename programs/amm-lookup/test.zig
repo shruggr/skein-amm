@@ -220,6 +220,40 @@ const Index = struct {
     }
 };
 
+// ---------------------------------------------------------------- the wallet's `file`, stood in for
+
+/// The wallet app's `file` as the named call reaches it: recorded (basket, arg); `refuse` makes it
+/// fail, as a refused call does.
+/// The i-th `file` call, read back: the outpoint, the derivation, the basket (the wallet reads the
+/// satoshis from the chain state itself).
+const Got = struct { txid: [32]u8, vout: u32, basket: []const u8, protocol_level: u64, protocol: []const u8, key_id: []const u8, counterparty: []const u8 };
+fn got(i: usize) !Got {
+    const c = Filed.calls.items[i];
+    const op = c.arg.getText("outpoint").?;
+    const dot = std.mem.indexOfScalar(u8, op, '.').?;
+    const pr = c.arg.getArray("protocol").?;
+    try testing.expect(c.arg.get("satoshis") == null);
+    return .{
+        .txid = try w.header.fromHex(op[0..dot]),
+        .vout = try std.fmt.parseInt(u32, op[dot + 1 ..], 10),
+        .basket = c.basket,
+        .protocol_level = pr[0].uint,
+        .protocol = pr[1].text,
+        .key_id = c.arg.getText("keyID").?,
+        .counterparty = c.arg.getText("counterparty").?,
+    };
+}
+
+const Filed = struct {
+    var refuse: bool = false;
+    var a: Allocator = undefined;
+    var calls: std.ArrayList(struct { basket: []const u8, arg: Value }) = .empty;
+    fn file(_: Allocator, basket: []const u8, arg: Value) anyerror!void {
+        if (refuse) return error.CallRefused;
+        try calls.append(a, .{ .basket = basket, .arg = arg });
+    }
+};
+
 // ---------------------------------------------------------------- the environment
 
 const Env = struct {
@@ -239,10 +273,13 @@ const Env = struct {
         e.topic = st.topic;
         e.token = st.token;
         Index.reset(a);
+        Filed.a = a;
+        Filed.calls = .empty;
+        Filed.refuse = false;
         idx.reader = Index.read;
         idx.app = "amm";
         idx.self_identity = null;
-        idx.filings = .empty;
+        idx.filer = Filed.file;
         idx.now_ms = 1000;
         return e;
     }
@@ -578,7 +615,7 @@ test "fees that are ours: the validator fee when the spent pool names this insta
         var svc = try e.svc(a);
         idx.self_identity = key(7);
         try e.threeHops(a, &svc);
-        try testing.expectEqual(@as(usize, 0), idx.filings.items.len);
+        try testing.expectEqual(@as(usize, 0), Filed.calls.items.len);
         try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, try idx.tokenPrefix(a, e.token)));
     }
     const e = try Env.init(a);
@@ -587,18 +624,18 @@ test "fees that are ours: the validator fee when the spent pool names this insta
     idx.self_identity = key33(vec.identity);
     const tp = try idx.tokenPrefix(a, e.token);
     try e.threeHops(a, &svc);
-    try testing.expectEqual(@as(usize, 2), idx.filings.items.len);
-    const b = idx.filings.items[0];
+    try testing.expectEqual(@as(usize, 2), Filed.calls.items.len);
+    const b = try got(0);
     const bsw = e.f.tx("swap_bsv_in");
     try testing.expectEqualSlices(u8, &e.f.txid("swap_bsv_in"), &b.txid);
     try testing.expectEqual(@as(u32, 3), b.vout);
     try testing.expectEqualStrings("bsv", b.basket);
     try testing.expectEqualStrings("amm pool", b.protocol);
-    try testing.expectEqual(@as(u8, 1), b.protocol_level);
+    try testing.expectEqual(@as(u64, 1), b.protocol_level);
     try testing.expectEqualStrings(vec.nonce, b.key_id); // the deploy's key: its nonce
     try testing.expectEqualStrings("anyone", b.counterparty);
-    try testing.expectEqual(@as(u64, @intCast(bsw.outputs[3].satoshis)), b.satoshis);
-    const s = idx.filings.items[1];
+    _ = bsw;
+    const s = try got(1);
     try testing.expectEqualStrings("tokens", s.basket);
     try testing.expectEqualStrings(try opStr(a, e.f.txid("pool_deploy"), 0), s.key_id); // the grandparent: the outpoint before the one the sell spends
     const sell = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_tokens_in"), 0))).?;
@@ -651,8 +688,8 @@ test "fees that are ours: a commission paying our [1, amm commission] key keyed 
     try testing.expectEqualStrings("token", flag.getText("asset").?);
     try testing.expectEqual(row.getUint("feeCommission").?, flag.getUint("amount").?);
     try testing.expectEqualStrings(&w.header.toHex(e.f.txid("swap_tokens_in")), flag.getText("swap").?);
-    try testing.expectEqual(@as(usize, 1), idx.filings.items.len);
-    const f = idx.filings.items[0];
+    try testing.expectEqual(@as(usize, 1), Filed.calls.items.len);
+    const f = try got(0);
     try testing.expectEqualStrings("amm commission", f.protocol);
     try testing.expectEqualStrings(try opStr(a, sb, 0), f.key_id);
     try testing.expectEqualStrings("tokens", f.basket);
@@ -672,7 +709,7 @@ test "fees that are ours: a commission paying our [1, amm commission] key keyed 
     try e2.admit(a, &s2, "swap_bsv_in", null, &.{ 0, 1 }, &.{e2.op("pool_deploy", 0)});
     try e2.admit(a, &s2, "swap_tokens_in", wrong, &.{ 0, 2, 3, 4 }, &.{e2.op("swap_bsv_in", 0)});
     try testing.expectEqual(@as(usize, 0), Index.count("amm/commission/"));
-    try testing.expectEqual(@as(usize, 0), idx.filings.items.len);
+    try testing.expectEqual(@as(usize, 0), Filed.calls.items.len);
 }
 
 /// The topic's own fact that `op` is spent by `by` (skein-overlay `<app>/topic/output/<op>`), as the
@@ -761,4 +798,18 @@ test "order rule (skein-overlay 0.26.0): a proven B spending the pool output a h
     try idx.rejected(a, &svc, e.topic, lc);
     try e.commit(&svc);
     try testing.expectEqual(fee, try idx.tally(a, &svc, tp));
+}
+
+test "F3 (David 2026-11-09): a refused filing is an error like any other — the admission hook fails (no skip, no event of it)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    idx.self_identity = key33(vec.identity);
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    Filed.refuse = true;
+    try testing.expectError(error.CallRefused, idx.admitted(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")), &.{ 0, 1 }, &.{}));
+    Filed.refuse = false;
 }

@@ -49,6 +49,8 @@ const Mods = struct {
     /// it does not export as modules: the validator submits through the engine's own
     /// `submit.route` and reads its state, as amm-poc did with skein-overlay 0.2.0.
     engine: *std.Build.Module,
+    /// The signer app's client (skein-sdk `signer`, lib/signer.zig): the drop-in for the raw `wallet` import.
+    signer: *std.Build.Module,
 };
 
 fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Mods {
@@ -106,7 +108,9 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
             .{ .name = "1color", .module = color },
         },
     });
+    const sd = b.dependency("skein_sdk_signer", .{ .target = target, .optimize = optimize });
     return .{
+        .signer = sd.module("signer"),
         .chain = chain,
         .wallet = sdk.module("wallet"),
         .message = sdk.module("message"),
@@ -146,6 +150,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "topic", .module = m.topic },
         .{ .name = "overlay_sk", .module = m.overlay_sk },
         .{ .name = "skein_overlay", .module = m.engine },
+        .{ .name = "signer", .module = m.signer },
     } else if (std.mem.eql(u8, program, "amm-setup")) &.{
         .{ .name = "overlay_sk", .module = m.overlay_sk },
     } else &.{
@@ -160,6 +165,7 @@ fn imports(b: *std.Build, m: Mods, program: []const u8) []const std.Build.Module
         .{ .name = "skein_overlay", .module = m.engine },
         .{ .name = "lookup", .module = m.lookup },
         .{ .name = "amm_lookup", .module = m.amm_lookup },
+        .{ .name = "signer", .module = m.signer },
     };
     return std.mem.concat(b.allocator, std.Build.Module.Import, &.{ &common, more }) catch @panic("OOM");
 }

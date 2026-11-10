@@ -119,19 +119,29 @@ pub const Filing = struct {
     satoshis: u64,
 };
 
-/// The calls `fileWithWallet` would have made, in order (the tests read them).
-pub var filings: std.ArrayList(Filing) = .empty;
+/// The wallet app's `file` (shruggr/skein-wallet 0.1.0): `{outpoint: "<txid>.<vout>", protocol:
+/// [level, name], keyID, counterparty}` under the basket name, by the kernel's NAMED call
+/// (`callAs(<wallet/app programs.wallet>, "file", <basket>, arg)`; the kernel checks the basket
+/// against this app's approved `calls.wallet`). main.zig sets it; the tests set a stand-in.
+pub const Filer = *const fn (a: Allocator, basket: []const u8, arg: Value) anyerror!void;
+pub var filer: Filer = noFiler;
 
-/// THE SEAM to the wallet app (shruggr/skein-wallet, not built) through the kernel's named call
-/// (`callAs`, not built): file `f` with the wallet under its basket name. Today it only RECORDS
-/// the call it would make, and it cannot fail.
+fn noFiler(_: Allocator, _: []const u8, _: Value) anyerror!void {
+    return error.NoWalletFiler;
+}
+
+/// File `f` with the wallet app under its basket. THE ONE SEAM to the wallet.
 /// RULE (F3, David 2026-11-09): no special handling for a refused filing. An app's protocols and
 /// baskets are approved together at install, so a refusal means a broken install; admitting swaps
-/// while earning unrecorded fees is worse than stopping. When the real call is wired in, a refused
-/// or failed `file` is an error like any other: it returns the error and the hook's step fails (no
-/// skip, no `unfiled` event).
-pub fn fileWithWallet(a: Allocator, f: Filing) void {
-    filings.append(a, f) catch {};
+/// while earning unrecorded fees is worse than stopping. A refused or failed `file` is an error like
+/// any other: it is returned and the hook's step fails (no skip, no `unfiled` event).
+pub fn fileWithWallet(a: Allocator, f: Filing) !void {
+    try filer(a, f.basket, .{ .map = try a.dupe(Entry, &.{
+        .{ .key = "outpoint", .value = .{ .text = try std.fmt.allocPrint(a, "{s}.{d}", .{ &w.header.toHex(f.txid), f.vout }) } },
+        .{ .key = "protocol", .value = .{ .array = try a.dupe(Value, &.{ .{ .uint = f.protocol_level }, .{ .text = f.protocol } }) } },
+        .{ .key = "keyID", .value = .{ .text = f.key_id } },
+        .{ .key = "counterparty", .value = .{ .text = f.counterparty } },
+    }) });
 }
 
 // ---------------------------------------------------------------- names
@@ -729,7 +739,7 @@ fn recognizeFees(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, row
     const me = self_identity orelse return;
     const basket = if (t.bsv_in) basket_bsv else basket_tokens;
     if (t.validator_at) |v| if (eql(u8, &me, &try hex33(was, "validatorIdentityKey"))) {
-        fileWithWallet(a, .{
+        try fileWithWallet(a, .{
             .txid = tx.txid,
             .vout = @intCast(v),
             .protocol_level = pool.validator_protocol.security_level,
@@ -745,7 +755,7 @@ fn recognizeFees(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, row
         const ours = try pool.commissionPkh(a, me, spent_op.txid, spent_op.vout);
         if (eql(u8, &ours, &t.commission_pkh)) {
             var buf: [64 + 1 + 10]u8 = undefined;
-            fileWithWallet(a, .{
+            try fileWithWallet(a, .{
                 .txid = tx.txid,
                 .vout = @intCast(v),
                 .protocol_level = pool.commission_protocol.security_level,

@@ -14,6 +14,10 @@
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
         // into bin/. (Its pages, www/, are outside the package's paths: scripts/color-pages.sh
         // copies them from the same tag's tarball by URL and sha256.)
+        // The signer app's client (lib/signer.zig, skein-sdk branch `signer-client` 12c75c4): every
+        // signature and key goes through the signer app by a kernel-checked name. A PATH dependency
+        // until the SDK tags it: then one url/hash line.
+        .skein_sdk_signer = .{ .path = "../wt-sdk-signer-client" },
         .skein_1color = .{
             .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.18.0.tar.gz",
             .hash = "skein_1color-0.18.0-_DlbUgVQIgBMMmu7BVoQwAuRCqdw33UzZy1emaOPsTR7",

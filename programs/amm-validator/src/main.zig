@@ -83,13 +83,16 @@ const Value = cbor.Value;
 
 pub const program_name = "amm-validator";
 
-const imports = struct {
-    extern "skein" fn wallet(frame: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
-};
+const signer = @import("signer");
 
 var oracle_dummy: u8 = 0;
+/// Every key and signature through the signer app (skein-signer; skein-sdk `signer.requestAs`), under
+/// the name the request needs (`signer.nameFor`: `1/amm pool` for the validator's keys; none for the
+/// identity key) — the kernel checks the name against this app's approved `calls` (etc/app.json).
+/// The raw `wallet` import is not used.
 fn oracleCall(_: *anyopaque, a: std.mem.Allocator, frame: []const u8) anyerror![]const u8 {
-    const res = try vm.result(a, imports.wallet, .{ frame.ptr, @as(u32, @intCast(frame.len)) });
+    const q = signer.decode(frame) catch return error.BadFrame;
+    const res = try signer.requestAs(a, try signer.nameFor(a, q, null), frame);
     if (wire.errorMessage(res)) |m| std.log.err("signer: {s}", .{m});
     return res;
 }

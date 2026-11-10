@@ -685,6 +685,11 @@ fn soloPath(a: Allocator, height: u32, txid: [32]u8) ![]const u8 {
     return path.items;
 }
 
+/// No fee of ours is filed here (`self_identity` null): a filing would be a test failure.
+fn noFile(_: Allocator, _: []const u8, _: Value) anyerror!void {
+    return error.UnexpectedFiling;
+}
+
 /// The kernel's event index as the lookup reads it (0.49.0): what the hooks' steps emitted.
 const Events = struct {
     var a: Allocator = undefined;
@@ -698,7 +703,7 @@ const Events = struct {
         amm_idx.reader = read;
         amm_idx.app = "amm";
         amm_idx.self_identity = null;
-        amm_idx.filings = .empty;
+        amm_idx.filer = noFile;
     }
     fn commit(svc: *lookup_mod.Service) !void {
         for (svc.events.items) |ev| {

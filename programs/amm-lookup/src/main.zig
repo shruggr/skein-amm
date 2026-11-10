@@ -11,7 +11,21 @@ const cbor = @import("chain").cbor;
 /// The kernel's event index read (skein 0.5.0 `events`), which skein-overlay's `sk` module does not declare.
 const ext = struct {
     extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
+    /// The kernel's name-carrying in-VM call (shruggr/skein `call-permissions`, the contract's §1).
+    extern "skein" fn callAs(prog: [*]const u8, prog_len: u32, func: [*]const u8, func_len: u32, name: [*]const u8, name_len: u32, arg: [*]const u8, arg_len: u32, out: [*]u8, cap: u32) i32;
 };
+
+/// `idx.filer` in the VM: the wallet app's `file` by the named call under the basket (the wallet's
+/// program from its app record, `wallet/app` `programs.wallet`). A refusal fails the call, and so
+/// the hook's step (F3).
+fn fileByCall(a: std.mem.Allocator, basket: []const u8, arg: cbor.Value) anyerror!void {
+    const rc = (try vm.head(a, "wallet/app")) orelse return error.NoWalletApp;
+    const rec = try vm.store().getValue(a, rc);
+    const prog = (rec.get("programs") orelse return error.NoWalletApp).getCid("wallet") orelse return error.NoWalletApp;
+    const bytes = try cbor.encode(a, arg);
+    const func = "file";
+    _ = try vm.result(a, ext.callAs, .{ prog.ptr, @as(u32, @intCast(prog.len)), func.ptr, @as(u32, @intCast(func.len)), basket.ptr, @as(u32, @intCast(basket.len)), bytes.ptr, @as(u32, @intCast(bytes.len)) });
+}
 
 /// `idx.reader` in the VM: the query as dag-cbor in, the answer decoded.
 pub fn readEvents(a: std.mem.Allocator, q: cbor.Value) anyerror!cbor.Value {
@@ -71,6 +85,7 @@ fn stepTime() void {
     const in = vm.input(a) catch return;
     idx.now_ms = in.getUint("now") orelse 0;
     idx.reader = readEvents;
+    idx.filer = fileByCall;
     if (in.get("self")) |me| if (me.getBytes("identity")) |k| if (k.len == 33) {
         idx.self_identity = k[0..33].*;
     };

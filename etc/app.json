@@ -60,6 +60,18 @@
   "requires": [
     "chain/1"
   ],
+  "calls": {
+    "signer": [
+      "1/amm pool",
+      "1/amm commission",
+      "2/skein instance/self",
+      "2/metanet handles envelope/anyone"
+    ],
+    "wallet": [
+      "bsv",
+      "tokens"
+    ]
+  },
   "filters": {
     "listTopicManagers": "overlay.listTopicManagers",
     "listLookupServiceProviders": "overlay.listLookupServiceProviders",

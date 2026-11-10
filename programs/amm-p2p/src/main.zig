@@ -80,6 +80,7 @@ const lookup = @import("lookup");
 const amm_lookup = @import("amm_lookup");
 const app = @import("app");
 const sk = @import("sk");
+const signer_client = @import("signer");
 const files = @import("files");
 const scbor = @import("sdk_cbor");
 const dagjson = @import("dagjson");
@@ -91,7 +92,6 @@ const eql = std.mem.eql;
 
 /// The imports skein-overlay's `sk` module does not declare: the signer.
 const ext = struct {
-    extern "skein" fn wallet(frame: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
     extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
 };
 
@@ -267,8 +267,12 @@ fn emit(a: Allocator, to: []const u8, box: []const u8, body: Value) ![]const u8 
     return vm.result(a, vm.sk.emit, .{ msg.ptr, @as(u32, @intCast(msg.len)) });
 }
 
+/// Every key and signature through the signer app (skein-sdk `signer.requestAs`), under the name the
+/// request needs (`signer.nameFor`: `2/skein instance/self`, `2/metanet handles envelope/anyone`;
+/// none for the identity key), which the kernel checks against this app's approved `calls`.
 fn walletCall(a: Allocator, frame: []const u8) ![]const u8 {
-    return vm.result(a, ext.wallet, .{ frame.ptr, @as(u32, @intCast(frame.len)) });
+    const q = signer_client.decode(frame) catch return error.BadFrame;
+    return signer_client.requestAs(a, try signer_client.nameFor(a, q, null), frame);
 }
 
 /// This instance's libp2p peer ID (David, 2026-10-05): the signer's public key for protocol
