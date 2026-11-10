@@ -306,11 +306,8 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
     } else return refuse(.submit_failed, "the signed transaction is not held: its submission did not reach the overlay");
     const txid = signed.txid;
 
-    if (try st.isPending(txid)) return .{ .refused = .{
-        .reason = .pending,
-        .detail = "not yet accepted by the network: nothing is admitted until it is; send the same request again",
-        .txid = txid,
-    } };
+    // 0.49.0 (skein-overlay 0.25.0: a rejected item's pending record is kept, a later proof admits
+    // it): the chain state's settlement first.
     if (try settlementOf(st, txid)) |rec| {
         const spent = (try v.spender(a, topic, req.pool)) != null;
         return .{ .refused = .{
@@ -320,6 +317,11 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
             .newest = if (spent) try validator.newest(a, v, topic, req.pool) else null,
         } };
     }
+    if (try st.isPending(txid)) return .{ .refused = .{
+        .reason = .pending,
+        .detail = "not yet accepted by the network: nothing is admitted until it is; send the same request again",
+        .txid = txid,
+    } };
     // 0.41.0: the BEEF it submitted to its own overlay (`submissionBeef`; 0.45.0: the held ones,
     // the pool's among them, by txid), so the relaying host admits it too.
     if (try st.isApplied(topic, txid)) return .{ .ok = .{ .tx = signed.raw, .txid = txid, .beef = try submit.submissionBeef(a, signed.raw, sub.ancestry, req.pool.txid, InTopic{ .st = st, .topic = topic }) } };

@@ -314,12 +314,37 @@ pub fn nonceKeyId(buf: *[64]u8, nonce: [32]u8) []const u8 {
 /// The validator's public child key under `key_id`: BRC-42, the identity key as the (public)
 /// parent and the anyone key (private key 1) as the counterparty, which anyone can compute.
 pub fn childKey(a: std.mem.Allocator, identity: [33]u8, key_id: []const u8) ![33]u8 {
+    return childKeyUnder(a, validator_protocol, identity, key_id);
+}
+
+/// The market commission protocol (0.49.0, David 2026-11-09 "COMMISSION KEY PER SWAP"): BRC-43
+/// security level 1, `amm commission`, keyed by the pool outpoint the Swap SPENDS (`keyId`, the
+/// same text form as the validator's keys), counterparty anyone, the child of the exchange
+/// instance's identity key: anyone derives the public half, only the instance signs for it. The
+/// pages' client derives the same key (web/ui lib/keys.ts `deriveCommissionPubKey`).
+pub const commission_protocol = bsvz.primitives.key_deriver.Protocol{ .security_level = 1, .name = "amm commission" };
+
+/// `identity`'s public child under `protocol` and `key_id`, counterparty anyone (BRC-42 from the
+/// public side: the anyone key, private key 1, as the deriver).
+pub fn childKeyUnder(a: std.mem.Allocator, protocol: bsvz.primitives.key_deriver.Protocol, identity: [33]u8, key_id: []const u8) ![33]u8 {
     const kd = bsvz.primitives.key_deriver.KeyDeriver.init(null); // the anyone key
-    const child = try kd.derivePublicKey(a, validator_protocol, key_id, .{
+    const child = try kd.derivePublicKey(a, protocol, key_id, .{
         .type_ = .other,
         .public_key = try bsvz.primitives.ec.PublicKey.fromSec1(&identity),
     }, false);
     return child.toCompressedSec1();
+}
+
+/// The commission key of the exchange `identity` for a Swap spending the pool output txid:vout.
+pub fn commissionKey(a: std.mem.Allocator, identity: [33]u8, txid: [32]u8, vout: u32) ![33]u8 {
+    var buf: [64 + 1 + 10]u8 = undefined;
+    return childKeyUnder(a, commission_protocol, identity, keyId(&buf, txid, vout));
+}
+
+/// Its key hash (what the Swap's commission output pays, the call's `commissionPkh`).
+pub fn commissionPkh(a: std.mem.Allocator, identity: [33]u8, txid: [32]u8, vout: u32) ![20]u8 {
+    const k = try commissionKey(a, identity, txid, vout);
+    return bsvz.crypto.hash.hash160(&k).bytes;
 }
 
 /// The validator signing key a Swap of the pool output txid:vout names next (`keyId`).

@@ -106,7 +106,7 @@ test "the event: refused when the instance has its token, the record is not a de
     try testing.expect(setup.eventOf(raw, false) == .refused);
 }
 
-test "the token record and the registrations: {tokenId, topic, lookup, ammLookup, sym, dec, txid, vout}; register (seeded), registerLookup ×2 over the topic" {
+test "the token record and the registrations: {tokenId, topic, lookup, ammLookup, sym, dec, txid, vout}; register (seeded with the door's envelope, skein-overlay 0.25.0), registerLookup ×2 over the topic" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -125,11 +125,12 @@ test "the token record and the registrations: {tokenId, topic, lookup, ammLookup
     const reci = try setup.tokenRecord(a, di);
     try testing.expectEqualStrings("icon", reci.map[6].key);
 
-    const regs = try setup.registrations(a, d);
+    const env = try mapOf(a, &.{ .{ .key = "form", .value = .{ .text = "beef" } }, .{ .key = "beef", .value = .{ .cid = "cid:the-door's-pointer" } } });
+    const regs = try setup.registrations(a, d, env);
     try testing.expectEqualStrings("register", regs[0].func);
     try testing.expectEqualStrings(d.topic, regs[0].arg.getText("topic").?);
     try testing.expectEqualStrings("color-topic", regs[0].arg.getText("program").?);
-    try testing.expectEqualStrings(txid, regs[0].arg.getArray("seed").?[0].text);
+    try testing.expectEqualStrings("cid:the-door's-pointer", regs[0].arg.get("seed").?.getCid("beef").?);
     try testing.expectEqualStrings("registerLookup", regs[1].func);
     try testing.expectEqualStrings(d.lookup, regs[1].arg.getText("service").?);
     try testing.expectEqualStrings("color-lookup", regs[1].arg.getText("program").?);
@@ -144,34 +145,20 @@ test "the token record and the registrations: {tokenId, topic, lookup, ammLookup
     for (regs) |r| try testing.expect(parsed.value.object.get("programs").?.object.get(r.arg.getText("program").?) != null);
 }
 
-test "the engine's answers: {fn, result} taken, {fn, error} a refusal (the step fails); seeded or not" {
+test "the engine's answers: {fn, result} taken, {fn, error} a refusal (the step fails)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const tx = "ab" ** 32;
     const ok = try mapOf(a, &.{ .{ .key = "fn", .value = .{ .text = "register" } }, .{ .key = "result", .value = try mapOf(a, &.{
         .{ .key = "topic", .value = .{ .text = "tm_x" } },
         .{ .key = "active", .value = .{ .boolean = true } },
-        .{ .key = "seeded", .value = .{ .array = try a.dupe(Value, &.{.{ .text = tx }}) } },
-        .{ .key = "missing", .value = .{ .array = &.{} } },
     }) } });
     try testing.expect((try setup.refusalOf(a, "register", ok)) == null);
-    try testing.expect(setup.seeded(ok, tx));
-    const missing = try mapOf(a, &.{ .{ .key = "fn", .value = .{ .text = "register" } }, .{ .key = "result", .value = try mapOf(a, &.{
-        .{ .key = "seeded", .value = .{ .array = &.{} } },
-        .{ .key = "missing", .value = .{ .array = try a.dupe(Value, &.{.{ .text = tx }}) } },
-    }) } });
-    try testing.expect(!setup.seeded(missing, tx));
     const bad = try mapOf(a, &.{ .{ .key = "fn", .value = .{ .text = "register" } }, .{ .key = "error", .value = try mapOf(a, &.{
         .{ .key = "code", .value = .{ .text = "bad-args" } },
         .{ .key = "message", .value = .{ .text = "register: program nope is not a role in programs" } },
     }) } });
     try testing.expectEqualStrings("register refused by the engine: register: program nope is not a role in programs", (try setup.refusalOf(a, "register", bad)).?);
-    // The submission's body, as the validator's.
-    const sb = try setup.submitBody(a, "BEEF", "tm_x");
-    try testing.expectEqualStrings("submit", sb.getText("fn").?);
-    try testing.expectEqualStrings("BEEF", sb.get("args").?.getBytes("beef").?);
-    try testing.expectEqualStrings("tm_x", sb.get("args").?.getArray("topics").?[0].text);
 }
 
 test "/token: the record as JSON; none before the deploy event" {

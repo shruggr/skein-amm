@@ -74,8 +74,6 @@ const validator = @import("validator.zig");
 const messages = @import("messages.zig");
 const submit = @import("submit.zig");
 const view_mod = @import("view.zig");
-const launch = @import("launch.zig");
-const rescind = @import("rescind.zig");
 const lock = @import("lock.zig");
 const Oracle = @import("oracle.zig").Oracle;
 const terms = @import("terms");
@@ -133,15 +131,15 @@ fn identityOf(a: std.mem.Allocator, in: Value, oracle: Oracle) ![33]u8 {
 
 fn run(a: std.mem.Allocator) anyerror!void {
     const raw_in = try vm.input(a);
-    // A step: root's message in the box `<app>/validator` — the terms (0.15.0), answered at once,
-    // or the Rescind (0.13.0) — and the Rescind thread's later steps (the wallet threads it
-    // launched at rest, the engine's answer).
+    // A step: root's message in the box `<app>/validator` — the terms (0.15.0), answered at once.
+    // 0.49.0: the wallet-funded Rescind is gone (it needs an app-initiated wallet spend, not yet
+    // designed; David 2026-11-09); any other message there is refused.
     if (!std.mem.eql(u8, raw_in.getText("kind") orelse "", "call")) {
         // 0.17.0: this program's own answer to root, looped back when root is the instance's own key
         // (a one-key host, shruggr/skein#160): an answer (it names its `request`), not a request.
         if (try isOwnAnswer(a, raw_in)) return finishAnswer(a);
         if (try isTermsMessage(a, raw_in)) return termsStep(a, raw_in);
-        return rescindStep(a, raw_in);
+        return refuseStep(a, raw_in);
     }
     const op = validator.Op.parse(raw_in.getText("fn") orelse "") orelse return error.UnknownFunction;
     const arg = try vm.callArg(a, raw_in);
@@ -152,13 +150,6 @@ fn run(a: std.mem.Allocator) anyerror!void {
     // what a request waiting on a pool's lock awaits (lock.zig).
     const me = (raw_in.get("step") orelse return error.BadInput).getCid("thread") orelse return error.BadInput;
     return directCall(a, in, arg, op, me);
-}
-
-/// Launch the genesis wallet program on `body` (launch.zig `launchArgs`): a thread of its own,
-/// which this step's thread is then waiting on beside whatever it awaits.
-fn launchWallet(a: std.mem.Allocator, raw_in: Value, body: Value) !void {
-    const prog = launch.walletProgram(raw_in) orelse return error.NoWalletProgram;
-    _ = try vm.launch(a, prog, try launch.launchArgs(a, vm.store(), body));
 }
 
 fn answerBody(a: std.mem.Allocator, r: validator.Reply) !void {
@@ -254,12 +245,11 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op, me:
             try vm.awaitRecord(m);
             return answerWait(a);
         },
-        .wait_on => |txid| {
-            // Resubmitted while the first submission's thread awaits the chain app: wait on that thread.
-            const rec = (try st.pendingRecord(txid)) orelse return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
-            const thread = rec.getCid("thread") orelse return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
-            vm.awaitRecord(thread) catch return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body)); // at rest already
-            return answerWait(a);
+        .wait_on => {
+            // Resubmitted while the first submission is with the chain app. 0.49.0 (skein-overlay
+            // 0.25.0: a pending record names no thread to wait on): answered from the state at once
+            // — "not yet accepted by the network … send the same request again" (messages.zig).
+            return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
         },
     }
 }
@@ -337,109 +327,19 @@ fn rootAnswer(a: std.mem.Allocator, args: Value, func: []const u8, field: []cons
     }) });
 }
 
-// ---------------------------------------------------------------- the Rescind (0.13.0)
+// ---------------------------------------------------------------- any other message (0.49.0)
 
-fn resultRecord(a: std.mem.Allocator, stage: []const u8, fields: []const cbor.Entry) !Value {
-    var es: std.ArrayList(cbor.Entry) = .empty;
-    try es.appendSlice(a, &.{
-        .{ .key = "kind", .value = .{ .text = "amm-rescind" } },
-        .{ .key = "stage", .value = .{ .text = stage } },
-    });
-    try es.appendSlice(a, fields);
-    return .{ .map = es.items };
-}
-
-/// Answer root's message: `{fn: "rescind", request: <the message>, result | error}` to its sender,
-/// in the box it wrote to; then the thread ends.
-fn rescindAnswer(a: std.mem.Allocator, args: Value, field: []const u8, v: Value) !void {
-    const answer: Value = .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "fn", .value = .{ .text = "rescind" } },
-        .{ .key = "request", .value = if (args.getCid("message")) |m| .{ .cid = m } else .null },
-        .{ .key = field, .value = v },
-    }) };
-    if (args.getBytes("sender")) |sender| if (args.getText("box")) |box| {
-        _ = vm.send(a, sender, box, answer) catch |e| std.log.err("rescind: the answer is not sent: {s}", .{@errorName(e)});
-    };
-    _ = try vm.finish(a, vm.store(), try resultRecord(a, "answered", &.{.{ .key = "answer", .value = answer }}));
-}
-
-fn rescindError(a: std.mem.Allocator, args: Value, why: []const u8) !void {
-    return rescindAnswer(a, args, "error", .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "code", .value = .{ .text = "refused" } },
-        .{ .key = "message", .value = .{ .text = why } },
-    }) });
-}
-
-/// One step of a Rescind's thread (rescind.zig): root's message `{fn: "rescind", args: {pool:
-/// "<txid>.<vout>"}}` launches the wallet's createAction (the pool a caller input, the contract's
-/// one output); its draft at rest, the pool input's call is written over it and signed by the
-/// pool's validator key, and the wallet's signAction launched; signed, the Rescind is submitted to
-/// this overlay by message; the engine's answer is root's answer.
-fn rescindStep(a: std.mem.Allocator, raw_in: Value) !void {
+/// Root's message in box `<app>/validator` that is not `terms`: refused, `{fn, request, error:
+/// {code: "unknown-fn", message}}` to its sender, nothing written. (0.13.0–0.48.x: `rescind`, the
+/// validator's wallet-funded Rescind, removed in 0.49.0; the contract keeps Rescind on chain.)
+fn refuseStep(a: std.mem.Allocator, raw_in: Value) !void {
     const args = raw_in.get("args") orelse return error.BadInput;
-    const in = try ov.engine_vm.configured(a, raw_in, null);
-    const oracle: Oracle = .{ .ptr = &oracle_dummy, .callFn = oracleCall };
-    const identity = try identityOf(a, in, oracle);
-    const s = vm.store();
-
-    // The engine's answer to the submission: root's answer.
-    if (raw_in.get("reply")) |r| if (r == .map) {
-        const ans = try s.getValue(a, r.getCid("body") orelse return error.BadInput);
-        if (ans.get("error")) |e| return rescindError(a, args, e.getText("message") orelse "the overlay refused the Rescind");
-        return rescindAnswer(a, args, "result", ans.get("result") orelse .null);
-    };
-    // A wallet thread at rest: the draft, or the signed Rescind.
-    if (raw_in.get("resolved")) |rs| {
-        const items = if (rs == .array) rs.array else return error.BadInput;
-        if (items.len == 0) return error.BadInput;
-        const res = items[items.len - 1];
-        if (!std.mem.eql(u8, res.getText("state") orelse "", "finished")) return rescindError(a, args, "the wallet errored");
-        const rc = (try rescind.resultCid(a, res.get("result") orelse .null)) orelse return rescindError(a, args, "the wallet answered nothing");
-        switch (rescind.stageOf(try s.getValue(a, rc))) {
-            .failed => |why| return rescindError(a, args, why),
-            .draft => |d| {
-                const l = (try rescind.locate(a, identity, d.tx)) orelse return rescindError(a, args, "the draft spends no pool of ours");
-                const st = try overlayState(a, in);
-                const ovv = try a.create(view_mod.OverlayView);
-                ovv.* = .{ .st = st };
-                const key_id = (try rescind.keyIdOf(a, ovv.view(), l)) orelse return rescindError(a, args, "the pool's current validator key is not ours to name");
-                const u = rescind.unlockRescind(a, l, key_id, oracle) catch |e| return rescindError(a, args, @errorName(e));
-                try launchWallet(a, raw_in, try rescind.signBody(a, d.reference, l.index, u));
-                _ = try vm.finish(a, s, try resultRecord(a, "signing", &.{}));
-                return;
-            },
-            .signed => |tx| {
-                const l = (try rescind.locate(a, identity, tx)) orelse return rescindError(a, args, "the Rescind spends no pool of ours");
-                // 0.29.5: the same rule as a swap's submission — the pool's transaction with its
-                // ancestry back to proven ones is in the BEEF (the door verifies with nothing known).
-                const st = try overlayState(a, in);
-                const pool_beef = ov.state.beefFor(st.ch, l.op.txid) catch return rescindError(a, args, "the chain state has no BEEF of the pool's transaction");
-                const full = submit.withPool(a, tx, pool_beef) catch |e| return rescindError(a, args, @errorName(e));
-                const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, full, try rescind.topicOf(a, l.pool)));
-                try vm.awaitRecord(m);
-                _ = try vm.finish(a, s, try resultRecord(a, "submitted", &.{}));
-                return;
-            },
-        }
-    }
-    // Root's message.
-    const bc = args.getCid("body") orelse return error.BadInput;
-    const body = try s.getValue(a, bc);
-    if (!std.mem.eql(u8, body.getText("fn") orelse "", "rescind")) return rescindError(a, args, "want {fn: \"rescind\", args: {pool: \"<txid>.<vout>\"}}");
-    const text = (body.get("args") orelse return rescindError(a, args, "want args {pool}")).getText("pool") orelse return rescindError(a, args, "want args {pool}");
-    const norm = try a.dupe(u8, text);
-    if (std.mem.indexOfScalar(u8, norm, '.')) |i| norm[i] = '_';
-    const op = view_mod.Outpoint.parse(norm) orelse return rescindError(a, args, "pool: <txid>.<vout>");
-    const st = try overlayState(a, in);
-    const ovv = try a.create(view_mod.OverlayView);
-    ovv.* = .{ .st = st };
-    const t = switch (try rescind.targetOf(a, ovv.view(), identity, op)) {
-        .refused => |why| return rescindError(a, args, why),
-        .ok => |t| t,
-    };
-    const input_beef = (try st.ch.beefOf(t.op.txid)) orelse return rescindError(a, args, "the chain state has no BEEF of the pool's transaction");
-    try launchWallet(a, raw_in, try rescind.createBody(a, t, input_beef));
-    _ = try vm.finish(a, s, try resultRecord(a, "drafting", &.{}));
+    const body = try vm.store().getValue(a, args.getCid("body") orelse return error.BadInput);
+    const func = body.getText("fn") orelse "";
+    return rootAnswer(a, args, func, "error", .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "code", .value = .{ .text = "unknown-fn" } },
+        .{ .key = "message", .value = .{ .text = "this box takes {fn: \"terms\"} only" } },
+    }) }, "amm-refused");
 }
 
 pub fn main() u8 {

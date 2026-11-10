@@ -1,5 +1,8 @@
 # amm-lookup
 
+> **0.49.0 (unreleased, branch `recognizers`)**: see CHANGELOG.md "Unreleased". Sections below that
+> describe the lookup's maps, the history reads, the Rescind or the `relay` commission key are history.
+
 The AMM pool liquidity lookup service, served as `ls_amm_<assetId>` (skein-amm
 0.21.0, paired with `tm_color_<assetId>` as `ls_color_<assetId>` is): a lookup service on
 skein-overlay 0.6.0's lookup contract (the `lookup` module). One service over

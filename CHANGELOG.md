@@ -4,6 +4,47 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## Unreleased (branch `recognizers`; planned 0.49.0)
+
+The pool lookup as a RECOGNIZER (agent-env plans/research/plan-pass-recognizers-2026-11-09.md; David
+2026-11-09 "INDEXES vs SUMMARIES", point 8 "fees at admission", "TOKEN TALLY", "COMMISSION KEY PER
+SWAP", "RESCIND"). On skein-overlay v0.26.0, skein-sdk v0.19.0 (through it), the token image on
+skein-chain v0.10.0. skein-1color stays at v0.17.2 here: its re-pin is one line in build.zig.zon.
+
+- amm-lookup keeps no index. Its maps `pools`, `spentPools`, `history`, `closes`, `trades` and
+  `byCommission` are gone. It emits what it recognizes. `<app>/pool/<poolId>`: one row per hop, deploy |
+  swap | close | rescind, plus a revert row. `<app>/output/<txid>.<vout>`: the hop row of the pool output
+  it lists, or `{reverted: true}`. `<app>/hop`: every row again, in the instance's order.
+  `<app>/commission/<txid>.<vout>`: the history flag, written only when the commission is ours. A row
+  gains `tokenId`, `keyId` and, on a Swap, `feeVouts`. Every field is text or a number; `at` is in ms.
+  Earlier facts are read back from the kernel's event index in the step: the pool a Swap spends, a
+  re-admission, our fees, what a rejection unwinds. The Close is re-derived from the spending
+  transaction, because a step does not see its own emits. It stores only summaries: the counters, and the
+  token fee tally (`counters` under `f ‖ tp`, `{kind: "amm-fee-tally", units}`).
+- The fees that are ours, recognized at a Swap's admission. The validator fee is ours when the spent
+  pool names this instance; its invoice is `[1, "amm pool"]`, keyed by the spent pool's `keyId`,
+  counterparty anyone. The commission is ours when it pays `[1, "amm commission"]`, keyed by the pool
+  outpoint the Swap spends. Each is FILED through `fileWithWallet`, in basket `bsv` or `tokens`.
+  `fileWithWallet` is a seam: today it only records the call, and it cannot fail. Token fees go into the
+  tally, which a spend or a rejection adjusts. A second spender of a coin, such as a proven winner, does
+  not subtract it again. A rejection re-credits only the coins in `givenBack`.
+- `/lookup ls_amm_<id>`: `{tokenId}` and `{tokenId, poolIds}` keep their answers. `{tokenId, outpoint}`,
+  `{tokenId, validatorIdentityKey}`, `{validatorIdentityKeys}` and `{commissionPkhs}` are gone (no reader).
+- amm-p2p: `/fees/validator` and `/fees/commission` are gone (no reader). `/trades`, `/candles`, `/stats`,
+  `/pools/at` and `/pools/history` are gone from the instance: the Open Exchange host answers them as
+  folds over the pool events. `/fees/tokens` is new: `{tokenId, units}`, the tally. The commission key is
+  per swap (src/pool.zig `commissionKey` / `commissionPkh`; the client's vector is pinned). `/terms`
+  `market` answers `{identityKey, minCommissionBps}`, and amm.swap.terms answers `{identityKey,
+  minCommissionBps}`. The key ID `relay` and `commissionPkh` are gone.
+- amm-validator: the wallet-funded Rescind is gone (rescind.zig, launch.zig, root's `rescind`); any other
+  message in box `validator` is refused `unknown-fn`. The contract keeps Rescind, and the lookup still
+  handles a rescinded pool. Step 3 ("still live") also reads the chain level: a held spender that the
+  chain state has not rejected answers `pool_spent`. A resubmission while pending is answered from the
+  state, since the pending record names no thread. Settlement is read before pending.
+- amm-setup: the seed is the door's envelope, and the engine submits it. The fallback submit is gone.
+- etc/app.json: `lookupVersion`, the `reindex` role and route, the libp2p receive row, `rescind` and the
+  dropped reads are gone; `feeTokens` is new.
+
 ## 0.48.1 (2026-11-07)
 
 Reindex (agent-env plans/reindex-2026-11-07.md, D5).

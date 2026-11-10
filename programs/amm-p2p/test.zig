@@ -297,14 +297,15 @@ const TestEnv = struct {
 };
 var test_env: TestEnv = undefined;
 
-/// This exchange's commission key hash in the tests: the fixtures' (gen/main.go `key(50)`, vectors' commission_pkh).
-const commission_pkh: [20]u8 = blk: {
+/// This exchange's identity in the tests (0.49.0: the terms answer the identity each leg's
+/// commission key derives from): the fixtures' validator identity.
+const our_identity: [33]u8 = blk: {
     @setEvalBranchQuota(10_000);
-    var k: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&k, vec.commission_pkh) catch unreachable;
+    var k: [33]u8 = undefined;
+    _ = std.fmt.hexToBytes(&k, vec.identity) catch unreachable;
     break :blk k;
 };
-const ours: iface.Commission = .{ .pkh = commission_pkh };
+const ours: iface.Commission = .{ .identity = our_identity };
 
 fn fromSdk(a: Allocator, v: scbor.Value) !Value {
     return cbor.decode(a, try scbor.encode(a, v));
@@ -346,16 +347,17 @@ test "amm.swap/1 by the manifest (0.44.0, David Case 2026-11-06: the host relays
     try testing.expect(std.mem.indexOf(u8, manifest_json, "\"expires\"") == null);
     try testing.expect(std.mem.indexOf(u8, manifest_json, "amm-p2p.swaps") == null);
 
-    // terms: this exchange's commission pkh, read-only as declared; none, null; no args taken.
+    // terms: this exchange's identity (0.49.0: the commission key is per swap, derived from it), read-only as declared; none, null; no args taken.
     try testing.expect(!(try app.declOf(a, m, iface.fn_terms)).?.get("writes").?.bool);
     const t1 = try app.run(a, in, iface.app_name, m, &test_fns, iface.fn_terms, .{ .map = &.{} }, null);
     try testing.expect(t1 == .ok);
     try testing.expectEqual(@as(?bool, false), test_env.seen_writes);
-    try testing.expectEqualSlices(u8, &commission_pkh, (try fromSdk(a, t1.ok)).getBytes("commissionPkh").?);
+    try testing.expectEqualSlices(u8, &our_identity, (try fromSdk(a, t1.ok)).getBytes("identityKey").?);
+    try testing.expect((try fromSdk(a, t1.ok)).get("commissionPkh") == null);
     test_env.commission = .{};
     const t2 = try app.run(a, in, iface.app_name, m, &test_fns, iface.fn_terms, null, null);
     try testing.expect(t2 == .ok);
-    try testing.expect((try fromSdk(a, t2.ok)).get("commissionPkh").? == .null);
+    try testing.expect((try fromSdk(a, t2.ok)).get("identityKey").? == .null);
     test_env.commission = ours;
     // 0.16.0: the market's minimum beside it, 0 when none is set; the record's when set.
     try testing.expectEqual(@as(u64, 0), (try fromSdk(a, t1.ok)).getUint("minCommissionBps").?);
@@ -465,10 +467,11 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token 
     // 0.17.0 (shruggr/skein-amm#4): no register, registerLookup, deregisterLookup — a token instance's
     // topic is its config's at birth; rescind, the validator's (0.13.0); terms, the validator's (0.15.0:
     // the runtime record); market, the market's (0.16.0: the runtime record).
-    // 0.48.1: reindex, root's (skein-overlay 0.23.0: the engine's, in the box amm/reindex).
-    try testing.expectEqual(@as(usize, 4), gated.len);
-    for ([_][]const u8{ "rescind", "terms", "market", "reindex" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
-    try testing.expectEqual(@as(i128, 1), m.get("lookupVersion").?.int);
+    // 0.49.0: no reindex (skein-overlay 0.25.0 has none), no lookupVersion; no rescind (the
+    // wallet-funded Rescind is gone from the validator).
+    try testing.expectEqual(@as(usize, 2), gated.len);
+    for ([_][]const u8{ "terms", "market" }, gated) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    try testing.expect(m.get("lookupVersion") == null);
     const filters = m.get("filters").?;
     try testing.expect(filters.get("page") == null and filters.get("requests") == null);
     try testing.expectEqualStrings("color-lookup.tokens", scbor.Value.str(filters.get("tokens")).?);
@@ -494,8 +497,9 @@ test "the routes, filters and roles (shruggr/skein#143, 0.7.0; 0.17.0 the token 
             try testing.expectEqualStrings("kernel.brc104", scbor.Value.str(r.get("filters").?.array[0]).?);
             seen |= 2;
         }
-        // 0.48.1: root's reindex, the engine's handler (skein-overlay 0.23.0).
-        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "reindex")) try testing.expectEqualStrings("overlay.reindex", h.?);
+        // 0.49.0: no reindex row; no libp2p receive row (skein-overlay 0.25.1, D10: the host submits a fetched BEEF as a submit message).
+        try testing.expect(!std.mem.eql(u8, addr, "reindex"));
+        try testing.expect(!std.mem.eql(u8, addr, "/skein/overlay/beef/1.0.0"));
         // 0.9.0: the validator's box (root's rescind, 0.13.0) and the read /spends.
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "validator")) {
             try testing.expectEqualStrings("amm-validator", h.?);
@@ -621,28 +625,31 @@ test "market terms (0.16.0, David 2026-10-24): a runtime record root sets — fn
 
 }
 
-test "the commission key (0.16.0): the instance's own, BRC-43 level 1 `amm commission` / `relay`, counterparty anyone — the signer's key for it is the one anyone derives from the identity" {
+test "the commission key (0.49.0, per swap): BRC-43 level 1 `amm commission`, keyed by the spent pool outpoint, counterparty anyone — the instance's own signer key for it is the one anyone derives from the identity (src/pool.zig `commissionKey`), the client's pinned vector" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const kd_mod = bsvz.primitives.key_deriver;
-    const proto: kd_mod.Protocol = .{ .security_level = iface.commission_protocol.level, .name = iface.commission_protocol.name };
     try testing.expectEqual(@as(u8, 1), iface.commission_protocol.level);
     try testing.expectEqualStrings("amm commission", iface.commission_protocol.name);
-    try testing.expectEqualStrings("relay", iface.commission_key_id);
+    const proto: kd_mod.Protocol = .{ .security_level = iface.commission_protocol.level, .name = iface.commission_protocol.name };
     const root = try bsvz.primitives.ec.PrivateKey.fromBytes(.{0x07} ** 32);
     const identity = (try root.publicKey()).toCompressedSec1();
-    // The signer's (forSelf, counterparty anyone: getPublicKey's answer to main.zig `commissionKey`).
-    const signer = kd_mod.KeyDeriver.init(root);
-    const mine = (try signer.derivePublicKey(a, proto, iface.commission_key_id, .{ .type_ = .anyone }, true)).toCompressedSec1();
-    // Anyone's, from the identity alone.
-    const anyone = kd_mod.KeyDeriver.init(null);
-    const theirs = (try anyone.derivePublicKey(a, proto, iface.commission_key_id, .{ .type_ = .other, .public_key = try bsvz.primitives.ec.PublicKey.fromSec1(&identity) }, false)).toCompressedSec1();
-    try testing.expectEqualSlices(u8, &mine, &theirs);
-    // amm.swap.terms answers its hash160.
-    const pkh = hash160(&mine);
-    const t = try iface.terms(a, .{ .pkh = pkh }, .{});
-    try testing.expectEqualSlices(u8, &pkh, t.getBytes("commissionPkh").?);
+    const txid = try w.header.fromHex("aa11bb22cc33dd44ee55ff660011223344556677889900112233445566778899");
+    var buf: [64 + 1 + 10]u8 = undefined;
+    const key_id = pool_lib.keyId(&buf, txid, 0);
+    try testing.expectEqualStrings("aa11bb22cc33dd44ee55ff660011223344556677889900112233445566778899_0", key_id);
+    // The instance's signer (forSelf, counterparty anyone) and anyone's, from the identity alone.
+    const mine = (try kd_mod.KeyDeriver.init(root).derivePublicKey(a, proto, key_id, .{ .type_ = .anyone }, true)).toCompressedSec1();
+    try testing.expectEqualSlices(u8, &mine, &try pool_lib.commissionKey(a, identity, txid, 0));
+    // The client's vector (web/ui test/keys.test.ts): PrivateKey(1).
+    var g: [33]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&g, "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    try testing.expectEqualStrings("3596b7bd46071cdfc8bf21ff720dad8b7ae1f677", &std.fmt.bytesToHex(try pool_lib.commissionPkh(a, g, txid, 0), .lower));
+    // amm.swap.terms answers the identity, no key hash.
+    const t = try iface.terms(a, .{ .identity = identity }, .{});
+    try testing.expectEqualSlices(u8, &identity, t.getBytes("identityKey").?);
+    try testing.expect(t.get("commissionPkh") == null);
 }
 
 test {
@@ -677,6 +684,59 @@ fn soloPath(a: Allocator, height: u32, txid: [32]u8) ![]const u8 {
     try path.appendSlice(a, &txid);
     return path.items;
 }
+
+/// The kernel's event index as the lookup reads it (0.49.0): what the hooks' steps emitted.
+const Events = struct {
+    var a: Allocator = undefined;
+    var event_names: std.ArrayList([]const u8) = .empty;
+    var records: std.ArrayList(Value) = .empty;
+
+    fn reset(al: Allocator) void {
+        a = al;
+        event_names = .empty;
+        records = .empty;
+        amm_idx.reader = read;
+        amm_idx.app = "amm";
+        amm_idx.self_identity = null;
+        amm_idx.filings = .empty;
+    }
+    fn commit(svc: *lookup_mod.Service) !void {
+        for (svc.events.items) |ev| {
+            try event_names.append(a, ev.getText("event").?);
+            try records.append(a, ev);
+        }
+        svc.events = .empty;
+    }
+    fn item(al: Allocator, n: []const u8, r: Value) !Value {
+        return .{ .map = try al.dupe(cbor.Entry, &.{ .{ .key = "name", .value = .{ .text = n } }, .{ .key = "record", .value = r } }) };
+    }
+    fn read(al: Allocator, q: Value) anyerror!Value {
+        const latest = q.getBool("latest") orelse false;
+        var out: std.ArrayList(Value) = .empty;
+        if (q.getText("name")) |n| {
+            var last: ?Value = null;
+            for (event_names.items, records.items) |x, r| if (eql(u8, x, n)) {
+                if (latest) last = r else try out.append(al, try item(al, x, r));
+            };
+            if (last) |r| try out.append(al, try item(al, n, r));
+            return .{ .array = out.items };
+        }
+        const p = q.getText("prefix").?;
+        var seen: std.ArrayList([]const u8) = .empty;
+        for (event_names.items) |x| if (std.mem.startsWith(u8, x, p)) {
+            for (seen.items) |y| {
+                if (eql(u8, y, x)) break;
+            } else try seen.append(al, x);
+        };
+        std.mem.sort([]const u8, seen.items, {}, struct {
+            fn f(_: void, l: []const u8, r: []const u8) bool {
+                return std.mem.order(u8, l, r) == .lt;
+            }
+        }.f);
+        for (seen.items) |n| try out.appendSlice(al, (try read(al, .{ .map = try al.dupe(cbor.Entry, &.{ .{ .key = "name", .value = .{ .text = n } }, .{ .key = "latest", .value = .{ .boolean = latest } } }) })).array);
+        return .{ .array = out.items };
+    }
+};
 
 /// The fixtures' pool and its two Swaps, admitted by the pool lookup's hooks (as amm-lookup's own
 /// tests do) over a store holding them; the chain state holding them too, `fund` proven in block 1.
@@ -723,11 +783,15 @@ const ReadEnv = struct {
         const pd = unhex(a, vec.pool_deploy);
         const s1 = unhex(a, vec.swap_bsv_in);
         const s2 = unhex(a, vec.swap_tokens_in);
+        Events.reset(a);
         try amm_idx.admitted(a, &e.svc, e.topic, try ltxOf(a, pd), &.{ 0, 1, 2 }, &.{0});
+        try Events.commit(&e.svc);
         try amm_idx.admitted(a, &e.svc, e.topic, try ltxOf(a, s1), &.{ 0, 1 }, &.{0});
         try amm_idx.spent(a, &e.svc, e.topic, .{ .txid = w.beef.txidOf(pd), .vout = 0 }, try ltxOf(a, s1));
+        try Events.commit(&e.svc);
         try amm_idx.admitted(a, &e.svc, e.topic, try ltxOf(a, s2), &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
         try amm_idx.spent(a, &e.svc, e.topic, .{ .txid = w.beef.txidOf(s1), .vout = 0 }, try ltxOf(a, s2));
+        try Events.commit(&e.svc);
         return e;
     }
     fn deinit(self: *ReadEnv) void {
@@ -753,17 +817,16 @@ test "read API (0.34.0): the routes and their filters in the manifest — plain 
     const m = try dagjson.decode(a, manifest_json);
     const want = [_][2][]const u8{
         .{ "/positions", "positions" },
-        .{ "/fees/validator", "validatorFees" },
-        .{ "/fees/commission", "commissionFees" },
+        .{ "/fees/tokens", "feeTokens" },
         .{ "/terms", "readTerms" },
         .{ "/spends", "spends" },
         .{ "/tx", "tx" },
-        .{ "/trades", "trades" },
-        .{ "/candles", "candles" },
-        .{ "/stats", "stats" },
-        .{ "/pools/at", "poolsAt" },
-        .{ "/pools/history", "poolsHistory" },
     };
+    // 0.49.0: gone — no reader (`/fees/validator`, `/fees/commission`) or the host's folds over the
+    // pool events (`/trades`, `/candles`, `/stats`, `/pools/at`, `/pools/history`).
+    for ([_][]const u8{ "/fees/validator", "/fees/commission", "/trades", "/candles", "/stats", "/pools/at", "/pools/history" }) |gone|
+        for (m.get("routes").?.array) |r| try testing.expect(!eql(u8, scbor.Value.str(r.get("address")).?, gone));
+    for ([_][]const u8{ "validatorFees", "commissionFees", "trades", "candles", "stats", "poolsAt", "poolsHistory" }) |gone| try testing.expect(m.get("filters").?.get(gone) == null);
     for (want) |x| {
         try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm-p2p.{s}", .{x[1]}), scbor.Value.str(m.get("filters").?.get(x[1])).?);
         var found = false;
@@ -801,7 +864,7 @@ test "read API (0.34.0): list parameters — comma-separated, percent-decoded, i
     try testing.expectEqual(@as(usize, 0), (try reads.queryList(a, "lp=", "lp")).?.len);
 }
 
-test "read API (0.34.0; 0.40.0 by pool id): P4 /positions — the lookup's {poolIds} answer, one record per id in query order, an unknown id closed with zeros; P5, P6 likewise; a bad id refused" {
+test "read API (0.34.0; 0.40.0 by pool id): P4 /positions — the lookup's {poolIds} answer, one record per id in query order, an unknown id closed with zeros; a bad id refused; (0.49.0) P5, P6 gone" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -827,15 +890,13 @@ test "read API (0.34.0; 0.40.0 by pool id): P4 /positions — the lookup's {pool
     try testing.expectEqual(@as(i64, 2), mine.get("current").?.object.get("swaps").?.integer);
     try testing.expectEqual(@as(i64, 2), mine.get("swaps").?.integer);
 
-    const vf = try jsonOf(a, try reads.valueJson(a, try reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "validatorIdentityKeys", &.{ vec.identity, unknown_lp })));
-    try testing.expectEqualStrings(vec.identity, vf.array.items[0].object.get("validatorIdentityKey").?.string);
-    try testing.expectEqual(@as(i64, 2), vf.array.items[0].object.get("swaps").?.integer);
-    try testing.expectEqual(@as(i64, 0), vf.array.items[1].object.get("swaps").?.integer);
+    try testing.expectError(error.BadQuery, reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "validatorIdentityKeys", &.{vec.identity}));
+    try testing.expectError(error.BadQuery, reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "commissionPkhs", &.{"55" ** 20}));
 
-    const unknown_pkh = "55" ** 20;
-    const cf = try jsonOf(a, try reads.valueJson(a, try reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "commissionPkhs", &.{unknown_pkh})));
-    try testing.expectEqualStrings(unknown_pkh, cf.array.items[0].object.get("commissionPkh").?.string);
-    try testing.expectEqual(@as(i64, 0), cf.array.items[0].object.get("swaps").?.integer);
+    // 0.49.0: /fees/tokens — the token fee tally (none of ours here).
+    const tj = try jsonOf(a, try reads.tallyJson(a, e.token, try amm_idx.tally(a, &e.svc, try amm_idx.tokenPrefix(a, e.token))));
+    try testing.expectEqualStrings(e.token, tj.object.get("tokenId").?.string);
+    try testing.expectEqual(@as(i64, 0), tj.object.get("units").?.integer);
 
     try testing.expectError(error.BadQuery, reads.lookupAnswer(a, &e.svc, &e.ch, e.token, "poolIds", &.{"02zz"}));
 }
@@ -885,8 +946,7 @@ test "read API (0.34.0): P7 /terms — the validator's terms with its identity a
     defer arena.deinit();
     const a = arena.allocator();
     const id = unhex(a, vec.identity);
-    const pkh: [20]u8 = .{0x55} ** 20;
-    const j = try jsonOf(a, try reads.termsJson(a, .{ .identity = id, .peer_id = PEER_ID_OF_G, .lp_fee_bps = 30, .validator_fee_bps = 5, .commission_bps = 25, .min_leg_sats = 10_000 }, pkh, 10));
+    const j = try jsonOf(a, try reads.termsJson(a, .{ .identity = id, .peer_id = PEER_ID_OF_G, .lp_fee_bps = 30, .validator_fee_bps = 5, .commission_bps = 25, .min_leg_sats = 10_000 }, id, 10));
     const v = j.object.get("validator").?.object;
     try testing.expectEqualStrings(vec.identity, v.get("identity").?.string);
     try testing.expectEqualStrings(PEER_ID_OF_G, v.get("peerId").?.string);
@@ -895,9 +955,12 @@ test "read API (0.34.0): P7 /terms — the validator's terms with its identity a
     try testing.expectEqual(@as(i64, 25), v.get("commissionBps").?.integer);
     try testing.expectEqual(@as(i64, 10_000), v.get("minLegSats").?.integer); // 0.40.0
     const m = j.object.get("market").?.object;
-    try testing.expectEqualStrings("55" ** 20, m.get("commissionPkh").?.string);
+    // 0.49.0: the market's identity (each leg's commission key derives from it), no commissionPkh.
+    try testing.expectEqualStrings(vec.identity, m.get("identityKey").?.string);
+    try testing.expect(m.get("commissionPkh") == null);
     try testing.expectEqual(@as(i64, 10), m.get("minCommissionBps").?.integer);
-    const none = try jsonOf(a, try reads.termsJson(a, null, pkh, 0));
+    const none = try jsonOf(a, try reads.termsJson(a, null, null, 0));
+    try testing.expect(none.object.get("market").?.object.get("identityKey").? == .null);
     try testing.expect(none.object.get("validator").? == .null);
     try testing.expectEqual(@as(i64, 0), none.object.get("market").?.object.get("minCommissionBps").?.integer);
 }
@@ -908,200 +971,6 @@ fn httpBody(v: Value) []const u8 {
 
 fn httpStatus(v: Value) u64 {
     return v.getUint("status").?;
-}
-
-test "history reads (0.36.0): H1 /trades — newest first, each row's height from the overlay's `placed` (null until the proof lands), limit and cursor, ?pool= (0.40.0), ?txid= (404 none); bad parameters 400" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    amm_idx.now_ms = 7_000;
-    const e = try ReadEnv.init(a);
-    defer e.deinit();
-    const s1 = w.beef.txidOf(unhex(a, vec.swap_bsv_in));
-    const s2 = w.beef.txidOf(unhex(a, vec.swap_tokens_in));
-    const maps = try w.store.Maps.create(a, e.ms.store());
-    var placed = maps.map(null);
-    const tp = try amm_idx.tokenPrefix(a, e.token);
-
-    const r0 = try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "", 0);
-    try testing.expectEqual(@as(u64, 200), httpStatus(r0));
-    try testing.expectEqualStrings("public, max-age=5", r0.get("headers").?.getText("cache-control").?);
-    const j0 = try jsonOf(a, httpBody(r0));
-    const rows = j0.object.get("trades").?.array.items;
-    try testing.expectEqual(@as(usize, 2), rows.len);
-    try testing.expect(rows[0].object.get("height").? == .null);
-    try testing.expect(j0.object.get("next").? == .null);
-    // Same time: txid order, newest (greatest) first.
-    const first: [32]u8 = if (std.mem.order(u8, &s1, &s2) == .gt) s1 else s2;
-    try testing.expectEqualStrings(&w.header.toHex(first), rows[0].object.get("txid").?.string);
-    for (rows) |r| {
-        const o = r.object;
-        try testing.expectEqualStrings(vec.lp, o.get("lpPubKey").?.string);
-        try testing.expectEqualStrings(try poolText(a), o.get("poolId").?.string);
-        try testing.expectEqual(@as(usize, 40), o.get("payoutPkh").?.string.len);
-        try testing.expectEqual(@as(i64, 7_000), o.get("at").?.integer);
-        const buy = eql(u8, o.get("txid").?.string, &w.header.toHex(s1));
-        try testing.expectEqualStrings(if (buy) "buy" else "sell", o.get("side").?.string);
-        try testing.expectEqual(@as(i64, if (buy) 20_000 else 50_000), o.get("amountIn").?.integer);
-        try testing.expectEqual(@as(i64, if (buy) 60 else 150), o.get("feeLp").?.integer);
-        try testing.expectEqual(@as(i64, if (buy) 10 else 25), o.get("feeValidator").?.integer);
-        try testing.expectEqual(@as(i64, if (buy) 20 else 50), o.get("feeCommission").?.integer);
-        try testing.expect(o.get("amountOut").?.integer > 0);
-        try testing.expect(o.get("bsvReserve").?.integer > 0 and o.get("tokenReserve").?.integer > 0);
-    }
-
-    // The proof landed for the sats-in Swap: the overlay placed it at height 42.
-    var val: [44]u8 = .{0} ** 44;
-    std.mem.writeInt(u32, val[0..4], 42, .big);
-    try placed.put(try std.mem.concat(a, u8, &.{ tp, &s1 }), .{ .bytes = &val });
-    const one = try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "txid={s}", .{&w.header.toHex(s1)}), 0)));
-    try testing.expectEqual(@as(i64, 42), one.object.get("height").?.integer);
-    try testing.expectEqualStrings("buy", one.object.get("side").?.string);
-    const other = try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "txid={s}", .{&w.header.toHex(s2)}), 0)));
-    try testing.expect(other.object.get("height").? == .null);
-    try testing.expectEqual(@as(u64, 404), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "txid={s}", .{&w.header.toHex(w.beef.txidOf(unhex(a, vec.pool_deploy)))}), 0)));
-    try testing.expectEqual(@as(u64, 404), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "txid=" ++ "77" ** 32, 0)));
-    try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "txid=abc", 0)));
-
-    // Paging: a full page carries the cursor; the next page from it; then an empty one.
-    const pg1 = try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "limit=1", 0)));
-    const cur = pg1.object.get("next").?.string;
-    try testing.expectEqual(@as(usize, 80), cur.len);
-    const pg2 = try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "limit=1&before={s}", .{cur}), 0)));
-    try testing.expect(!eql(u8, pg1.object.get("trades").?.array.items[0].object.get("txid").?.string, pg2.object.get("trades").?.array.items[0].object.get("txid").?.string));
-    const pg3 = try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "limit=1&before={s}", .{pg2.object.get("next").?.string}), 0)));
-    try testing.expectEqual(@as(usize, 0), pg3.object.get("trades").?.array.items.len);
-    // The window and the pool.
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "from=7001", 0)))).object.get("trades").?.array.items.len);
-    try testing.expectEqual(@as(usize, 2), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, try std.fmt.allocPrint(a, "from=7000&to=7001&pool={s}", .{try poolText(a)}), 0)))).object.get("trades").?.array.items.len);
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "pool=" ++ unknown_pool, 0)))).object.get("trades").?.array.items.len);
-    for ([_][]const u8{ "limit=501", "limit=0", "limit=x", "from=-1", "before=zz", "pool=02ab" }) |bad|
-        try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, bad, 0)));
-    try testing.expectEqual(@as(u64, 200), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .trades, "limit=500", 0)));
-}
-
-test "history reads (0.36.0): H2 /candles — the six resolutions, prices as {sats, tokens}, non-empty buckets only; a window over 5000 buckets, an unknown tf or a missing bound 400; H3 /stats" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    amm_idx.now_ms = 7_000;
-    const e = try ReadEnv.init(a);
-    defer e.deinit();
-    const maps = try w.store.Maps.create(a, e.ms.store());
-    var placed = maps.map(null);
-
-    for ([_][]const u8{ "1m", "5m", "15m", "1h", "4h", "1d" }) |tf| {
-        const r = try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .candles, try std.fmt.allocPrint(a, "tf={s}&from=0&to=600000", .{tf}), 0);
-        try testing.expectEqual(@as(u64, 200), httpStatus(r));
-        const cs = (try jsonOf(a, httpBody(r))).array.items;
-        try testing.expectEqual(@as(usize, 1), cs.len);
-        const c = cs[0].object;
-        try testing.expectEqual(@as(i64, 0), c.get("t").?.integer);
-        try testing.expectEqual(@as(i64, 2), c.get("n").?.integer);
-        try testing.expect(c.get("o").?.object.get("sats").?.integer > 0 and c.get("o").?.object.get("tokens").?.integer > 0);
-        try testing.expect(c.get("volumeSats").?.integer > 20_000);
-        try testing.expect(c.get("volumeTokens").?.integer > 50_000);
-    }
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .candles, "tf=1m&from=7001&to=600000", 0)))).array.items.len);
-    try testing.expectEqual(@as(u64, 200), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .candles, "tf=1m&from=0&to=300000000", 0)));
-    for ([_][]const u8{ "tf=1m&from=0&to=300000001", "tf=2m&from=0&to=60000", "tf=1m&to=60000", "tf=1m&from=0", "from=0&to=60000", "tf=1m&from=10&to=5" }) |bad|
-        try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .candles, bad, 0)));
-
-    const st = (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .stats, "", 8_000)))).object;
-    try testing.expectEqualStrings(e.token, st.get("tokenId").?.string);
-    try testing.expect(st.get("lastTradePrice").?.object.get("sats").?.integer > 0);
-    try testing.expect(st.get("price") == null); // 0.40.0: the host's
-    // 0.48.0 (D4): no changes, TVL or pool count (the host's).
-    for ([_][]const u8{ "change1h", "change24h", "tvlSats", "tvlTokens", "pools" }) |k| try testing.expect(st.get(k) == null);
-    try testing.expectEqual(@as(usize, 10), st.count());
-    try testing.expectEqual(@as(i64, 1), st.get("buys24h").?.integer);
-    try testing.expectEqual(@as(i64, 1), st.get("sells24h").?.integer);
-    try testing.expectEqual(@as(i64, 7_000), st.get("lastTradeAt").?.integer);
-    try testing.expect(st.get("volume24hSats").?.integer > 20_000);
-    // 0.47.0: the token's lifetime counters (both Swaps).
-    try testing.expectEqual(@as(i64, 2), st.get("trades").?.integer);
-    try testing.expectEqual(st.get("volume24hSats").?.integer, st.get("volumeSats").?.integer);
-    try testing.expectEqual(st.get("volume24hTokens").?.integer, st.get("volumeTokens").?.integer);
-}
-
-test "pool history reads (0.40.0): /pools/at?t= — every pool listed at t, its state after its last event at or before t; /pools/history — the window's events oldest first, one pool or all, the limit; bad parameters 400" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    amm_idx.now_ms = 7_000; // the deploy and both Swaps at 7,000 (ReadEnv)
-    const e = try ReadEnv.init(a);
-    defer e.deinit();
-    const maps = try w.store.Maps.create(a, e.ms.store());
-    var placed = maps.map(null);
-    const s2 = w.beef.txidOf(unhex(a, vec.swap_tokens_in));
-
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsAt, "t=6999", 0)))).array.items.len);
-    const at = (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsAt, "t=7000", 0)))).array.items;
-    try testing.expectEqual(@as(usize, 1), at.len);
-    const row = at[0].object;
-    try testing.expectEqualStrings(try poolText(a), row.get("poolId").?.string);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(s2)}), row.get("outpoint").?.string);
-    try testing.expectEqual(@as(i64, vec.pool2.bsv), row.get("bsvReserve").?.integer);
-    try testing.expectEqual(@as(i64, vec.pool2.tokens), row.get("tokenReserve").?.integer);
-    try testing.expectEqualStrings(vec.lp, row.get("lpPubKey").?.string);
-    try testing.expectEqual(@as(i64, vec.lp_fee_bps), row.get("liquidityFeeBps").?.integer);
-    try testing.expectEqual(@as(i64, vec.validator_fee_bps), row.get("validationFeeBps").?.integer);
-    try testing.expectEqual(@as(i64, vec.commission_bps), row.get("commissionBps").?.integer);
-    try testing.expectEqualStrings(vec.identity, row.get("validatorIdentityKey").?.string);
-    try testing.expectEqual(@as(i64, 7_000), row.get("at").?.integer);
-    try testing.expectEqual(@as(i64, 2), row.get("swaps").?.integer);
-    try testing.expectEqual(@as(usize, 11), row.count());
-    for ([_][]const u8{ "", "t=x", "t=-1" }) |bad|
-        try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsAt, bad, 0)));
-
-    const h = (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "", 0)))).object;
-    try testing.expect(h.get("next").? == .null);
-    const evs = h.get("events").?.array.items;
-    try testing.expectEqual(@as(usize, 3), evs.len);
-    try testing.expectEqualStrings("deploy", evs[0].object.get("kind").?.string);
-    try testing.expectEqual(@as(i64, 0), evs[0].object.get("swaps").?.integer);
-    try testing.expect(evs[0].object.get("side") == null);
-    const sw = evs[2].object;
-    try testing.expectEqualStrings("swap", sw.get("kind").?.string);
-    try testing.expectEqualStrings(&w.header.toHex(s2), sw.get("txid").?.string);
-    try testing.expectEqualStrings("sell", sw.get("side").?.string);
-    try testing.expectEqual(@as(i64, 50_000), sw.get("amountIn").?.integer);
-    try testing.expectEqual(@as(i64, 150), sw.get("feeLp").?.integer);
-    try testing.expectEqual(@as(usize, 40), sw.get("payoutPkh").?.string.len);
-    try testing.expectEqualStrings(vec.commission_pkh, sw.get("commissionPkh").?.string);
-    // Forward paging: limit=1 page by page through `next` (104 hex: at ‖ poolId ‖ seq) gives every event once, in order.
-    var seen: std.ArrayList([]const u8) = .empty;
-    var q: []const u8 = "limit=1";
-    var pages: usize = 0;
-    while (true) : (pages += 1) {
-        const pg = (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, q, 0)))).object;
-        const items = pg.get("events").?.array.items;
-        try testing.expectEqual(@as(usize, 1), items.len);
-        try seen.append(a, items[0].object.get("kind").?.string);
-        if (pg.get("next").? == .null) break;
-        const nx = pg.get("next").?.string;
-        try testing.expectEqual(@as(usize, 104), nx.len);
-        q = try std.fmt.allocPrint(a, "limit=1&after={s}", .{nx});
-        try testing.expect(pages < 5);
-    }
-    try testing.expectEqual(@as(usize, 3), seen.items.len);
-    try testing.expectEqualStrings("deploy", seen.items[0]);
-    try testing.expectEqualStrings("swap", seen.items[2]);
-    try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "after=zz", 0)));
-    try testing.expectEqual(@as(usize, 3), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, try std.fmt.allocPrint(a, "from=7000&to=7001&pool={s}", .{try poolText(a)}), 0)))).object.get("events").?.array.items.len);
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "pool=" ++ unknown_pool, 0)))).object.get("events").?.array.items.len);
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "to=7000", 0)))).object.get("events").?.array.items.len);
-    for ([_][]const u8{ "limit=501", "limit=0", "from=x", "pool=02ab", "outpoint=zz" }) |bad|
-        try testing.expectEqual(@as(u64, 400), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, bad, 0)));
-    // `outpoint` is the wallet's pool output: the scan starts strictly after that record.
-    const deploy = try poolText(a);
-    const after_deploy = (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, try std.fmt.allocPrint(a, "outpoint={s}", .{deploy}), 0)))).object.get("events").?.array.items;
-    try testing.expectEqual(@as(usize, 2), after_deploy.len);
-    try testing.expectEqualStrings("swap", after_deploy[0].object.get("kind").?.string);
-    try testing.expectEqualStrings("swap", after_deploy[1].object.get("kind").?.string);
-    const newest = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(s2)});
-    try testing.expectEqual(@as(usize, 0), (try jsonOf(a, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, try std.fmt.allocPrint(a, "outpoint={s}", .{newest}), 0)))).object.get("events").?.array.items.len);
-    try testing.expectEqual(@as(u64, 404), httpStatus(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "outpoint=" ++ unknown_pool, 0)));
 }
 
 test "spends (0.40.0, VERIFY): /spends answers spentBy for a plain sats output a Swap spent — the taker's funding output fund:1, spent by swap_bsv_in, held by the chain state as the overlay's admission leaves it" {
@@ -1123,27 +992,3 @@ test "spends (0.40.0, VERIFY): /spends answers spentBy for a plain sats output a
     try testing.expect((try reads.spendOf(&e.ch, .{ .txid = fund, .vout = 3 })).spent_by == null);
 }
 
-test "pool events (0.41.0): each emitted event's row is the `/pools/history` row byte for byte — the route's JSON is the events' rows' JSON in order" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    amm_idx.now_ms = 7_000;
-    const e = try ReadEnv.init(a);
-    defer e.deinit();
-    const maps = try w.store.Maps.create(a, e.ms.store());
-    var placed = maps.map(null);
-    // The deploy and the two Swaps ReadEnv admitted: three pool events, in order.
-    const evs = e.svc.events.items;
-    try testing.expectEqual(@as(usize, 3), evs.len);
-    var want: std.ArrayList(u8) = .empty;
-    try want.appendSlice(a, "{\"events\":[");
-    for (evs, 0..) |ev, i| {
-        try testing.expectEqualStrings("pool", ev.getText("event").?);
-        try testing.expectEqualStrings(try std.fmt.allocPrint(a, "ls_amm_{s}", .{e.token}), ev.getText("topic").?);
-        try testing.expectEqualStrings(e.token, ev.getText("tokenId").?);
-        if (i > 0) try want.append(a, ',');
-        try want.appendSlice(a, try reads.valueJson(a, ev.get("row").?));
-    }
-    try want.appendSlice(a, "],\"next\":null}");
-    try testing.expectEqualStrings(want.items, httpBody(try reads.historyRead(a, &e.svc, &e.ch, &placed, e.token, .poolsHistory, "", 0)));
-}

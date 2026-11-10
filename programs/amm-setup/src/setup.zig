@@ -76,15 +76,16 @@ pub fn tokenRecord(a: Allocator, d: Deploy) !Value {
 /// One registration: the engine's fn and its argument.
 pub const Registration = struct { func: []const u8, arg: Value };
 
-/// The three registrations, in order: the topic (seeded with the deploy), its 1Color lookup, the
-/// AMM lookup.
-pub fn registrations(a: Allocator, d: Deploy) ![3]Registration {
+/// The three registrations, in order: the topic, seeded with the deploy's BEEF (`seed`: the door's
+/// envelope; 0.49.0, skein-overlay 0.25.0: the engine submits a registered seed itself, the same
+/// submission a wallet's would be), its 1Color lookup, the AMM lookup.
+pub fn registrations(a: Allocator, d: Deploy, seed: Value) ![3]Registration {
     const topics: Value = .{ .array = try a.dupe(Value, &.{.{ .text = d.topic }}) };
     return .{
         .{ .func = "register", .arg = try map(a, &.{
             .{ .key = "topic", .value = .{ .text = d.topic } },
             .{ .key = "program", .value = .{ .text = topic_program } },
-            .{ .key = "seed", .value = .{ .array = try a.dupe(Value, &.{.{ .text = d.txid }}) } },
+            .{ .key = "seed", .value = seed },
         }) },
         .{ .func = "registerLookup", .arg = try map(a, &.{
             .{ .key = "service", .value = .{ .text = d.lookup } },
@@ -105,26 +106,6 @@ pub fn refusalOf(a: Allocator, func: []const u8, ans: Value) !?[]const u8 {
     if (ans.get("result")) |r| if (r == .map) return null;
     const msg = if (ans.get("error")) |e| e.getText("message") orelse "" else "";
     return try std.fmt.allocPrint(a, "{s} refused by the engine: {s}", .{ func, if (msg.len > 0) msg else "no result" });
-}
-
-/// Whether the topic's register answer took the deploy: its `seeded` names `txid`. Not seeded
-/// (`missing`: the chain app does not hold it yet) → main.zig submits the deploy to the engine.
-pub fn seeded(ans: Value, txid: []const u8) bool {
-    const r = ans.get("result") orelse return false;
-    for (r.getArray("seeded") orelse return false) |x| if (x == .text and eql(u8, x.text, txid)) return true;
-    return false;
-}
-
-/// The submission of the deploy to this instance's own engine (the validator's form, amm-validator
-/// submit.zig): `{fn: "submit", args: {beef: <bytes>, topics: [<topic>]}}`, in the box `<app>/submit`.
-pub fn submitBody(a: Allocator, wire: []const u8, topic: []const u8) !Value {
-    return map(a, &.{
-        .{ .key = "fn", .value = .{ .text = "submit" } },
-        .{ .key = "args", .value = try map(a, &.{
-            .{ .key = "beef", .value = .{ .bytes = wire } },
-            .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = topic }}) } },
-        }) },
-    });
 }
 
 /// The `/token` answer's JSON: the record's fields (text and numbers), or null when there is none.

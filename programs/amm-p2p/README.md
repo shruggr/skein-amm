@@ -1,5 +1,8 @@
 # amm-p2p
 
+> **0.49.0 (unreleased, branch `recognizers`)**: see CHANGELOG.md "Unreleased". Sections below that
+> describe the lookup's maps, the history reads, the Rescind or the `relay` commission key are history.
+
 The AMM app's **functions** (interfaces `amm.swap/1`: `terms`; `amm.pool/1`: `terms`, `affirm`), its **read routes**, the **market record** and the app's pages, with the proofs-by-block direct call and the catch-up pass as utilities nothing routes or schedules (#2, the pull half of proof sync), as one [skein](https://github.com/shruggr/skein) program (Zig 0.16.0, wasm32-wasi), the `amm-p2p` program of the `amm` app (`etc/app.json`). 0.44.0: **no swap relay** here — the open-exchange host relays (below). The design notes cited below are amm-poc's docs/notes.md.
 
 ```

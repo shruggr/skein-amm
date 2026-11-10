@@ -1,5 +1,8 @@
 # amm-validator
 
+> **0.49.0 (unreleased, branch `recognizers`)**: see CHANGELOG.md "Unreleased". Sections below that
+> describe the lookup's maps, the history reads, the Rescind or the `relay` commission key are history.
+
 The AMM validator as a [skein](https://github.com/shruggr/skein) handler program (Zig 0.16.0, wasm32-wasi), the `amm-validator` program of the `amm` app (`etc/app.json`). Ported from amm-poc `programs/amm-validator` onto skein-overlay 0.6.0 and skein-1color 0.4.0 (below, "Port"), and in 0.2.0 onto skein-overlay 0.7.4 and skein-1color 0.5.0 (below, "0.2.0"). A taker (or the LP) builds, funds and signs the whole transaction and sends it to the validator in a **direct call** (what libp2p calls a stream). The validator checks it against the pool state and its policy, signs the pool input only with its rotating key, submits the signed transaction to its own overlay (the same submit `POST /submit` runs), and answers once that submission has been decided: the signed transaction, or the refusal (with the pool's newest state when it lost a race). The design notes are amm-poc's docs/notes.md, "Overlay and communication layer on skein (2026-09-29)" and the 2026-10-01 entries.
 
 ```

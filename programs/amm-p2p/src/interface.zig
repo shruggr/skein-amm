@@ -18,6 +18,7 @@
 //! `affirm` in-VM, which answers at once (`affirmAnswer`): `{validatorPubKey, nonce, signature}`
 //! (0.13.0: the validator picks the nonce and its key), or the refusal.
 const std = @import("std");
+const pool = @import("pool");
 const w = @import("chain");
 const scbor = @import("sdk_cbor");
 
@@ -42,29 +43,23 @@ pub const fn_pool_affirm = "amm.pool.affirm";
 pub const affirm_protocol = "/amm-validator/1/affirm";
 pub const affirm_box = "affirm";
 
-/// This exchange's commission: a swap the host relays must pay its commission output to `pkh` (a
-/// pool whose CommissionBps is 0 has none, and passes; README "The commission rule": the host's
-/// check, 0.44.0). The page learns `pkh` from `amm.swap.terms` and names it as Swap's
-/// commissionPkh. 0.16.0: hash160 of this instance's own key for the commission,
-/// `commission_protocol` / `commission_key_id`, counterparty anyone (main.zig `commissionKey`);
-/// null only when the signer gives no key.
+/// This exchange's commission (0.49.0, David 2026-11-09 "COMMISSION KEY PER SWAP"): a key PER SWAP,
+/// the child of this instance's identity key under `commission_protocol` (src/pool.zig: BRC-43 level
+/// 1, `amm commission`), keyed by the pool outpoint the leg SPENDS (`<txid>_<vout>`), counterparty
+/// anyone: anyone derives it from the identity (src/pool.zig `commissionPkh`; the pages' client
+/// web/ui lib/keys.ts `deriveCommissionPubKey`). The terms answer the IDENTITY (`identityKey`), not a
+/// key hash; the 0.16.0 key `relay` is gone.
 pub const Commission = struct {
-    pkh: ?[20]u8 = null,
+    identity: ?[33]u8 = null,
 };
 
-/// The relay's commission key (0.16.0, the agent's call, "David to review"): BRC-43 security
-/// level 1, protocol `amm commission`, key ID `relay`, counterparty `anyone`, the child of the
-/// instance's root identity key, as the validator's keys are (`amm pool`, level 1, anyone:
-/// src/pool.zig `validator_protocol`): anyone can derive the public key from the identity, only
-/// the instance can sign for it.
-pub const commission_protocol = .{ .level = 1, .name = "amm commission" };
-pub const commission_key_id = "relay";
+pub const commission_protocol = .{ .level = pool.commission_protocol.security_level, .name = pool.commission_protocol.name };
 
-/// amm.swap.terms `{}` → `{commissionPkh: bytes(20) | null, minCommissionBps}` (0.16.0: the
-/// market record root sets, market.zig; unset, 0).
+/// amm.swap.terms `{}` → `{identityKey: bytes(33) | null, minCommissionBps}` (0.49.0: the identity
+/// the commission keys derive from; 0.16.0: the market record root sets, market.zig; unset, 0).
 pub fn terms(a: Allocator, c: Commission, m: market.Market) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "commissionPkh", .value = if (c.pkh) |p| .{ .bytes = try a.dupe(u8, &p) } else .null },
+        .{ .key = "identityKey", .value = if (c.identity) |p| .{ .bytes = try a.dupe(u8, &p) } else .null },
         .{ .key = "minCommissionBps", .value = .{ .uint = m.min_commission_bps } },
     }) };
 }

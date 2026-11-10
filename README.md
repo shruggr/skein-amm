@@ -1,5 +1,8 @@
 # skein-amm
 
+> **0.49.0 (unreleased, branch `recognizers`)**: see CHANGELOG.md "Unreleased". Sections below that
+> describe the lookup's maps, the history reads, the Rescind or the `relay` commission key are history.
+
 A non-custodial BSV ↔ token AMM over 1Color tokens (BRC-162): the AMM
 LIBRARY of the Open Exchange. It holds the **token app** `amm` (this
 repository's root: the overlay engine, the 1Color components and the AMM's

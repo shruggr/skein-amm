@@ -1,20 +1,9 @@
-//! amm-lookup, natively: the index maintained through the hooks (admitted,
-//! spent, rejected) over the real fixtures (src/fixtures/vectors.zig,
-//! gen/vectors), the pool checks `admitted` runs (only pools that pass are
-//! indexed), the queries, and the answer shape. See README.md.
-//!
-//! The hooks are called directly (`idx.admitted` / `idx.spent` /
-//! `idx.rejected`), as skein's engine would call them (docs/OVERLAY.md, "The
-//! lookup contract") but without the submit/step machinery around them —
-//! that machinery (parsing a BEEF once, judging topics, persisting only on
-//! admission) is skein-overlay's own, already tested there (its test.zig).
-//! What is this service's own is the index and the queries, which is what
-//! these tests cover.
-//!
-//! The three-hop follow test holds the hops in a chain state (skein-sdk
-//! `chain.state.State`, `putTx`: what the chain app records), whose `spent`
-//! the walk reads, and runs the hooks for each hop: a focused unit test of
-//! `answerOutpoint`'s walk.
+//! amm-lookup, natively (0.49.0: the recognizer): the hooks (admitted, spent, rejected) over the
+//! real fixtures (src/fixtures/vectors.zig, gen/vectors), the events they emit, the summaries they
+//! store, the fees that are ours, the queries. The hooks are called directly, as skein-overlay's
+//! engine calls them; a step's events are committed to an in-memory event index (`Index`) only
+//! when the step ends (`Env.commit`), as the kernel indexes a step's emits when its update is
+//! written: a hook never reads its own step's emits.
 const std = @import("std");
 const w = @import("chain");
 const lookup = @import("lookup");
@@ -170,7 +159,68 @@ fn buildSpend(a: Allocator, prev: bsvz.transaction.Transaction, prev_vout: u32, 
     return .{ .raw = raw, .txid = w.beef.txidOf(raw), .tx = try bsvz.transaction.Transaction.parse(a, raw) };
 }
 
-// ---------------------------------------------------------------- tests
+// ---------------------------------------------------------------- the event index (the tests')
+
+/// What the kernel's event index would hold: every committed emit, in log order.
+const Index = struct {
+    var a: Allocator = undefined;
+    var names: std.ArrayList([]const u8) = .empty;
+    var records: std.ArrayList(Value) = .empty;
+
+    fn reset(al: Allocator) void {
+        a = al;
+        names = .empty;
+        records = .empty;
+    }
+
+    fn put(name: []const u8, rec: Value) !void {
+        try names.append(a, name);
+        try records.append(a, rec);
+    }
+
+    fn item(al: Allocator, name: []const u8, rec: Value) !Value {
+        return .{ .map = try al.dupe(Entry, &.{ .{ .key = "name", .value = .{ .text = name } }, .{ .key = "record", .value = rec } }) };
+    }
+
+    /// `{name | prefix, latest?}`, as skein's `events` answers it: in name order, then log order.
+    fn read(al: Allocator, q: Value) anyerror!Value {
+        const latest = q.getBool("latest") orelse false;
+        var out: std.ArrayList(Value) = .empty;
+        if (q.getText("name")) |n| {
+            var last: ?Value = null;
+            for (names.items, records.items) |x, r| if (std.mem.eql(u8, x, n)) {
+                if (latest) last = r else try out.append(al, try item(al, x, r));
+            };
+            if (last) |r| try out.append(al, try item(al, n, r));
+            return .{ .array = out.items };
+        }
+        const p = q.getText("prefix") orelse return error.BadQuery;
+        var seen: std.ArrayList([]const u8) = .empty;
+        for (names.items) |x| if (std.mem.startsWith(u8, x, p)) {
+            for (seen.items) |s| {
+                if (std.mem.eql(u8, s, x)) break;
+            } else try seen.append(al, x);
+        };
+        std.mem.sort([]const u8, seen.items, {}, struct {
+            fn f(_: void, l: []const u8, r: []const u8) bool {
+                return std.mem.order(u8, l, r) == .lt;
+            }
+        }.f);
+        for (seen.items) |n| {
+            const one = try read(al, .{ .map = try al.dupe(Entry, &.{ .{ .key = "name", .value = .{ .text = n } }, .{ .key = "latest", .value = .{ .boolean = latest } } }) });
+            try out.appendSlice(al, one.array);
+        }
+        return .{ .array = out.items };
+    }
+
+    fn count(prefix: []const u8) usize {
+        var n: usize = 0;
+        for (names.items) |x| n += @intFromBool(std.mem.startsWith(u8, x, prefix));
+        return n;
+    }
+};
+
+// ---------------------------------------------------------------- the environment
 
 const Env = struct {
     ms: w.store.MemStore,
@@ -188,6 +238,12 @@ const Env = struct {
         e.service = st.service;
         e.topic = st.topic;
         e.token = st.token;
+        Index.reset(a);
+        idx.reader = Index.read;
+        idx.app = "amm";
+        idx.self_identity = null;
+        idx.filings = .empty;
+        idx.now_ms = 1000;
         return e;
     }
     fn deinit(self: *Env) void {
@@ -196,48 +252,79 @@ const Env = struct {
     fn svc(self: *Env, a: Allocator) !lookup.Service {
         return lookup.Service.load(a, self.ms.store(), self.service, idx.spec.maps, null);
     }
-    /// The chain state (empty: what the chain app holds), read by `{outpoint}`'s walk.
     fn chain(self: *Env, a: Allocator) !lookup.Chain {
         return lookup.Chain.load(a, self.ms.store(), null, .regtest);
     }
     fn q(self: *Env, a: Allocator, rest: []const Entry) !Value {
         return query(a, self.token, rest);
     }
-    /// `admitted` on fixture `name` (or a variant of it, same txid).
-    fn admit(self: *Env, a: Allocator, s: *lookup.Service, name: []const u8, t: ?bsvz.transaction.Transaction, outs: []const u32, coins: []const u32) !void {
-        try idx.admitted(a, s, self.topic, try ltx(a, self.f.txid(name), t orelse self.f.tx(name)), outs, coins);
+    /// The step ends: its emits enter the index.
+    fn commit(_: *Env, s: *lookup.Service) !void {
+        for (s.events.items) |ev| try Index.put(ev.getText("event").?, ev);
+        s.events = .empty;
+    }
+    /// One admission step: `admitted` on fixture `name` (or a variant `t` of it), then `spent` for
+    /// each previous coin `prev` it consumed, then the commit.
+    fn admit(self: *Env, a: Allocator, s: *lookup.Service, name: []const u8, t: ?bsvz.transaction.Transaction, outs: []const u32, prev: []const lookup.Outpoint) !void {
+        const lt = try ltx(a, self.f.txid(name), t orelse self.f.tx(name));
+        try idx.admitted(a, s, self.topic, lt, outs, &.{});
+        for (prev) |p| try idx.spent(a, s, self.topic, p, lt);
+        try self.commit(s);
+    }
+    fn reject(self: *Env, a: Allocator, s: *lookup.Service, name: []const u8, t: ?bsvz.transaction.Transaction) !void {
+        try idx.rejected(a, s, self.topic, try ltx(a, self.f.txid(name), t orelse self.f.tx(name)));
+        try self.commit(s);
+    }
+    fn op(self: *Env, name: []const u8, vout: u32) lookup.Outpoint {
+        return .{ .txid = self.f.txid(name), .vout = vout };
+    }
+    fn live(self: *Env, a: Allocator, s: *lookup.Service) ![]const Value {
+        var ch = try self.chain(a);
+        return (try idx.answer(a, s, &ch, try self.q(a, &.{}))).freeform.array;
+    }
+    /// deploy → a buy (swap_bsv_in) → a sell (swap_tokens_in), each its own step.
+    fn threeHops(self: *Env, a: Allocator, s: *lookup.Service) !void {
+        try self.admit(a, s, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+        try self.admit(a, s, "swap_bsv_in", null, &.{ 0, 1 }, &.{self.op("pool_deploy", 0)});
+        try self.admit(a, s, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ self.op("swap_bsv_in", 0), self.op("swap_bsv_in", 1) });
     }
 };
 
-test "names: a query's tokenId <txid>, <txid>_0 or <txid>.0 is the topic tm_color_<txid>_0, <txid>_<vout> is tm_color_<txid>_<vout>; other ids are refused" {
+fn latestRow(a: Allocator, name: []const u8) !?Value {
+    return idx.latestOf(a, name);
+}
+
+fn poolIdOfEnv(a: Allocator, e: *Env) ![]const u8 {
+    return opStr(a, e.f.txid("pool_deploy"), 0);
+}
+
+// ---------------------------------------------------------------- tests
+
+test "names: a query's tokenId <txid>, <txid>_0 or <txid>.0 is the topic tm_color_<txid>_0, <txid>_<vout> is tm_color_<txid>_<vout>; other ids are refused; the event names" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const hex = "0102030405060708091011121314151617181920212223242526272829303132";
-    // skein-1color 0.4.0 token ids: a 1Color-originated token prints the bare <txid>, a
-    // BSV-21-originated one <txid>_<vout>; every form names the same token and topic.
-    // The topic is `tm_color_<assetId>` (BRC-207, skein-1color 0.9.0, David Case 2026-10-08).
     try testing.expectEqualStrings("tm_color_" ++ hex ++ "_0", try idx.topicOf(a, hex));
     try testing.expectEqualStrings("tm_color_" ++ hex ++ "_0", try idx.topicOf(a, hex ++ "_0"));
     try testing.expectEqualStrings("tm_color_" ++ hex ++ "_0", try idx.topicOf(a, hex ++ ".0"));
     try testing.expectEqualStrings("tm_color_" ++ hex ++ "_17", try idx.topicOf(a, hex ++ "_17"));
-    try testing.expectEqualStrings("tm_color_" ++ hex ++ "_17", try idx.topicOf(a, hex ++ ".17"));
     try testing.expectError(error.BadQuery, idx.topicOf(a, hex ++ "_017"));
     try testing.expectError(error.BadQuery, idx.topicOf(a, "abcd_0"));
-    try testing.expectEqual(pool.bsv21.Kind.legacy, idx.tokenIdOf("tm_color_" ++ hex ++ "_17").?.kind);
-    try testing.expectEqual(pool.bsv21.Kind.native, idx.tokenIdOf("tm_color_" ++ hex ++ "_0").?.kind);
     try testing.expect(idx.tokenIdOf("tm_color") == null);
-    try testing.expect(idx.tokenIdOf("tm_color_" ++ hex) == null);
-    try testing.expect(idx.tokenIdOf("tm_" ++ hex ++ "_0") == null); // the old name: no alias
-    try testing.expect(idx.tokenIdOf("tm_" ++ hex) == null);
-    // The names before BRC-207's wire names (skein-1color 0.10.0, 2026-10-21): no alias.
     try testing.expect(idx.tokenIdOf("tm_mandala_" ++ hex ++ "_0") == null);
-    try testing.expectError(error.BadQuery, idx.topicOf(a, "tm_mandala_" ++ hex ++ "_0"));
-    // Its index is `<app>/ls_amm` whatever name it is served as (skein-overlay 0.11.0).
     try testing.expectEqualStrings("ls_amm", idx.spec.index.?);
+    // 0.49.0: the summaries only.
+    try testing.expectEqual(@as(usize, 1), idx.maps.len);
+    idx.app = "amm";
+    const txid = try w.header.fromHex(hex);
+    try testing.expectEqualStrings("amm/pool/" ++ hex ++ "_3", try idx.poolName(a, hex ++ "_3"));
+    try testing.expectEqualStrings("amm/output/" ++ hex ++ ".3", try idx.outputName(a, txid, 3));
+    try testing.expectEqualStrings("amm/hop", try idx.hopName(a));
+    try testing.expectEqualStrings("amm/commission/" ++ hex ++ ".4", try idx.commissionName(a, txid, 4));
 }
 
-test "queries: one service over every token, each query naming its token; a query without one is refused" {
+test "deploy: an affirmed pool deploy is emitted as its hop under amm/pool/<poolId>, amm/output/<op> and amm/hop; the live list answers it; a re-admission emits nothing; another token, another topic nothing" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -245,1724 +332,433 @@ test "queries: one service over every token, each query naming its token; a quer
     defer e.deinit();
     var svc = try e.svc(a);
     var ch = try e.chain(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, .{ .map = &.{} }));
-    // Another token: nothing of it is indexed.
+    const pd = e.f.txid("pool_deploy");
+    const pid = try poolIdOfEnv(a, e);
+
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{}); // a dupe hook call
+    try testing.expectEqual(@as(usize, 3), Index.names.items.len);
+    const row = (try latestRow(a, try idx.poolName(a, pid))).?;
+    try testing.expectEqualStrings("deploy", row.getText("kind").?);
+    try testing.expectEqualStrings(&w.header.toHex(pd), row.getText("txid").?);
+    try testing.expectEqualStrings(e.token, row.getText("tokenId").?);
+    try testing.expectEqualStrings(pid, row.getText("poolId").?);
+    try testing.expectEqualStrings(pid, row.getText("outpoint").?);
+    try testing.expectEqual(@as(u64, vec.pool0.bsv), row.getUint("bsvReserve").?);
+    try testing.expectEqual(@as(u64, vec.pool0.tokens), row.getUint("tokenReserve").?);
+    try testing.expectEqualStrings(vec.lp, row.getText("lpPubKey").?);
+    try testing.expectEqualStrings(vec.identity, row.getText("validatorIdentityKey").?);
+    try testing.expectEqual(@as(u64, 1000), row.getUint("at").?);
+    try testing.expectEqual(@as(u64, 0), row.getUint("swaps").?);
+    try testing.expectEqualStrings(vec.nonce, row.getText("keyId").?);
+    // The same row under the output's name and the instance-wide name.
+    try testing.expectEqualStrings("deploy", (try latestRow(a, try idx.outputName(a, pd, 0))).?.getText("kind").?);
+    try testing.expectEqualStrings(pid, (try latestRow(a, "amm/hop")).?.getText("poolId").?);
+
+    // {tokenId}: THE pool row (0.48.0 shape: 12 fields, `lifetime` last).
+    const all = try e.live(a, &svc);
+    try testing.expectEqual(@as(usize, 1), all.len);
+    try testing.expectEqual(@as(usize, 12), all[0].map.len);
+    try testing.expectEqualStrings("poolId", all[0].map[0].key);
+    try testing.expectEqualStrings("outpoint", all[0].map[1].key);
+    try testing.expectEqualStrings("lifetime", all[0].map[11].key);
+    try testing.expect(all[0].get("lifetime").?.get("lastTradeAt").? == .null);
+    // Another token: nothing of it.
     const other = try query(a, "0102030405060708091011121314151617181920212223242526272829303132_0", &.{});
     try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, other)).freeform.array.len);
-    try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
+    try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, .{ .map = &.{} }));
+    // Another topic's call: nothing.
+    try idx.admitted(a, &svc, "tm_demo", try ltx(a, pd, e.f.tx("pool_deploy")), &.{0}, &.{});
+    try testing.expectEqual(@as(usize, 0), svc.events.items.len);
 }
 
-test "admitted: a pool deploy that passes the checks is indexed once, and the answer matches the engine's PoolState shape" {
+test "listing: pools that fail the pool checks, and deploys that do not attest themselves, are not emitted" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    const pd_txid = e.f.txid("pool_deploy");
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0}); // a dupe hook call
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-
-    // {} — every live pool, in the engine's PoolState shape plus `outpoint`.
-    const all = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-    try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
-    const entry = all.freeform.array[0];
-    try testing.expectEqualStrings(try opStr(a, pd_txid, 0), entry.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, vec.pool0.bsv), entry.get("bsvReserve").?.uint);
-    try testing.expectEqual(@as(u64, vec.pool0.tokens), entry.get("tokenReserve").?.uint);
-    try testing.expectEqual(@as(u64, vec.lp_fee_bps), entry.get("liquidityFeeBps").?.uint);
-    try testing.expectEqual(@as(u64, vec.validator_fee_bps), entry.get("validationFeeBps").?.uint);
-    try testing.expectEqual(@as(u64, vec.commission_bps), entry.get("commissionBps").?.uint);
-    try testing.expectEqualStrings(vec.identity, entry.getText("validatorIdentityKey").?);
-    // 0.34.0: the pool's LpPubKey (its id) in the answer; no `lastSeen` (the liveness join is the host's).
-    try testing.expectEqualStrings(vec.lp, entry.getText("lpPubKey").?);
-    try testing.expect(entry.get("lastSeen") == null);
-    // 0.40.0: its id (the deploy's outpoint) and its swap count.
-    try testing.expectEqualStrings(try opStr(a, pd_txid, 0), entry.getText("poolId").?);
-    try testing.expectEqual(@as(u64, 0), entry.get("swaps").?.uint);
-    // 0.47.0: the pool's counters, `lifetime` (no Swap yet: zeros, lastTradeAt null).
-    // 0.48.0 (D1): THE pool row (poolRowFields: `at` too) and `lifetime`, 12 fields.
-    try testing.expectEqual(@as(usize, 12), entry.map.len);
-    try testing.expectEqualStrings("poolId", entry.map[0].key);
-    try testing.expectEqualStrings("outpoint", entry.map[1].key);
-    try testing.expect(entry.get("at") != null);
-    try testing.expectEqual(@as(u64, 0), entry.get("lifetime").?.get("satsIn").?.uint);
-    try testing.expect(entry.get("lifetime").?.get("lastTradeAt").? == .null);
-    // The dupe wrote one deploy event.
-    try testing.expectEqual(@as(usize, 1), try svc.map("history").count());
-    // 0.48.0 (D1): ONE record per hop — `pools` links the deploy's history row itself.
-    const pooled = (try svc.map("pools").prefixed(&.{}))[0].value.cid;
-    try testing.expectEqualSlices(u8, (try svc.map("history").prefixed(&.{}))[0].value.cid, pooled);
-    try testing.expectEqualStrings("deploy", (try svc.store.getValue(a, pooled)).getText("kind").?);
-
-    // {outpoint}: a direct hit is 0 hops.
-    const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }});
-    const direct = try idx.answer(a, &svc, &ch, q);
-    try testing.expectEqual(@as(u64, 0), direct.freeform.get("hops").?.uint);
-    try testing.expectEqualStrings(try opStr(a, pd_txid, 0), direct.freeform.get("current").?.getText("outpoint").?);
-
-    // {outpoint, beef: true}: the output-list form for a taker's spend.
-    const bq = try e.q(a, &.{ .{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }, .{ .key = "beef", .value = .{ .boolean = true } } });
-    const beef_ans = try idx.answer(a, &svc, &ch, bq);
-    try testing.expectEqual(@as(usize, 1), beef_ans.output_list.len);
-    try testing.expectEqualSlices(u8, &pd_txid, &beef_ans.output_list[0].txid);
-    try testing.expectEqual(@as(u32, 0), beef_ans.output_list[0].vout);
-}
-
-test "admitted: pools the topic admitted but that fail the pool checks are not indexed" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const f = e.f;
-    const pd = f.tx("pool_deploy");
+    const pd = e.f.tx("pool_deploy");
     const pd_script = pd.outputs[0].locking_script.bytes;
-
-    // The judgement agrees with pool.check on each case.
-    const S = struct {
-        fn expectNot(al: Allocator, en: *Env, sv: *lookup.Service, name: []const u8, t: bsvz.transaction.Transaction, outs: []const u32, coins: []const u32, want: pool.Violation) !void {
-            const got = try idx.judge(al, .{ .txid = en.f.id }, try ltx(al, en.f.txid(name), t), outs);
-            try testing.expectEqual(want, got.?);
-            try en.admit(al, sv, name, t, outs, coins);
-            try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
-        }
-    };
-
-    // Prefix amount one lower than the state's TokenReserve.
     var buf: [10]u8 = undefined;
-    const low = try cat(a, &.{ &.{0x20}, &f.id, pool.brc162.pushAmount(&buf, vec.pool0.tokens - 1), &.{0x6d}, pool.brc162.decode(pd_script).?.lock });
-    try S.expectNot(a, e, &svc, "pool_deploy", try withOutput(a, pd, 0, low), &.{ 0, 1, 2 }, &.{0}, .prefix_mismatch);
-
-    // A pool at output 1 (outputs 0 and 1 swapped).
-    var swapped = pd;
-    const outs = try a.dupe(bsvz.transaction.Output, pd.outputs);
-    std.mem.swap(bsvz.transaction.Output, &outs[0], &outs[1]);
-    swapped.outputs = outs;
-    try S.expectNot(a, e, &svc, "pool_deploy", swapped, &.{ 0, 1, 2 }, &.{0}, .not_at_output_0);
-
-    // The real ones pass.
-    try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")), &.{ 0, 2, 3, 4 }) == null);
-    try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("close"), f.tx("close")), &.{1}) == null);
-    try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, f.txid("rescind"), f.tx("rescind")), &.{0}) == null);
+    const low = try cat(a, &.{ &.{0x20}, &e.f.id, pool.brc162.pushAmount(&buf, vec.pool0.tokens - 1), &.{0x6d}, pool.brc162.decode(pd_script).?.lock });
+    try e.admit(a, &svc, "pool_deploy", try withOutput(a, pd, 0, low), &.{ 0, 1, 2 }, &.{});
+    for ([_][]const u8{ "pool_deploy_unaffirmed", "pool_deploy_forged", "pool_deploy_own_key" }) |nm| try e.admit(a, &svc, nm, null, &.{ 0, 1, 2 }, &.{});
+    try testing.expectEqual(@as(usize, 0), Index.names.items.len);
 }
 
-test "admitted: a pool's CommissionBps is answered as commissionBps (0: a pool with no commission)" {
+test "swap: a Swap's continuation of a listed pool is its next hop — the pool id copied, swaps + 1, the trade, keyId the spent outpoint, feeVouts; the counters; a continuation naming another next key is not listed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    // The deploy with CommissionBps OP_10 rewritten to OP_0. The lock's
-    // commission slot (template offset 723) sits one byte later, after
-    // lpFeeBps' two-byte push (the pool test of the slot, test.zig).
-    const pd = e.f.tx("pool_deploy");
-    const script = try a.dupe(u8, pd.outputs[0].locking_script.bytes);
-    const at = script.len - pool.brc162.decode(script).?.lock.len + 724;
-    try testing.expectEqual(@as(u8, 0x5a), script[at]);
-    script[at] = 0x00;
-    // The affirmation signs the pool's fees, so a rewritten script is not affirmed: the pool is
-    // not listed (not indexed). The pool still reads the commission as 0.
-    try e.admit(a, &svc, "pool_deploy", try withOutput(a, pd, 0, script), &.{ 0, 1, 2 }, &.{0});
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-    const pf = idx.poolAt(e.f.txid("pool_deploy"), 0, script, vec.pool0.bsv).?;
-    try testing.expectEqual(@as(i64, 0), pf.commission_bps);
-}
-
-test "listing (0.13.0): a continuation is listed only when it is a Swap of a listed pool naming the next key (the spent outpoint's child)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    const f = e.f;
-    var ch = try e.chain(a);
-    const pd = f.tx("pool_deploy");
-    const sw = f.tx("swap_bsv_in");
-
-    // The coins retained do not matter: the affirmation is the pool output's own.
-    {
-        var sv = try e.svc(a);
-        try e.admit(a, &sv, "pool_deploy", pd, &.{ 0, 1, 2 }, &.{});
-        try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &sv, &ch, try e.q(a, &.{}))).freeform.array.len);
-        try idx.rejected(a, &sv, e.topic, try ltx(a, f.txid("pool_deploy"), pd));
-        try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
-    }
-
-    // Not listed: a swap keeping the pre-swap key; the fixture swap naming another next key
-    // (the contract took it: the validator signed); a pool-shaped output 0 of a Close (its
-    // outputs are free), carrying the next key.
-    const next_key = try pool.validatorKey(a, key33(vec.identity), f.txid("pool_deploy"), 0);
-    const close_like = try buildSpend(a, pd, 0, &.{0x51}, sw.outputs[0].locking_script.bytes, 900_000, null);
-    for ([_]struct { txid: [32]u8, t: bsvz.transaction.Transaction }{
-        .{ .txid = f.txid("swap_bsv_in"), .t = try withOutput(a, sw, 0, try withValidator(a, sw.outputs[0].locking_script.bytes, key33(vec.pool0.validator))) },
-        .{ .txid = f.txid("swap_bad_next"), .t = f.tx("swap_bad_next") },
-        .{ .txid = close_like.txid, .t = close_like.tx },
-    }) |c| {
-        var sv = try e.svc(a);
-        try e.admit(a, &sv, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-        try idx.admitted(a, &sv, e.topic, try ltx(a, c.txid, c.t), &.{0}, &.{0});
-        try idx.spent(a, &sv, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, c.txid, c.t));
-        try testing.expectEqual(@as(usize, 0), try sv.map("pools").count());
-    }
-    try testing.expectEqualSlices(u8, &next_key, &pool.poolOfScript(sw.outputs[0].locking_script.bytes).?.validator);
-
-    // Listed: the fixture swap (Swap, the next key); and a pool spend whose unlocking script is
-    // a Swap call (its last push OP_0) naming the next key.
-    var svc = try e.svc(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try testing.expectEqual(@as(usize, 2), try svc.map("pools").count()); // the deploy's is spent below, by `spent`
-    try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), sw));
-    try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-
-    const hop_script = try withValidator(a, sw.outputs[0].locking_script.bytes, try pool.validatorKey(a, key33(vec.identity), f.txid("swap_bsv_in"), 0));
-    const hop = try buildSpend(a, sw, 0, &.{0x00}, hop_script, 900_000, null);
-    _ = try e.ms.store().putBitcoin(a, .tx, hop.raw);
-    try testing.expect(try idx.judge(a, .{ .txid = f.id }, try ltx(a, hop.txid, hop.tx), &.{0}) == null);
-    try idx.admitted(a, &svc, e.topic, try ltx(a, hop.txid, hop.tx), &.{0}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, hop.txid, hop.tx));
-    const all = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-    try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
-    try testing.expectEqualStrings(try opStr(a, hop.txid, 0), all.freeform.array[0].getText("outpoint").?);
-
-    // The record is the hop's event (0.48.0, D1): a Swap's, with the identity; no ValidatorPubKey.
-    const cid = (try svc.map("pools").prefixed(try w.store.nameKey(a, e.topic, &.{})))[0].value.cid;
-    const rec = try svc.store.getValue(a, cid);
-    try testing.expectEqualStrings("swap", rec.getText("kind").?);
-    try testing.expect(rec.get("validatorPubKey") == null);
-    try testing.expectEqualSlices(u8, &key33(vec.identity), rec.getBytes("validatorIdentityKey").?);
-    try testing.expect(rec.get("claim") == null);
-}
-
-test "listing (0.13.0): only a self-attesting pool is listed — not one without the affirmation, one another key signed, one under a key of the LP's own, one whose satoshis are not the ones affirmed" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var ch = try e.chain(a);
-    const pd = e.f.tx("pool_deploy");
-    const outs = try a.dupe(bsvz.transaction.Output, pd.outputs);
-    outs[0].satoshis += 1;
-    var more = pd;
-    more.outputs = outs;
-    for ([_]struct { name: []const u8, t: ?bsvz.transaction.Transaction }{
-        .{ .name = "pool_deploy_unaffirmed", .t = null },
-        .{ .name = "pool_deploy_forged", .t = null },
-        .{ .name = "pool_deploy_own_key", .t = null },
-        .{ .name = "pool_deploy", .t = more },
-    }) |c| {
-        var svc = try e.svc(a);
-        try e.admit(a, &svc, c.name, c.t, &.{ 0, 1, 2 }, &.{0});
-        try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-        try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-        const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, e.f.txid(c.name), 0) } }});
-        try testing.expectError(error.UnknownOutpoint, idx.answer(a, &svc, &ch, q));
-    }
-    var svc = try e.svc(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-
-    // A swap of an unaffirmed pool: its continuation (spending nothing listed) is not listed.
-    var svc2 = try e.svc(a);
-    try e.admit(a, &svc2, "pool_deploy_unaffirmed", null, &.{ 0, 1, 2 }, &.{0});
-    const sw = e.f.tx("swap_bsv_in");
-    const ins = try a.dupe(bsvz.transaction.Input, sw.inputs);
-    ins[0].previous_outpoint.txid.bytes = e.f.txid("pool_deploy_unaffirmed");
-    var sw_u = sw;
-    sw_u.inputs = ins;
-    try idx.admitted(a, &svc2, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), sw_u), &.{ 0, 1 }, &.{0});
-    try testing.expectEqual(@as(usize, 0), try svc2.map("pools").count());
-}
-
-test "listing (0.13.0): the LP's Close and the validator's Rescind end the live listing; a rejected one lists the pool again" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var ch = try e.chain(a);
-    const pd_txid = e.f.txid("pool_deploy");
-    const sw_txid = e.f.txid("swap_bsv_in");
-    const sw2_txid = e.f.txid("swap_tokens_in");
-    for ([_]struct { name: []const u8, outs: []const u32 }{ .{ .name = "close", .outs = &.{1} }, .{ .name = "rescind", .outs = &.{0} } }) |c| {
-        const nm = c.name;
-        var svc = try e.svc(a);
-        try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-        try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-        try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, try ltx(a, sw_txid, e.f.tx("swap_bsv_in")));
-        try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-        try idx.spent(a, &svc, e.topic, .{ .txid = sw_txid, .vout = 0 }, try ltx(a, sw2_txid, e.f.tx("swap_tokens_in")));
-        const by_validator = try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }});
-        try testing.expectEqual(@as(usize, 1), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
-
-        // The Close: the pool spent, no continuation (the LP's tokens are not a pool). The
-        // Rescind: the output stays in `pools` with a cleared validator key, skipped by a live read.
-        const cl = try ltx(a, e.f.txid(nm), e.f.tx(nm));
-        try idx.admitted(a, &svc, e.topic, cl, c.outs, &.{0});
-        try idx.spent(a, &svc, e.topic, .{ .txid = sw2_txid, .vout = 0 }, cl);
-        const stored: usize = if (std.mem.eql(u8, nm, "rescind")) 1 else 0;
-        try testing.expectEqual(stored, try svc.map("pools").count());
-        try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-        try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, by_validator)).freeform.array.len);
-
-        // Rejected: the pool it spent is listed again.
-        try idx.rejected(a, &svc, e.topic, cl);
-        const back = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-        try testing.expectEqual(@as(usize, 1), back.freeform.array.len);
-        try testing.expectEqualStrings(try opStr(a, sw2_txid, 0), back.freeform.array[0].getText("outpoint").?);
-    }
-}
-
-test "no beat (0.48.0, D5): the hooks hand the engine no beat body and the spec has no fn beat; a rescinded hop stays in `pools`, out of the live list" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    if (@hasField(lookup.Spec, "beat")) try testing.expect(idx.spec.beat == null);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("pool_deploy"), .vout = 0 }, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")));
-    try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    const cl = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    try idx.admitted(a, &svc, e.topic, cl, &.{0}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    if (@hasDecl(lookup.Service, "beat")) try testing.expectEqual(@as(usize, 0), svc.beats.items.len);
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array.len);
-}
-
-test "admitted: another topic's call indexes nothing" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const f = try Fixtures.init(a);
-    const st = try serviceAndTopic(a, f.id);
-    var svc = try lookup.Service.load(a, ms.store(), st.service, idx.spec.maps, null);
-    const pd = try ltx(a, f.txid("pool_deploy"), f.tx("pool_deploy"));
-
-    try idx.admitted(a, &svc, "tm_demo", pd, &.{0}, &.{0});
-    try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-}
-
-test "spent + admitted: a swap's continuation replaces the pool it spent" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    const pd_txid = e.f.txid("pool_deploy");
-    const sw_txid = e.f.txid("swap_bsv_in");
-    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, try ltx(a, sw_txid, e.f.tx("swap_bsv_in")));
-
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    const all = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-    try testing.expectEqual(@as(usize, 1), all.freeform.array.len);
-    const entry = all.freeform.array[0];
-    try testing.expectEqualStrings(try opStr(a, sw_txid, 0), entry.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, vec.pool1.bsv), entry.get("bsvReserve").?.uint);
-    try testing.expectEqual(@as(u64, vec.pool1.tokens), entry.get("tokenReserve").?.uint);
-    try testing.expectEqual(@as(u64, vec.commission_bps), entry.get("commissionBps").?.uint);
-
-    // The old outpoint is a spent pool; the chain state (empty here) names no
-    // spender for it, so the walk errors rather than silently answering
-    // nothing. An outpoint that was never a pool errors the same way.
-    const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }});
-    try testing.expectError(error.UnknownOutpoint, idx.answer(a, &svc, &ch, q));
-    const never = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 1) } }});
-    try testing.expectError(error.UnknownOutpoint, idx.answer(a, &svc, &ch, never));
-}
-
-test "rejected: drops the rejected transaction's pool and restores the checked one it spent" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    const pd_txid = e.f.txid("pool_deploy");
-    const sw = try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in"));
-    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = pd_txid, .vout = 0 }, sw);
-
-    try idx.rejected(a, &svc, e.topic, sw);
-
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("spentPools").count());
-    const all = try idx.answer(a, &svc, &ch, try e.q(a, &.{}));
-    const entry = all.freeform.array[0];
-    try testing.expectEqualStrings(try opStr(a, pd_txid, 0), entry.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, vec.pool0.tokens), entry.get("tokenReserve").?.uint);
-
-    // A rejection gives back only what was indexed: a pool that failed the
-    // checks when admitted stays out.
-    var svc2 = try lookup.Service.load(a, e.ms.store(), e.service, idx.spec.maps, null);
-    var buf: [10]u8 = undefined;
-    const pd = e.f.tx("pool_deploy");
-    const low = try cat(a, &.{ &.{0x20}, &e.f.id, pool.brc162.pushAmount(&buf, vec.pool0.tokens - 1), &.{0x6d}, pool.brc162.decode(pd.outputs[0].locking_script.bytes).?.lock });
-    try e.admit(a, &svc2, "pool_deploy", try withOutput(a, pd, 0, low), &.{0}, &.{0}); // prefix mismatch: not indexed
-    try idx.spent(a, &svc2, e.topic, .{ .txid = pd_txid, .vout = 0 }, sw);
-    try idx.rejected(a, &svc2, e.topic, sw);
-    try testing.expectEqual(@as(usize, 0), try svc2.map("pools").count());
-}
-
-test "answer: {outpoint} follows the spends (the chain state's) to the newest continuation over three hops" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    const identity = key33(vec.identity);
-
-    const pd_tx = e.f.tx("pool_deploy");
-    const pd_txid = e.f.txid("pool_deploy");
-    const pd_script = pd_tx.outputs[0].locking_script.bytes;
-    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
-    _ = try ch.putTx(pd_txid, e.f.raw("pool_deploy"));
-
-    var prev_tx = pd_tx;
-    var prev_txid = pd_txid;
-    const reserves = [_]u64{ 4_000_000, 3_000_000, 2_000_000 };
-    var tip_txid: [32]u8 = undefined;
-    for (reserves, 0..) |r, i| {
-        // A Swap (OP_0): the key rotates to the child of the spent pool's outpoint.
-        const validator = try pool.validatorKey(a, identity, prev_txid, 0);
-        const script = try withState(a, e.f.id, pd_script, r, key(0xa0), validator, identity);
-        const hop = try buildSpend(a, prev_tx, 0, &.{0x00}, script, 900_000 - @as(i64, @intCast(i)) * 1000, null);
-        _ = try e.ms.store().putBitcoin(a, .tx, hop.raw);
-        try idx.admitted(a, &svc, e.topic, try ltx(a, hop.txid, hop.tx), &.{0}, &.{0});
-        try idx.spent(a, &svc, e.topic, .{ .txid = prev_txid, .vout = 0 }, try ltx(a, hop.txid, hop.tx));
-        _ = try ch.putTx(hop.txid, hop.raw);
-        prev_tx = hop.tx;
-        prev_txid = hop.txid;
-        tip_txid = hop.txid;
-    }
-
-    // Only the tip is indexed.
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-
-    const q = try e.q(a, &.{.{ .key = "outpoint", .value = .{ .text = try opStr(a, pd_txid, 0) } }});
-    const ans = try idx.answer(a, &svc, &ch, q);
-    try testing.expectEqual(@as(u64, 3), ans.freeform.get("hops").?.uint);
-    const current = ans.freeform.get("current").?;
-    try testing.expectEqualStrings(try opStr(a, tip_txid, 0), current.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, reserves[2]), current.get("tokenReserve").?.uint);
-}
-
-test "answer: {validatorIdentityKey} returns only that validator's pools" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-
-    const pd_tx = e.f.tx("pool_deploy");
-    const pd_txid = e.f.txid("pool_deploy");
-    try e.admit(a, &svc, "pool_deploy", null, &.{0}, &.{0});
-
-    // A second pool under another validator, a deploy from pool_deploy's token output 1: its
-    // key is that validator's child of its nonce, and its affirmation is signed by it (0.13.0).
-    const kd = bsvz.primitives.key_deriver.KeyDeriver.init(try bsvz.primitives.ec.PrivateKey.fromBytes(.{0x42} ** 32));
-    const other_identity = (try kd.identityKey()).toCompressedSec1();
-    const nonce_b: [32]u8 = .{0x6b} ** 32;
-    const validator_b = try pool.firstValidatorKey(a, other_identity, nonce_b);
-    const bare_b = try withStateAttested(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity, .{ .nonce = nonce_b, .affirmation = &.{} });
-    var kbuf: [64]u8 = undefined;
-    const child = try kd.derivePrivateKey(a, pool.validator_protocol, pool.nonceKeyId(&kbuf, nonce_b), .{ .type_ = .anyone });
-    const p_b = (try pool.parse(pool.brc162.decode(bare_b).?.lock)).?;
-    const sig_b = try child.signDigest(pool.affirmDigest(p_b, 50_000));
-    const script_b = try withStateAttested(a, e.f.id, pd_tx.outputs[0].locking_script.bytes, 777_000, key(0x10), validator_b, other_identity, .{ .nonce = nonce_b, .affirmation = sig_b.asSlice() });
-    try testing.expect(pool.affirmed(a, script_b, 50_000));
-    const pool_b = try buildSpend(a, pd_tx, 1, &.{}, script_b, 50_000, null);
-    try idx.admitted(a, &svc, e.topic, try ltx(a, pool_b.txid, pool_b.tx), &.{0}, &.{0});
-
-    try testing.expectEqual(@as(usize, 2), try svc.map("pools").count());
-
-    const ida = try idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }}));
-    try testing.expectEqual(@as(usize, 1), ida.freeform.array.len);
-    try testing.expectEqualStrings(try opStr(a, pd_txid, 0), ida.freeform.array[0].getText("outpoint").?);
-
-    const hex_b = std.fmt.bytesToHex(other_identity, .lower);
-    const idb = try idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = &hex_b } }}));
-    try testing.expectEqual(@as(usize, 1), idb.freeform.array.len);
-    try testing.expectEqualStrings(try opStr(a, pool_b.txid, 0), idb.freeform.array[0].getText("outpoint").?);
-}
-
-// ---------------------------------------------------------------- the fee rows (0.33.0)
-
-/// `swap_bsv_in` with no commission: its continuation's CommissionBps OP_0 (the lock's slot at 724,
-/// test.zig "CommissionBps is read under the canonical-number rule") and its commission output
-/// (output 4) gone. Same txid as given to the hooks.
-fn noCommission(a: Allocator, sw: bsvz.transaction.Transaction) !bsvz.transaction.Transaction {
-    const script = try a.dupe(u8, sw.outputs[0].locking_script.bytes);
-    const lock = pool.brc162.decode(script).?.lock;
-    const at = script.len - lock.len + 724;
-    try testing.expectEqual(@as(u8, 0x5a), script[at]);
-    script[at] = 0x00;
-    var outs: std.ArrayList(bsvz.transaction.Output) = .empty;
-    for (sw.outputs, 0..) |o, i| if (i != 4) try outs.append(a, o);
-    outs.items[0].locking_script = bsvz.script.Script.init(script);
-    var t = sw;
-    t.outputs = outs.items;
-    return t;
-}
-
-/// The fixtures' pool and its two Swaps, admitted: pool_deploy → swap_bsv_in (20,000 sats in: LP 60,
-/// validator 10, commission 20 sats) → swap_tokens_in (50,000 tokens in: LP 150, validator 25,
-/// commission 50 tokens).
-fn twoSwaps(a: Allocator, e: *Env, svc: *lookup.Service) !void {
-    const f = e.f;
-    try e.admit(a, svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), f.tx("swap_bsv_in")));
-    try e.admit(a, svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")));
-}
-
-fn listQuery(a: Allocator, e: *Env, field: []const u8, keys: []const []const u8) !Value {
-    const vs = try a.alloc(Value, keys.len);
-    for (keys, vs) |k, *v| v.* = .{ .text = k };
-    return e.q(a, &.{.{ .key = field, .value = .{ .array = vs } }});
-}
-
-const unknown33 = "02" ++ "a0" ** 32;
-/// A pool id no pool has (0.40.0).
-const unknown_pool = "a0" ** 32 ++ "_0";
-
-/// The fixtures' pool id (0.40.0): its deploy's outpoint key, and its text `<txid>_0`.
-fn poolId(e: *Env) [36]u8 {
-    return w.store.outpointKey(e.f.txid("pool_deploy"), 0);
-}
-fn poolIdText(a: Allocator, e: *Env) ![]const u8 {
-    return opStr(a, e.f.txid("pool_deploy"), 0);
-}
-const unknown20 = "55" ** 20;
-
-/// The Swap rows (0.48.0, D2: `fees` gone): `history` rows of kind `swap`.
-fn swapRows(a: Allocator, svc: *lookup.Service) !usize {
-    var n: usize = 0;
-    for (try svc.map("history").prefixed(&.{})) |kv| {
-        if (std.mem.eql(u8, (try svc.store.getValue(a, kv.value.cid)).getText("kind") orelse "", "swap")) n += 1;
-    }
-    return n;
-}
-
-test "fee rows (0.33.0; 0.48.0: the Swap's history row): a Swap's admission writes its row (the three fees, the asset, the commission's key hash) and its membership under the key hash; a deploy writes none" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try testing.expectEqual(@as(usize, 0), try swapRows(a, &svc));
-    try twoSwaps(a, e, &svc);
-    try testing.expectEqual(@as(usize, 2), try swapRows(a, &svc));
-    try testing.expectEqual(@as(usize, 2), try svc.map("byCommission").count());
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const rec = (try idx.tradeOf(a, &svc, tp, e.f.txid("swap_bsv_in"))).?.rec;
-    try testing.expectEqual(@as(u64, 60), rec.getUint("lp").?);
-    try testing.expectEqual(@as(u64, 10), rec.getUint("validator").?);
-    try testing.expectEqual(@as(u64, 20), rec.getUint("commission").?);
-    try testing.expect(rec.getBool("bsvIn").?);
-    try testing.expectEqualSlices(u8, unhex(a, vec.commission_pkh), rec.getBytes("commissionPkh").?);
-    try testing.expect((try svc.map("byCommission").link(try cat(a, &.{ unhex(a, vec.commission_pkh), tp, &e.f.txid("swap_bsv_in") }))) != null);
-}
-
-test "fee rows (0.33.0): a rejected Swap's row and membership are removed; the other Swap's stay" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    try twoSwaps(a, e, &svc);
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
-    try testing.expectEqual(@as(usize, 1), try svc.map("byCommission").count());
-    var ch = try e.chain(a);
-    const ans = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 60), ans.get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 0), ans.get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 1), ans.get("swaps").?.uint);
-}
-
-test "fee rows (0.33.0): a Swap with no commission writes its row (commission 0) and no membership" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    try e.admit(a, &svc, "swap_bsv_in", try noCommission(a, e.f.tx("swap_bsv_in")), &.{ 0, 1 }, &.{0});
-    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
-    try testing.expectEqual(@as(usize, 0), try svc.map("byCommission").count());
-    const lp = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 60), lp.get("sats").?.uint);
-    const com = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "commissionPkhs", &.{vec.commission_pkh}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 0), com.get("swaps").?.uint);
-    // Rejected: its row goes, nothing else to remove.
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), try noCommission(a, e.f.tx("swap_bsv_in"))));
-    try testing.expectEqual(@as(usize, 0), try swapRows(a, &svc));
-}
-
-test "queries (0.40.0): {poolIds} — one record per pool id, its LP key, the LP fees (sats from sats-in, tokens from token-in), status live with its outpoint and current; closed after the Close; an unknown id closed with zeros" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try twoSwaps(a, e, &svc);
-    const ans = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{ try poolIdText(a, e), unknown_pool }))).freeform.array;
-    try testing.expectEqual(@as(usize, 2), ans.len);
-    try testing.expectEqualStrings(try poolIdText(a, e), ans[0].getText("poolId").?);
-    try testing.expectEqualStrings(vec.lp, ans[0].getText("lpPubKey").?);
-    try testing.expectEqual(@as(u64, 60), ans[0].get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 150), ans[0].get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 2), ans[0].get("swaps").?.uint);
-    try testing.expectEqualStrings("live", ans[0].getText("status").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), ans[0].getText("outpoint").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), ans[0].get("current").?.getText("outpoint").?);
-    try testing.expectEqualStrings(unknown_pool, ans[1].getText("poolId").?);
-    try testing.expect(ans[1].get("lpPubKey").? == .null);
-    try testing.expectEqualStrings("closed", ans[1].getText("status").?);
-    try testing.expect(ans[1].get("outpoint") == null);
-    try testing.expectEqual(@as(u64, 0), ans[1].get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 0), ans[1].get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 0), ans[1].get("swaps").?.uint);
-    try testing.expect(ans[1].get("current") == null);
-
-    // Closed (the LP's Close): the rows stay, no current.
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    const after = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 2), after.get("swaps").?.uint);
-    try testing.expectEqualStrings("closed", after.getText("status").?);
-    try testing.expect(after.get("current") == null);
-
-    // Not a list, or a key of the wrong length: refused.
-    try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = "poolIds", .value = .{ .text = try poolIdText(a, e) } }})));
-    try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{"02ab"})));
-    // The LP key is a lookup key nowhere: the old query answers the live pools, as `{tokenId}` does.
-    try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, try listQuery(a, e, "lpPubKeys", &.{vec.lp}))).freeform.array.len);
-}
-
-test "queries (0.33.0): {validatorIdentityKeys} — the validator fees over its live pools' rows; {commissionPkhs} — the commissions naming each key hash; unknown keys zeros" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try twoSwaps(a, e, &svc);
-    const vs = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "validatorIdentityKeys", &.{ vec.identity, unknown33 }))).freeform.array;
-    try testing.expectEqualStrings(vec.identity, vs[0].getText("validatorIdentityKey").?);
-    try testing.expectEqual(@as(u64, 10), vs[0].get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 25), vs[0].get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 2), vs[0].get("swaps").?.uint);
-    try testing.expectEqual(@as(u64, 1), vs[0].get("pools").?.uint);
-    try testing.expectEqual(@as(u64, 0), vs[1].get("swaps").?.uint);
-    try testing.expectEqual(@as(u64, 0), vs[1].get("pools").?.uint);
-
-    const cs = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "commissionPkhs", &.{ vec.commission_pkh, unknown20 }))).freeform.array;
-    try testing.expectEqualStrings(vec.commission_pkh, cs[0].getText("commissionPkh").?);
-    try testing.expectEqual(@as(u64, 20), cs[0].get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 50), cs[0].get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 2), cs[0].get("swaps").?.uint);
-    try testing.expectEqualStrings(unknown20, cs[1].getText("commissionPkh").?);
-    try testing.expectEqual(@as(u64, 0), cs[1].get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 0), cs[1].get("swaps").?.uint);
-
-    // The existing single-key validator query is unchanged: its pools.
-    const one = try idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }}));
-    try testing.expectEqual(@as(usize, 1), one.freeform.array.len);
-}
-
-test "queries (0.40.0): {poolIds} — a pool the validator rescinded is `rescinded` with the Rescind's output (what the Close acts on), the fees kept; its Close (in the chain state) makes it closed; a rejected Rescind gives the live pool back" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try twoSwaps(a, e, &svc);
-    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    try idx.admitted(a, &svc, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    const q = try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)});
-    const r = (try idx.answer(a, &svc, &ch, q)).freeform.array[0];
-    try testing.expectEqualStrings("rescinded", r.getText("status").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("rescind"), 0), r.getText("outpoint").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("rescind"), 0), r.get("current").?.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, 3), r.get("current").?.getUint("swaps").?);
-    try testing.expectEqual(@as(u64, 2), r.get("swaps").?.uint);
-
-    // The LP's Close of the rescinded output: it leaves `pools`, so the position is closed.
-    const cr = try ltx(a, e.f.txid("close_rescinded"), e.f.tx("close_rescinded"));
-    try idx.admitted(a, &svc, e.topic, cr, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("rescind"), .vout = 0 }, cr);
-    const c = (try idx.answer(a, &svc, &ch, q)).freeform.array[0];
-    try testing.expectEqualStrings("closed", c.getText("status").?);
-    try testing.expect(c.get("outpoint") == null);
-
-    // A rejected Rescind: the pool it spent is live again, no rescinded record.
-    var svc2 = try e.svc(a);
-    var ch2 = try e.chain(a);
-    try twoSwaps(a, e, &svc2);
-    try idx.admitted(a, &svc2, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, &svc2, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    try idx.rejected(a, &svc2, e.topic, rs);
-    const back = (try idx.answer(a, &svc2, &ch2, q)).freeform.array[0];
-    try testing.expectEqualStrings("live", back.getText("status").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), back.getText("outpoint").?);
-}
-
-test "hops (0.48.0, D2: `byPool` and `byValidator` gone): a pool's hops are its `pools` and `spentPools` records, its live hop its last history row's; a rejection removes the rejected transaction's" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try twoSwaps(a, e, &svc); // the deploy, then the two Swaps and their spends
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 2), try svc.map("spentPools").count());
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 1), try svc.map("spentPools").count());
-    const ans = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "poolIds", &.{try poolIdText(a, e)}))).freeform.array[0];
-    try testing.expectEqualStrings("live", ans.getText("status").?);
-    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_bsv_in"), 0), ans.getText("outpoint").?);
-}
-
-test "validator (0.33.0): {validatorIdentityKeys} sums the fee rows of all its pools, closed included; {validatorIdentityKey} still answers its live pools only" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    var ch = try e.chain(a);
-    try twoSwaps(a, e, &svc);
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    const vs = (try idx.answer(a, &svc, &ch, try listQuery(a, e, "validatorIdentityKeys", &.{vec.identity}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 10), vs.get("sats").?.uint);
-    try testing.expectEqual(@as(u64, 25), vs.get("tokens").?.uint);
-    try testing.expectEqual(@as(u64, 2), vs.get("swaps").?.uint);
-    try testing.expectEqual(@as(u64, 1), vs.get("pools").?.uint);
-    const one = try idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = "validatorIdentityKey", .value = .{ .text = vec.identity } }}));
-    try testing.expectEqual(@as(usize, 0), one.freeform.array.len);
-}
-
-// ---------------------------------------------------------------- trade rows and the history reads (0.36.0)
-
-/// The contract's Swap arithmetic (pool/Pool.runar.go Swap): the amount out of `amount_in` against
-/// the reserves, the fees taken from the input first (each rounded up).
-fn contractOut(amount_in: u64, lp_bps: u64, val_bps: u64, com_bps: u64, reserve_in: u64, reserve_out: u64) u64 {
-    const fee = struct {
-        fn f(x: u64, bps: u64) u64 {
-            return (x * bps + 9999) / 10000;
-        }
-    }.f;
-    const net = amount_in - fee(amount_in, lp_bps) - fee(amount_in, val_bps) - fee(amount_in, com_bps);
-    return @intCast(@as(u128, net) * reserve_out / (reserve_in + net));
-}
-
-fn poolOf(t: bsvz.transaction.Transaction) idx.PoolFields {
-    return idx.poolAt(.{0} ** 32, 0, t.outputs[0].locking_script.bytes, @intCast(t.outputs[0].satoshis)).?;
-}
-
-fn tradeRec(a: Allocator, svc: *lookup.Service, tp: []const u8, txid: [32]u8) !Value {
-    return (try idx.tradeOf(a, svc, tp, txid)).?.rec;
-}
-
-fn atKey(a: Allocator, tp: []const u8, at: u64, txid: [32]u8) ![]u8 {
-    var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, at, .big);
-    return cat(a, &.{ tp, &b, &txid });
-}
-
-/// twoSwaps with the step's clock at `t1` for the sats-in Swap and `t2` for the token-in one.
-fn twoSwapsAt(a: Allocator, e: *Env, svc: *lookup.Service, t1: u64, t2: u64) !void {
-    const f = e.f;
-    idx.now_ms = t1 - 1;
-    try e.admit(a, svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    idx.now_ms = t1;
-    try e.admit(a, svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), f.tx("swap_bsv_in")));
-    idx.now_ms = t2;
-    try e.admit(a, svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")));
-}
-
-test "trade rows (0.36.0): a sats-in Swap writes a buy, a token-in Swap a sell — txid, LP key, amounts in and out (the contract's), the three fees, the reserves after, the step's time; under `trades` by time and `fees` by LP key, one record" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    try twoSwapsAt(a, e, &svc, 1_000, 2_000);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try testing.expectEqual(@as(usize, 2), try svc.map("trades").count());
-
-    const p0 = poolOf(e.f.tx("pool_deploy"));
-    const p1 = poolOf(e.f.tx("swap_bsv_in"));
-    const p2 = poolOf(e.f.tx("swap_tokens_in"));
-    const fees = .{ @as(u64, @intCast(p0.liquidity_fee_bps)), @as(u64, @intCast(p0.validation_fee_bps)), @as(u64, @intCast(p0.commission_bps)) };
-
-    const buy = try tradeRec(a, &svc, tp, e.f.txid("swap_bsv_in"));
-    try testing.expectEqualStrings("swap", buy.getText("kind").?);
-    try testing.expectEqualSlices(u8, &poolId(e), buy.getBytes("poolId").?);
-    try testing.expectEqual(@as(u64, 1), buy.getUint("swaps").?);
-    try testing.expectEqualSlices(u8, &w.store.outpointKey(e.f.txid("swap_bsv_in"), 0), buy.getBytes("outpoint").?);
-    // The call's userPkh: the taker's key hash, where the payout went (output 1, a token output).
-    try testing.expectEqualSlices(u8, e.f.tx("swap_bsv_in").outputs[1].locking_script.bytes[e.f.tx("swap_bsv_in").outputs[1].locking_script.bytes.len - 22 ..][0..20], buy.getBytes("payoutPkh").?);
-    try testing.expectEqualStrings("buy", buy.getText("side").?);
-    try testing.expectEqualSlices(u8, &e.f.txid("swap_bsv_in"), buy.getBytes("txid").?);
-    try testing.expectEqualSlices(u8, &key33(vec.lp), buy.getBytes("lpPubKey").?);
-    try testing.expectEqual(@as(u64, 20_000), buy.getUint("amountIn").?);
-    try testing.expectEqual(contractOut(20_000, fees[0], fees[1], fees[2], p0.bsv_reserve, p0.token_reserve), buy.getUint("amountOut").?);
-    try testing.expectEqual(p0.token_reserve - p1.token_reserve, buy.getUint("amountOut").?);
-    try testing.expectEqual(@as(u64, 60), buy.getUint("lp").?);
-    try testing.expectEqual(@as(u64, 10), buy.getUint("validator").?);
-    try testing.expectEqual(@as(u64, 20), buy.getUint("commission").?);
-    try testing.expectEqual(p1.bsv_reserve, buy.getUint("bsvReserve").?);
-    try testing.expectEqual(p1.token_reserve, buy.getUint("tokenReserve").?);
-    try testing.expectEqual(@as(u64, 1_000), buy.getUint("at").?);
-    // 0.48.0 (D1): the continuation's `spentPools` record is the trade row itself.
-    try testing.expectEqualSlices(u8, (try svc.map("spentPools").link(try cat(a, &.{ tp, &w.store.outpointKey(e.f.txid("swap_bsv_in"), 0) }))).?, (try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))).?);
-
-    const sell = try tradeRec(a, &svc, tp, e.f.txid("swap_tokens_in"));
-    try testing.expectEqualStrings("sell", sell.getText("side").?);
-    try testing.expectEqual(@as(u64, 50_000), sell.getUint("amountIn").?);
-    try testing.expectEqual(contractOut(50_000, fees[0], fees[1], fees[2], p1.token_reserve, p1.bsv_reserve), sell.getUint("amountOut").?);
-    try testing.expectEqual(p1.bsv_reserve - p2.bsv_reserve, sell.getUint("amountOut").?);
-    try testing.expectEqual(@as(u64, 150), sell.getUint("lp").?);
-    try testing.expectEqual(p2.token_reserve, sell.getUint("tokenReserve").?);
-    try testing.expectEqual(@as(u64, 2_000), sell.getUint("at").?);
-    try testing.expect((try svc.map("trades").link(try atKey(a, tp, 2_000, e.f.txid("swap_tokens_in")))) != null);
-
-    // A re-admission (a dupe hook call, before the spend) at a later time: one row, under the later time.
-    var svc2 = try e.svc(a);
-    idx.now_ms = 1;
-    try e.admit(a, &svc2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    idx.now_ms = 1_000;
-    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    idx.now_ms = 5_000;
-    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try testing.expectEqual(@as(usize, 1), try svc2.map("trades").count());
-    try testing.expect((try svc2.map("trades").link(try atKey(a, tp, 5_000, e.f.txid("swap_bsv_in")))) != null);
-}
-
-test "trade rows (0.36.0): a rejected Swap's trade row leaves `trades` with its history row; the other stays" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    try twoSwapsAt(a, e, &svc, 1_000, 2_000);
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try testing.expectEqual(@as(usize, 1), try svc.map("trades").count());
-    try testing.expect((try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))) != null);
-    try testing.expectEqual(@as(usize, 1), try swapRows(a, &svc));
-}
-
-test "history (0.36.0): trades newest first — the window, the limit and the cursor, one LP key's rows, one Swap by txid" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    try twoSwapsAt(a, e, &svc, 1_000, 2_000);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const s1 = e.f.txid("swap_bsv_in");
-    const s2 = e.f.txid("swap_tokens_in");
-
-    const all = try idx.trades(a, &svc, tp, .{});
-    try testing.expectEqual(@as(usize, 2), all.len);
-    try testing.expectEqualSlices(u8, &s2, &all[0].txid);
-    try testing.expectEqualSlices(u8, &s1, &all[1].txid);
-    // Window: from ≤ at < to.
-    try testing.expectEqual(@as(usize, 1), (try idx.trades(a, &svc, tp, .{ .from = 1_500 })).len);
-    try testing.expectEqual(@as(usize, 1), (try idx.trades(a, &svc, tp, .{ .to = 2_000 })).len);
-    try testing.expectEqual(@as(usize, 2), (try idx.trades(a, &svc, tp, .{ .from = 1_000, .to = 2_001 })).len);
-    try testing.expectEqual(@as(usize, 0), (try idx.trades(a, &svc, tp, .{ .from = 2_001 })).len);
-    // Paging: one row, then the next from its cursor, then none.
-    const p1 = try idx.trades(a, &svc, tp, .{ .limit = 1 });
-    try testing.expectEqualSlices(u8, &s2, &p1[0].txid);
-    const p2 = try idx.trades(a, &svc, tp, .{ .limit = 1, .before = .{ .at = p1[0].at, .txid = p1[0].txid } });
-    try testing.expectEqualSlices(u8, &s1, &p2[0].txid);
-    try testing.expectEqual(@as(usize, 0), (try idx.trades(a, &svc, tp, .{ .limit = 1, .before = .{ .at = p2[0].at, .txid = p2[0].txid } })).len);
-    // One pool's rows (same order and paging; its window); an unknown pool none.
-    const mine = try idx.trades(a, &svc, tp, .{ .pool = poolId(e) });
-    try testing.expectEqual(@as(usize, 2), mine.len);
-    try testing.expectEqualSlices(u8, &s2, &mine[0].txid);
-    try testing.expectEqual(@as(usize, 1), (try idx.trades(a, &svc, tp, .{ .pool = poolId(e), .limit = 1, .before = .{ .at = 2_000, .txid = s2 } })).len);
-    try testing.expectEqual(@as(usize, 1), (try idx.trades(a, &svc, tp, .{ .pool = poolId(e), .from = 1_500 })).len);
-    try testing.expectEqual(@as(usize, 0), (try idx.trades(a, &svc, tp, .{ .pool = .{0xa0} ** 36 })).len);
-    // One Swap by txid; a deploy has none.
-    try testing.expectEqual(@as(u64, 1_000), (try idx.tradeOf(a, &svc, tp, s1)).?.at);
-    try testing.expect((try idx.tradeOf(a, &svc, tp, e.f.txid("pool_deploy"))) == null);
-}
-
-/// A trade row written straight into `trades` (the candle and stats reads read only it).
-fn putRow(a: Allocator, svc: *lookup.Service, tp: []const u8, at: u64, n: u8, side: []const u8, in: u64, out: u64) !void {
-    var txid: [32]u8 = .{0} ** 32;
-    txid[0] = n;
-    const rec = try svc.store.putValue(a, .{ .map = try a.dupe(Entry, &.{
-        .{ .key = "side", .value = .{ .text = side } },
-        .{ .key = "amountIn", .value = .{ .uint = in } },
-        .{ .key = "amountOut", .value = .{ .uint = out } },
-        .{ .key = "at", .value = .{ .uint = at } },
-    }) });
-    try svc.map("trades").putLink(try atKey(a, tp, at, txid), rec);
-}
-
-fn expectPrice(want_sats: u64, want_tokens: u64, p: idx.Price) !void {
-    try testing.expectEqual(want_sats, p.sats);
-    try testing.expectEqual(want_tokens, p.tokens);
-}
-
-test "history (0.36.0): candles from the trade rows — one per non-empty bucket, aligned, open/high/low/close by price, volumes per side, counts; the window's edges; more than 5000 buckets refused" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const m: u64 = 60_000;
-    // Bucket [0, 1m): a buy at 2 sats/token, a sell at 3, a buy at 1. Bucket [2m, 3m): one sell at 4.
-    // At exactly 1m·5 (the window's `to` below): excluded.
-    try putRow(a, &svc, tp, 1_000, 1, "buy", 200, 100);
-    try putRow(a, &svc, tp, 2_000, 2, "sell", 10, 30);
-    try putRow(a, &svc, tp, m - 1, 3, "buy", 50, 50);
-    try putRow(a, &svc, tp, 2 * m, 4, "sell", 5, 20);
-    try putRow(a, &svc, tp, 5 * m, 5, "buy", 7, 7);
-
-    const cs = try idx.candles(a, &svc, tp, m, 0, 5 * m);
-    try testing.expectEqual(@as(usize, 2), cs.len);
-    try testing.expectEqual(@as(u64, 0), cs[0].t);
-    try expectPrice(200, 100, cs[0].o);
-    try expectPrice(30, 10, cs[0].h);
-    try expectPrice(50, 50, cs[0].l);
-    try expectPrice(50, 50, cs[0].c);
-    try testing.expectEqual(@as(u64, 200 + 30 + 50), cs[0].volume_sats);
-    try testing.expectEqual(@as(u64, 100 + 10 + 50), cs[0].volume_tokens);
-    try testing.expectEqual(@as(u64, 3), cs[0].n);
-    try testing.expectEqual(2 * m, cs[1].t); // [1m, 2m) is empty: omitted
-    try expectPrice(20, 5, cs[1].o);
-    try testing.expectEqual(@as(u64, 1), cs[1].n);
-    // `from` inside a bucket: trades before it are out, the bucket still starts aligned.
-    const late = try idx.candles(a, &svc, tp, m, 1_500, 6 * m);
-    try testing.expectEqual(@as(usize, 3), late.len);
-    try testing.expectEqual(@as(u64, 0), late[0].t);
-    try testing.expectEqual(@as(u64, 2), late[0].n);
-    try testing.expectEqual(5 * m, late[2].t);
-    // One resolution up: every row of [0, 1h) in one candle.
-    const hour = try idx.candles(a, &svc, tp, 60 * m, 0, 60 * m);
-    try testing.expectEqual(@as(usize, 1), hour.len);
-    try testing.expectEqual(@as(u64, 5), hour[0].n);
-    try expectPrice(7, 7, hour[0].c);
-    // 5000 buckets is the most.
-    _ = try idx.candles(a, &svc, tp, m, 0, 5000 * m);
-    try testing.expectError(error.TooManyBuckets, idx.candles(a, &svc, tp, m, 0, 5000 * m + 1));
-    try testing.expectError(error.TooManyBuckets, idx.candles(a, &svc, tp, m, 30_000, 5000 * m + 30_000));
-}
-
-test "history (0.36.0; 0.40.0; 0.48.0 D4): stats — the last trade's price (lastTradePrice), 24 h volumes and counts; no TVL, pool count or changes (the host's); no trade, no price" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const now: u64 = 10 * idx.day_ms;
-
-    // Nothing at all: no price.
-    const none = try idx.stats(a, &svc, tp, now);
-    try testing.expect(none.last_trade_price == null and none.last_trade_at == null);
-    try testing.expect(!@hasField(idx.Stats, "tvl_sats") and !@hasField(idx.Stats, "pools") and !@hasField(idx.Stats, "change1h"));
-
-    // A live pool, no trade: no last trade price (0.40.0: the host prices from the pools).
-    idx.now_ms = 1;
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    const only_pool = try idx.stats(a, &svc, tp, now);
-    try testing.expect(only_pool.last_trade_price == null);
-
-    // Trades within the last hour only: no trade at either window's start.
-    try putRow(a, &svc, tp, now - 30 * 60_000, 1, "buy", 200, 100); // 2
-    try putRow(a, &svc, tp, now - 10 * 60_000, 2, "sell", 10, 30); // 3
-    const recent = try idx.stats(a, &svc, tp, now);
-    try expectPrice(30, 10, recent.last_trade_price.?);
-    try testing.expectEqual(@as(u64, 230), recent.volume24h_sats);
-    try testing.expectEqual(@as(u64, 110), recent.volume24h_tokens);
-    try testing.expectEqual(@as(u64, 1), recent.buys24h);
-    try testing.expectEqual(@as(u64, 1), recent.sells24h);
-    try testing.expectEqual(now - 10 * 60_000, recent.last_trade_at.?);
-
-    // A trade 2 h ago and one 2 days ago: the 2-day-old one is out of the 24 h volume.
-    try putRow(a, &svc, tp, now - 2 * idx.hour_ms, 3, "buy", 24, 10);
-    try putRow(a, &svc, tp, now - 2 * idx.day_ms, 4, "sell", 10, 15);
-    const s = try idx.stats(a, &svc, tp, now);
-    try testing.expectEqual(@as(u64, 230 + 24), s.volume24h_sats);
-    try testing.expectEqual(@as(u64, 2), s.buys24h);
-    try testing.expectEqual(@as(u64, 1), s.sells24h);
-    // A fall, truncated toward zero.
-    try testing.expectEqual(@as(i64, -3333), idx.changeBps(.{ .sats = 3, .tokens = 1 }, .{ .sats = 2, .tokens = 1 }));
-}
-
-// ---------------------------------------------------------------- the pool id and the pool history (0.40.0)
-
-/// `pool_deploy` at `t0`, `swap_bsv_in` at `t1`, `swap_tokens_in` at `t2`, each with its spend.
-fn threeEvents(a: Allocator, e: *Env, svc: *lookup.Service, t0: u64, t1: u64, t2: u64) !void {
-    const f = e.f;
-    idx.now_ms = t0;
-    try e.admit(a, svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    idx.now_ms = t1;
-    try e.admit(a, svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), f.tx("swap_bsv_in")));
-    idx.now_ms = t2;
-    try e.admit(a, svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, svc, e.topic, .{ .txid = f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")));
-}
-
-fn kinds(a: Allocator, evs: []const idx.Event) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (evs) |ev| {
-        const k: []const u8 = ev.rec.getText("kind") orelse "?";
-        try out.append(a, k[0]);
-    }
-    return out.items;
-}
-
-fn recordAt(a: Allocator, svc: *lookup.Service, tp: []const u8, map: []const u8, txid: [32]u8) !Value {
-    return svc.store.getValue(a, (try svc.map(map).link(try cat(a, &.{ tp, &w.store.outpointKey(txid, 0) }))).?);
-}
-
-test "pool id (0.40.0): the deploy's outpoint, copied forward at each Swap with the swap count; one event per deploy and Swap under `history`, linked with the trade row" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    const pid = poolId(e);
-    // The hops: spent ones in spentPools, the live one in pools; each the deploy's id, swaps 0, 1, 2.
-    const r0 = try recordAt(a, &svc, tp, "spentPools", e.f.txid("pool_deploy"));
-    const r1 = try recordAt(a, &svc, tp, "spentPools", e.f.txid("swap_bsv_in"));
-    const r2 = try recordAt(a, &svc, tp, "pools", e.f.txid("swap_tokens_in"));
-    for ([_]Value{ r0, r1, r2 }, 0..) |r, n| {
-        try testing.expectEqualSlices(u8, &pid, r.getBytes("poolId").?);
-        try testing.expectEqual(@as(u64, n), r.getUint("swaps").?);
-    }
-    try testing.expectEqual(@as(u64, 100), r0.getUint("at").?);
-    try testing.expectEqual(@as(u64, 2_000), r2.getUint("at").?);
-    // history: tp ‖ poolId ‖ at ‖ swaps, in that order: deploy, swap, swap.
-    const evs = try histOf(a, &svc, tp, null, null, pid, 500);
-    try testing.expectEqualStrings("dss", try kinds(a, evs));
-    try testing.expectEqual(@as(u64, 100), evs[0].at);
-    try testing.expectEqual(@as(u64, 2), evs[2].seq);
-    try testing.expectEqualSlices(u8, &e.f.txid("pool_deploy"), evs[0].rec.getBytes("txid").?);
-    try testing.expectEqualSlices(u8, &w.store.outpointKey(e.f.txid("pool_deploy"), 0), evs[0].rec.getBytes("outpoint").?);
-    try testing.expectEqual(@as(u64, vec.pool0.bsv), evs[0].rec.getUint("bsvReserve").?);
-    try testing.expectEqualSlices(u8, &key33(vec.lp), evs[0].rec.getBytes("lpPubKey").?);
-    // A Swap's event IS its trade row and its hop's record (0.48.0): one record under history, trades and spentPools.
-    const fee = (try svc.map("spentPools").link(try cat(a, &.{ tp, &w.store.outpointKey(e.f.txid("swap_bsv_in"), 0) }))).?;
-    try testing.expectEqualSlices(u8, fee, (try svc.map("history").link(try cat(a, &.{ tp, &pid, &be64t(1_000), &be64t(1) }))).?);
-    try testing.expectEqualSlices(u8, fee, (try svc.map("trades").link(try atKey(a, tp, 1_000, e.f.txid("swap_bsv_in")))).?);
-    try testing.expectEqual(@as(usize, 0), try svc.map("closes").count());
-}
-
-fn be64t(n: u64) [8]u8 {
-    var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, n, .big);
-    return b;
-}
-
-test "pool history (0.40.0): a close is written in `spent` when the spender continues nothing — under `history` and `closes`; its rejection removes both and the pool is live again" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    const pid = poolId(e);
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    const evs = try histOf(a, &svc, tp, null, null, pid, 500);
-    try testing.expectEqualStrings("dssc", try kinds(a, evs));
-    const c = evs[3].rec;
-    try testing.expectEqualSlices(u8, &e.f.txid("close"), c.getBytes("txid").?);
-    try testing.expectEqual(@as(u64, 2), c.getUint("swaps").?);
-    try testing.expect(c.get("outpoint") == null and c.get("bsvReserve") == null);
-    try testing.expectEqualSlices(u8, &key33(vec.lp), c.getBytes("lpPubKey").?);
-    try testing.expect((try svc.map("closes").link(try cat(a, &.{ tp, &be64t(3_000), &pid }))) != null);
-    // Rejected: the close rows go, the pool is live again.
-    try idx.rejected(a, &svc, e.topic, cl);
-    try testing.expectEqualStrings("dss", try kinds(a, try histOf(a, &svc, tp, null, null, pid, 500)));
-    try testing.expectEqual(@as(usize, 0), try svc.map("closes").count());
-    try testing.expectEqual(@as(usize, 1), try svc.map("pools").count());
-}
-
-test "pool history (0.40.0): a Rescind stores its output in `pools` with swaps the next count and that sequence; the LP's Close of it writes a close; its rejection removes both" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    const pid = poolId(e);
-    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    const r = try recordAt(a, &svc, tp, "pools", e.f.txid("rescind"));
-    try testing.expectEqualSlices(u8, &pid, r.getBytes("poolId").?);
-    try testing.expectEqual(@as(u64, 3), r.getUint("swaps").?);
-    try testing.expectEqualStrings("rescind", r.getText("kind").?);
-    try testing.expectEqualSlices(u8, &key33(vec.identity), r.getBytes("validatorIdentityKey").?);
-    const evs = try histOf(a, &svc, tp, null, null, pid, 500);
-    try testing.expectEqualStrings("dssr", try kinds(a, evs));
-    try testing.expectEqual(@as(u64, 3), evs[3].seq);
-    try testing.expectEqualSlices(u8, &w.store.outpointKey(e.f.txid("rescind"), 0), evs[3].rec.getBytes("outpoint").?);
-    try testing.expectEqual(@as(usize, 1), try svc.map("closes").count());
-    // The scan after the spent Swap is the rescind only. After the rescind output, the page is empty.
-    const spent = try recordAt(a, &svc, tp, "spentPools", e.f.txid("swap_tokens_in"));
-    const after_swap = try idx.poolHistory(a, &svc, tp, null, null, null, 500, try idx.cursorOf(spent));
-    try testing.expectEqualStrings("r", try kinds(a, after_swap.events));
-    const after_rescind = try idx.poolHistory(a, &svc, tp, null, null, null, 500, try idx.cursorOf(r));
-    try testing.expectEqual(@as(usize, 0), after_rescind.events.len);
-    // The LP's Close of the rescinded output writes the close.
-    const cr = try ltx(a, e.f.txid("close_rescinded"), e.f.tx("close_rescinded"));
-    idx.now_ms = 4_000;
-    try idx.admitted(a, &svc, e.topic, cr, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("rescind"), .vout = 0 }, cr);
-    try testing.expectEqualStrings("dssrc", try kinds(a, try histOf(a, &svc, tp, null, null, pid, 500)));
-    // A rejected Rescind (a fresh index): the rescind rows go.
-    var svc2 = try e.svc(a);
-    try threeEvents(a, e, &svc2, 100, 1_000, 2_000);
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc2, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, &svc2, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    try idx.rejected(a, &svc2, e.topic, rs);
-    try testing.expectEqualStrings("dss", try kinds(a, try histOf(a, &svc2, tp, null, null, pid, 500)));
-    try testing.expectEqual(@as(usize, 0), try svc2.map("closes").count());
-}
-
-test "pool history (0.40.0): a rejected Swap's event and a rejected deploy's event go with their pools" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    const pid = poolId(e);
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    try testing.expectEqualStrings("ds", try kinds(a, try histOf(a, &svc, tp, null, null, pid, 500)));
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")));
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("pool_deploy"), e.f.tx("pool_deploy")));
-    try testing.expectEqual(@as(usize, 0), try svc.map("history").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("trades").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("spentPools").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-}
-
-test "pools at t (0.40.0): before the deploy none; at and after the deploy the deploy's state; between the Swaps the first Swap's; at and after the close none — the candidates the live pools and the closes from t on" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    try testing.expectEqual(@as(usize, 0), (try idx.poolsAt(a, &svc, tp, 99)).len);
-    const at0 = try idx.poolsAt(a, &svc, tp, 100);
-    try testing.expectEqual(@as(usize, 1), at0.len);
-    try testing.expectEqualStrings("deploy", at0[0].getText("kind").?);
-    try testing.expectEqual(@as(u64, vec.pool0.bsv), at0[0].getUint("bsvReserve").?);
-    const mid = try idx.poolsAt(a, &svc, tp, 1_999);
-    try testing.expectEqualSlices(u8, &e.f.txid("swap_bsv_in"), mid[0].getBytes("txid").?);
-    try testing.expectEqual(@as(u64, vec.pool1.bsv), mid[0].getUint("bsvReserve").?);
-    try testing.expectEqual(@as(u64, 1), mid[0].getUint("swaps").?);
-    try testing.expectEqual(@as(u64, 2), (try idx.poolsAt(a, &svc, tp, 50_000))[0].getUint("swaps").?);
-    // Closed at 3,000: listed at 2,999, not at 3,000 or after; the pool is no longer live, found
-    // through `closes`.
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    try testing.expectEqual(@as(usize, 0), try svc.map("pools").count());
-    try testing.expectEqual(@as(usize, 1), (try idx.poolsAt(a, &svc, tp, 2_999)).len);
-    try testing.expectEqual(@as(usize, 1), (try idx.poolsAt(a, &svc, tp, 150)).len);
-    try testing.expectEqual(@as(usize, 0), (try idx.poolsAt(a, &svc, tp, 3_000)).len);
-    try testing.expectEqual(@as(usize, 0), (try idx.poolsAt(a, &svc, tp, 9_000)).len);
-}
-
-test "pool history (0.40.0): rows at one time sort by the pool's swap count (two Swaps in one ms); the window [from, to), a pool or every pool the window touches, the limit (the oldest)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 1_000);
-    const pid = poolId(e);
-    const evs = try histOf(a, &svc, tp, null, null, null, 500);
-    try testing.expectEqualStrings("dss", try kinds(a, evs));
-    try testing.expectEqual(@as(u64, 1), evs[1].seq);
-    try testing.expectEqual(@as(u64, 2), evs[2].seq);
-    try testing.expectEqualSlices(u8, &e.f.txid("swap_bsv_in"), evs[1].rec.getBytes("txid").?);
-    try testing.expectEqualSlices(u8, &e.f.txid("swap_tokens_in"), evs[2].rec.getBytes("txid").?);
-    // The window: from ≤ at < to.
-    try testing.expectEqualStrings("ss", try kinds(a, try histOf(a, &svc, tp, 101, null, null, 500)));
-    try testing.expectEqualStrings("d", try kinds(a, try histOf(a, &svc, tp, null, 1_000, pid, 500)));
-    try testing.expectEqualStrings("dss", try kinds(a, try histOf(a, &svc, tp, 100, 1_001, pid, 500)));
-    try testing.expectEqual(@as(usize, 0), (try histOf(a, &svc, tp, 1_001, null, null, 500)).len);
-    try testing.expectEqual(@as(usize, 0), (try histOf(a, &svc, tp, null, null, .{0xa0} ** 36, 500)).len);
-    // The limit keeps the oldest.
-    try testing.expectEqualStrings("ds", try kinds(a, try histOf(a, &svc, tp, null, null, null, 2)));
-    // The trades of one ms: both, the newest (by txid in `trades`) first.
-    try testing.expectEqual(@as(usize, 2), (try idx.trades(a, &svc, tp, .{ .from = 1_000, .to = 1_001 })).len);
-}
-
-/// `idx.poolHistory`'s events, from the first page.
-fn histOf(a: Allocator, svc: *lookup.Service, tp: []const u8, from: ?u64, to: ?u64, pid: ?[36]u8, limit: usize) ![]const idx.Event {
-    return (try idx.poolHistory(a, svc, tp, from, to, pid, limit, null)).events;
-}
-
-test "pool history (0.40.0): a Swap and the pool's close at the same ms — both rows, the close after (its sequence the swap count + 1); /pools/at then gives no row; rejecting the close makes the Swap the floor again" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 2_000);
-    const pid = poolId(e);
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    idx.now_ms = 2_000; // the last Swap's time
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    const evs = try histOf(a, &svc, tp, null, null, pid, 500);
-    try testing.expectEqualStrings("dssc", try kinds(a, evs));
-    try testing.expectEqual(@as(u64, 2), evs[2].seq);
-    try testing.expectEqual(@as(u64, 3), evs[3].seq);
-    try testing.expectEqual(@as(u64, 2), evs[3].rec.getUint("swaps").?); // the record's swap count unchanged
-    try testing.expect((try svc.map("history").link(try cat(a, &.{ tp, &pid, &be64t(2_000), &be64t(2) }))) != null);
-    try testing.expectEqual(@as(usize, 0), (try idx.poolsAt(a, &svc, tp, 2_000)).len);
-    try idx.rejected(a, &svc, e.topic, cl);
-    const back = try idx.poolsAt(a, &svc, tp, 2_000);
-    try testing.expectEqual(@as(usize, 1), back.len);
-    try testing.expectEqualSlices(u8, &e.f.txid("swap_tokens_in"), back[0].getBytes("txid").?);
-    try testing.expectEqualStrings("dss", try kinds(a, try histOf(a, &svc, tp, null, null, pid, 500)));
-}
-
-test "pool history (0.40.0): forward paging — a window larger than the limit, read page by page with `after`, gives every event exactly once, in order; the same over one pool; within from/to" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    try threeEvents(a, e, &svc, 100, 1_000, 1_000);
-    const cl = try ltx(a, e.f.txid("close"), e.f.tx("close"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    const all = try histOf(a, &svc, tp, null, null, null, 500);
-    try testing.expectEqualStrings("dssc", try kinds(a, all));
-    for ([_]?[36]u8{ null, poolId(e) }) |one| for ([_]usize{ 1, 2, 3 }) |limit| {
-        var got: std.ArrayList(idx.Event) = .empty;
-        var after: ?idx.EventCursor = null;
-        var pages: usize = 0;
-        while (true) : (pages += 1) {
-            const pg = try idx.poolHistory(a, &svc, tp, null, null, one, limit, after);
-            try got.appendSlice(a, pg.events);
-            if (!pg.more) break;
-            const last = pg.events[pg.events.len - 1];
-            after = .{ .at = last.at, .pid = last.pid, .seq = last.seq };
-            try testing.expect(pages < 10);
-        }
-        try testing.expectEqual(all.len, got.items.len);
-        for (all, got.items) |x, y| {
-            try testing.expectEqual(x.at, y.at);
-            try testing.expectEqual(x.seq, y.seq);
-        }
-    };
-    // Within the window: after the deploy, to 3,000 — the two Swaps, then no more.
-    const first = (try idx.poolHistory(a, &svc, tp, null, 3_000, null, 1, null)).events[0];
-    const pg = try idx.poolHistory(a, &svc, tp, null, 3_000, null, 2, .{ .at = first.at, .pid = first.pid, .seq = first.seq });
-    try testing.expectEqualStrings("ss", try kinds(a, pg.events));
-    try testing.expect(!pg.more);
-}
-
-// ---------------------------------------------------------------- pool events (0.41.0)
-
-/// The pool events the hooks asked for since the last call (`Service.emit`), cleared.
-fn takeEvents(svc: *lookup.Service) []const Value {
-    const out = svc.events.items;
-    svc.events = .empty;
-    return out;
-}
-
-/// An emitted pool event: `{event: "pool", topic: "ls_amm_<tokenId>", tokenId, row}`; → its row.
-fn poolEvent(e: *Env, ev: Value) !Value {
-    try testing.expectEqualStrings("pool", ev.getText("event").?);
-    try testing.expectEqualStrings(e.token, ev.getText("tokenId").?);
-    var buf: [128]u8 = undefined;
-    try testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "ls_amm_{s}", .{e.token}), ev.getText("topic").?);
-    return ev.get("row").?;
-}
-
-/// No bytes anywhere in a row: text and numbers only.
-fn plainRow(row: Value) !void {
-    for (row.map) |en| switch (en.value) {
-        .text, .uint, .nint => {},
-        else => return error.TestUnexpectedResult,
-    };
-}
-
-/// The row an event carries is the row `/pools/history` reads (`eventRow` of the history record), byte
-/// for byte (dag-cbor).
-fn sameAsHistory(a: Allocator, svc: *lookup.Service, tp: []const u8, pid: [36]u8, i: usize, row: Value) !void {
-    const evs = try histOf(a, svc, tp, null, null, pid, 500);
-    try testing.expectEqualSlices(u8, try cbor.encode(a, try idx.eventRow(a, evs[i].rec)), try cbor.encode(a, row));
-}
-
-test "pool events (0.41.0): one event per history row written — deploy, swap, close, rescind — its row the history row; a rejection of each, one revert per pool with the pool after the undo (none for a deploy)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const e = try Env.init(a);
-    defer e.deinit();
-    var svc = try e.svc(a);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const f = e.f;
-    const pid = poolId(e);
-    const pid_text = try poolIdText(a, e);
-
-    // The deploy: one event, kind deploy, the row as /pools/history reads it.
-    idx.now_ms = 100;
-    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    var evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    var row = try poolEvent(e, evs[0]);
-    try plainRow(row);
-    try testing.expectEqualStrings("deploy", row.getText("kind").?);
-    try testing.expectEqualStrings(pid_text, row.getText("poolId").?);
-    try testing.expectEqualStrings(pid_text, row.getText("outpoint").?);
-    try testing.expectEqualStrings(&w.header.toHex(f.txid("pool_deploy")), row.getText("txid").?);
-    try testing.expectEqual(@as(u64, 100), row.getUint("at").?);
-    try testing.expectEqual(@as(u64, 0), row.getUint("swaps").?);
-    try sameAsHistory(a, &svc, tp, pid, 0, row);
-
-    // A Swap: one event (its `spent` writes none: the pool continues), kind swap with the trade fields.
-    idx.now_ms = 1_000;
-    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("pool_deploy"), .vout = 0 }, try ltx(a, f.txid("swap_bsv_in"), f.tx("swap_bsv_in")));
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try plainRow(row);
+    const pid = try poolIdOfEnv(a, e);
+    const sw = e.f.txid("swap_bsv_in");
+
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    const row = (try latestRow(a, try idx.poolName(a, pid))).?;
     try testing.expectEqualStrings("swap", row.getText("kind").?);
+    try testing.expectEqualStrings(try opStr(a, sw, 0), row.getText("outpoint").?);
+    try testing.expectEqual(@as(u64, 1), row.getUint("swaps").?);
+    try testing.expectEqual(@as(u64, vec.pool1.bsv), row.getUint("bsvReserve").?);
+    try testing.expectEqual(@as(u64, vec.pool1.tokens), row.getUint("tokenReserve").?);
+    try testing.expectEqualStrings(pid, row.getText("keyId").?);
     try testing.expectEqualStrings("buy", row.getText("side").?);
-    try testing.expectEqual(@as(u64, 1), row.getUint("swaps").?);
-    try testing.expect(row.getText("payoutPkh") != null and row.getText("commissionPkh") != null and row.getUint("amountOut") != null);
-    try sameAsHistory(a, &svc, tp, pid, 1, row);
-    idx.now_ms = 2_000;
-    try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ 0, 1 });
-    try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("swap_bsv_in"), .vout = 0 }, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")));
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    try testing.expectEqualStrings("sell", (try poolEvent(e, evs[0])).getText("side").?);
+    try testing.expectEqual(@as(u64, vec.swap_bsv_in_tokens_out), row.getUint("amountOut").?);
+    try testing.expectEqual(@as(u64, vec.pool0.tokens - vec.pool1.tokens), row.getUint("amountOut").?);
+    try testing.expectEqualStrings(vec.commission_pkh, row.getText("commissionPkh").?);
+    const fv = row.get("feeVouts").?;
+    try testing.expectEqual(@as(u64, 2), fv.getUint("lp").?);
+    try testing.expectEqual(@as(u64, 3), fv.getUint("validator").?);
+    try testing.expectEqual(@as(u64, 4), fv.getUint("commission").?);
+    inline for (.{ "feeLp", "feeValidator", "feeCommission", "amountIn", "payoutPkh" }) |k| try testing.expect(row.get(k) != null);
+    // No close: the pool continued.
+    try testing.expectEqual(@as(usize, 2), Index.count("amm/pool/"));
+    // The live list: the continuation; the counters on its row.
+    const all = try e.live(a, &svc);
+    try testing.expectEqual(@as(usize, 1), all.len);
+    try testing.expectEqualStrings(try opStr(a, sw, 0), all[0].getText("outpoint").?);
+    try testing.expectEqual(row.getUint("amountIn").?, all[0].get("lifetime").?.getUint("satsIn").?);
+    try testing.expectEqual(@as(u64, 1000), all[0].get("lifetime").?.getUint("lastTradeAt").?);
+    const tp = try idx.tokenPrefix(a, e.token);
+    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
+    // A re-admission of the Swap: counted once.
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{});
+    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
 
-    // A close: one event, no outpoint, no reserves.
-    const cl = try ltx(a, f.txid("close"), f.tx("close"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc, e.topic, cl, &.{1}, &.{0});
-    try idx.spent(a, &svc, e.topic, .{ .txid = f.txid("swap_tokens_in"), .vout = 0 }, cl);
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try testing.expectEqualStrings("close", row.getText("kind").?);
-    try testing.expect(row.get("outpoint") == null and row.get("bsvReserve") == null);
-    try sameAsHistory(a, &svc, tp, pid, 3, row);
-
-    // The close rejected: one revert, the pool as it stands after the undo — live again at the last
-    // Swap's output, its reserves and swap count; `at` the step's time.
-    idx.now_ms = 3_500;
-    try idx.rejected(a, &svc, e.topic, cl);
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try plainRow(row);
-    try testing.expectEqualStrings("revert", row.getText("kind").?);
-    try testing.expectEqualStrings(&w.header.toHex(f.txid("close")), row.getText("txid").?);
-    try testing.expectEqualStrings(pid_text, row.getText("poolId").?);
-    try testing.expectEqualStrings(try opStr(a, f.txid("swap_tokens_in"), 0), row.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, 2), row.getUint("swaps").?);
-    try testing.expectEqual(@as(u64, 3_500), row.getUint("at").?);
-    const live = try recordAt(a, &svc, tp, "pools", f.txid("swap_tokens_in"));
-    try testing.expectEqual(live.getUint("bsvReserve").?, row.getUint("bsvReserve").?);
-    try testing.expectEqual(live.getUint("tokenReserve").?, row.getUint("tokenReserve").?);
-    try testing.expect(row.getText("lpPubKey") != null and row.getText("validatorIdentityKey") != null and row.get("commissionBps") != null);
-
-    // A Swap rejected: one revert (its continuation gone, the pool it spent live again).
-    try idx.rejected(a, &svc, e.topic, try ltx(a, f.txid("swap_tokens_in"), f.tx("swap_tokens_in")));
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try testing.expectEqualStrings("revert", row.getText("kind").?);
-    try testing.expectEqualStrings(try opStr(a, f.txid("swap_bsv_in"), 0), row.getText("outpoint").?);
-    try testing.expectEqual(@as(u64, 1), row.getUint("swaps").?);
-
-    // The deploy rejected (its Swap first): the last revert has no pool left — kind, txid, poolId, at only.
-    try idx.rejected(a, &svc, e.topic, try ltx(a, f.txid("swap_bsv_in"), f.tx("swap_bsv_in")));
-    _ = takeEvents(&svc);
-    try idx.rejected(a, &svc, e.topic, try ltx(a, f.txid("pool_deploy"), f.tx("pool_deploy")));
-    evs = takeEvents(&svc);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try testing.expectEqualStrings("revert", row.getText("kind").?);
-    try testing.expectEqual(@as(usize, 4), row.map.len);
-    try testing.expectEqualStrings(pid_text, row.getText("poolId").?);
-    try testing.expectEqualStrings(&w.header.toHex(f.txid("pool_deploy")), row.getText("txid").?);
-
-    // A Rescind (a fresh index): one rescind event (none from its `spent`); rejected, one revert with
-    // the pool live again.
-    var svc2 = try e.svc(a);
-    try threeEvents(a, e, &svc2, 100, 1_000, 2_000);
-    _ = takeEvents(&svc2);
-    const rs = try ltx(a, f.txid("rescind"), f.tx("rescind"));
-    idx.now_ms = 3_000;
-    try idx.admitted(a, &svc2, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, &svc2, e.topic, .{ .txid = f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    evs = takeEvents(&svc2);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try testing.expectEqualStrings("rescind", row.getText("kind").?);
-    try testing.expectEqualStrings(try opStr(a, f.txid("rescind"), 0), row.getText("outpoint").?);
-    try sameAsHistory(a, &svc2, tp, pid, 3, row);
-    try idx.rejected(a, &svc2, e.topic, rs);
-    evs = takeEvents(&svc2);
-    try testing.expectEqual(@as(usize, 1), evs.len);
-    row = try poolEvent(e, evs[0]);
-    try testing.expectEqualStrings("revert", row.getText("kind").?);
-    try testing.expectEqualStrings(try opStr(a, f.txid("swap_tokens_in"), 0), row.getText("outpoint").?);
+    // A continuation naming another next key (swap_bad_next): not listed; the deploy closes.
+    const e2 = try Env.init(a);
+    defer e2.deinit();
+    var s2 = try e2.svc(a);
+    try e2.admit(a, &s2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e2.admit(a, &s2, "swap_bad_next", null, &.{ 0, 1 }, &.{e2.op("pool_deploy", 0)});
+    try testing.expectEqualStrings("close", (try latestRow(a, try idx.poolName(a, pid))).?.getText("kind").?);
+    try testing.expectEqual(@as(usize, 0), (try e2.live(a, &s2)).len);
 }
 
-// --- 0.47.0: the counters, /trades stepped backward ---
+test "close and rescind: the LP's Close is the pool's close hop (no output), the validator's Rescind a rescind hop out of the live list; rejected, each is reverted and the pool it spent is live again" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_]struct { name: []const u8, outs: []const u32, kind: []const u8 }{ .{ .name = "close", .outs = &.{1}, .kind = "close" }, .{ .name = "rescind", .outs = &.{0}, .kind = "rescind" } }) |c| {
+        const e = try Env.init(a);
+        defer e.deinit();
+        var svc = try e.svc(a);
+        const pid = try poolIdOfEnv(a, e);
+        const sw2 = e.f.txid("swap_tokens_in");
+        try e.threeHops(a, &svc);
+        try e.admit(a, &svc, c.name, null, c.outs, &.{e.op("swap_tokens_in", 0)});
+        const end = (try latestRow(a, try idx.poolName(a, pid))).?;
+        try testing.expectEqualStrings(c.kind, end.getText("kind").?);
+        try testing.expectEqualStrings(&w.header.toHex(e.f.txid(c.name)), end.getText("txid").?);
+        try testing.expectEqual(std.mem.eql(u8, c.kind, "rescind"), end.get("outpoint") != null);
+        try testing.expectEqual(@as(usize, 0), (try e.live(a, &svc)).len);
+        var ch = try e.chain(a);
+        const ids = try e.q(a, &.{.{ .key = "poolIds", .value = .{ .array = try a.dupe(Value, &.{.{ .text = pid }}) } }});
+        const pos = (try idx.answer(a, &svc, &ch, ids)).freeform.array[0];
+        try testing.expectEqualStrings(if (std.mem.eql(u8, c.kind, "rescind")) "rescinded" else "closed", pos.getText("status").?);
 
-test "counters (0.47.0): per pool (volume in and out each side, the three fees each asset, the last trade), per token (volume, trades), per validator (swaps, fees) — written at admission, a dupe counted once, unwound at rejection (lastTradeAt from history), exposed on the pool row and /stats" {
+        try e.reject(a, &svc, c.name, null);
+        const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
+        try testing.expectEqualStrings("revert", rv.getText("kind").?);
+        try testing.expectEqualStrings(try opStr(a, sw2, 0), rv.getText("outpoint").?);
+        const back = try e.live(a, &svc);
+        try testing.expectEqual(@as(usize, 1), back.len);
+        try testing.expectEqualStrings(try opStr(a, sw2, 0), back[0].getText("outpoint").?);
+    }
+}
+
+test "rejected: a rejected Swap's rows are reverted under the same names — its output {reverted}, its pool's revert row with the pool it spent given back — and its counts unwound; a rejected deploy's revert has no pool; re-admitted, it counts again" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
     var svc = try e.svc(a);
-    try twoSwapsAt(a, e, &svc, 1_000, 2_000);
-    const tp = try w.store.nameKey(a, e.topic, &.{});
-    const buy = try tradeRec(a, &svc, tp, e.f.txid("swap_bsv_in"));
-    const sell = try tradeRec(a, &svc, tp, e.f.txid("swap_tokens_in"));
-    const bout = buy.getUint("amountOut").?;
-    const sout = sell.getUint("amountOut").?;
-    var p = try idx.poolCounters(a, &svc, tp, &poolId(e));
-    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
-    try testing.expectEqual(bout, p.tokens_out);
-    try testing.expectEqual(@as(u64, 50_000), p.tokens_in);
-    try testing.expectEqual(sout, p.sats_out);
-    try testing.expectEqual(@as(u64, 60), p.lp_sats);
-    try testing.expectEqual(@as(u64, 10), p.validator_sats);
-    try testing.expectEqual(@as(u64, 20), p.commission_sats);
-    try testing.expectEqual(@as(u64, 150), p.lp_tokens);
-    try testing.expectEqual(@as(u64, 25), p.validator_tokens);
-    try testing.expectEqual(@as(u64, 50), p.commission_tokens);
-    try testing.expectEqual(@as(?u64, 2_000), p.last_trade_at);
-    var t = try idx.tokenCounters(a, &svc, tp);
-    try testing.expectEqual(@as(u64, 2), t.trades);
-    try testing.expectEqual(20_000 + sout, t.volume_sats);
-    try testing.expectEqual(bout + 50_000, t.volume_tokens);
-    var v = try idx.validatorCounters(a, &svc, tp, &key33(vec.identity));
-    try testing.expectEqual(@as(u64, 2), v.swaps);
-    try testing.expectEqual(@as(u64, 10), v.fee_sats);
-    try testing.expectEqual(@as(u64, 25), v.fee_tokens);
-
-    // Exposed: the pool row's `lifetime`, /stats' lifetime volume and trades.
-    var ch = try e.chain(a);
-    const row = (try idx.answer(a, &svc, &ch, try e.q(a, &.{}))).freeform.array[0];
-    try testing.expectEqual(@as(u64, 20_000), row.get("lifetime").?.get("satsIn").?.uint);
-    try testing.expectEqual(@as(u64, 150), row.get("lifetime").?.get("lpTokens").?.uint);
-    try testing.expectEqual(@as(u64, 2_000), row.get("lifetime").?.get("lastTradeAt").?.uint);
-    const st = try idx.stats(a, &svc, tp, 3_000);
-    try testing.expectEqual(@as(u64, 2), st.trades);
-    try testing.expectEqual(20_000 + sout, st.volume_sats);
-
-    // The token-in Swap rejected: its counts unwound, the last trade the first Swap's again.
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in")));
-    p = try idx.poolCounters(a, &svc, tp, &poolId(e));
-    try testing.expectEqual(@as(u64, 0), p.tokens_in);
-    try testing.expectEqual(@as(u64, 0), p.lp_tokens);
-    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
-    try testing.expectEqual(@as(?u64, 1_000), p.last_trade_at);
-    t = try idx.tokenCounters(a, &svc, tp);
-    try testing.expectEqual(@as(u64, 1), t.trades);
-    try testing.expectEqual(@as(u64, 20_000), t.volume_sats);
-    v = try idx.validatorCounters(a, &svc, tp, &key33(vec.identity));
-    try testing.expectEqual(@as(u64, 1), v.swaps);
-    try testing.expectEqual(@as(u64, 0), v.fee_tokens);
-    // The other rejected too: no counter record left.
-    try idx.rejected(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")));
-    try testing.expectEqual(@as(usize, 0), try svc.map("counters").count());
-
-    // A dupe hook call of the same Swap (a later time): counted once.
-    var svc2 = try e.svc(a);
-    idx.now_ms = 1;
-    try e.admit(a, &svc2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{0});
-    idx.now_ms = 1_000;
-    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    idx.now_ms = 5_000;
-    try e.admit(a, &svc2, "swap_bsv_in", null, &.{ 0, 1 }, &.{0});
-    p = try idx.poolCounters(a, &svc2, tp, &poolId(e));
-    try testing.expectEqual(@as(u64, 20_000), p.sats_in);
-    try testing.expectEqual(@as(?u64, 5_000), p.last_trade_at);
-    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc2, tp)).trades);
+    const pid = try poolIdOfEnv(a, e);
+    const sw = e.f.txid("swap_bsv_in");
+    const tp = try idx.tokenPrefix(a, e.token);
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    try e.reject(a, &svc, "swap_bsv_in", null);
+    const out = (try latestRow(a, try idx.outputName(a, sw, 0))).?;
+    try testing.expect(out.getBool("reverted").?);
+    try testing.expectEqualStrings(pid, out.getText("poolId").?);
+    const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
+    try testing.expectEqualStrings("revert", rv.getText("kind").?);
+    try testing.expectEqualStrings(&w.header.toHex(sw), rv.getText("txid").?);
+    try testing.expectEqualStrings(pid, rv.getText("outpoint").?);
+    try testing.expectEqual(@as(u64, 0), rv.getUint("swaps").?);
+    try testing.expectEqualStrings("revert", (try latestRow(a, "amm/hop")).?.getText("kind").?);
+    try testing.expectEqual(@as(u64, 0), (try idx.tokenCounters(a, &svc, tp)).trades);
+    const all = try e.live(a, &svc);
+    try testing.expectEqual(@as(usize, 1), all.len);
+    try testing.expectEqualStrings(pid, all[0].getText("outpoint").?);
+    try testing.expect(all[0].get("lifetime").?.get("lastTradeAt").? == .null);
+    // A second rejection: nothing more.
+    const before = Index.names.items.len;
+    try e.reject(a, &svc, "swap_bsv_in", null);
+    try testing.expectEqual(before, Index.names.items.len);
+    // Re-admitted (a proof after the rejection): listed and counted again.
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqualStrings(try opStr(a, sw, 0), (try e.live(a, &svc))[0].getText("outpoint").?);
+    // The deploy rejected: the pool is gone, its revert names only the pool.
+    try e.reject(a, &svc, "swap_bsv_in", null);
+    try e.reject(a, &svc, "pool_deploy", null);
+    const gone = (try latestRow(a, try idx.poolName(a, pid))).?;
+    try testing.expectEqualStrings("revert", gone.getText("kind").?);
+    try testing.expect(gone.get("outpoint") == null);
+    try testing.expectEqual(@as(usize, 0), (try e.live(a, &svc)).len);
 }
 
-/// 0.40.0's `/trades`, kept here as the reference: the whole window read, then stepped back.
-fn tradesFullWindow(a: Allocator, svc: *lookup.Service, tp: []const u8, q: idx.TradeQuery) ![]idx.Trade {
-    const lt = struct {
-        fn f(x: idx.Trade, y: idx.Trade) bool {
-            if (x.at != y.at) return x.at < y.at;
-            return std.mem.order(u8, &x.txid, &y.txid) == .lt;
-        }
-    }.f;
-    var rows: std.ArrayList(idx.Trade) = .empty;
-    if (q.pool) |pid| {
-        const prefix = try cat(a, &.{ tp, &pid });
-        for (try svc.map("history").prefixed(prefix)) |kv| {
-            const rec = try svc.store.getValue(a, kv.value.cid);
-            if (!std.mem.eql(u8, rec.getText("kind") orelse "", "swap")) continue;
-            const at = rec.getUint("at").?;
-            if (q.from) |f| if (at < f) continue;
-            if (q.to) |t| if (at >= t) continue;
-            try rows.append(a, .{ .at = at, .txid = rec.getBytes("txid").?[0..32].*, .rec = rec });
-        }
-        std.mem.sort(idx.Trade, rows.items, {}, struct {
-            fn f(_: void, x: idx.Trade, y: idx.Trade) bool {
-                return lt(x, y);
-            }
-        }.f);
-    } else {
-        var to = q.to;
-        if (q.before) |b| to = if (to) |t| @min(t, b.at +| 1) else b.at +| 1;
-        for (try svc.map("trades").prefixed(tp)) |kv| {
-            const at = std.mem.readInt(u64, kv.key[tp.len..][0..8], .big);
-            if (q.from) |f| if (at < f) continue;
-            if (to) |t| if (at >= t) continue;
-            try rows.append(a, .{ .at = at, .txid = kv.key[tp.len + 8 ..][0..32].*, .rec = .null });
-        }
-    }
-    var out: std.ArrayList(idx.Trade) = .empty;
-    var i = rows.items.len;
-    while (i > 0 and out.items.len < q.limit) {
-        i -= 1;
-        const r = rows.items[i];
-        if (q.before) |b| if (!lt(r, .{ .at = b.at, .txid = b.txid, .rec = .null })) continue;
-        try out.append(a, r);
-    }
-    return out.items;
-}
-
-test "/trades (0.47.0, D3): stepped back from the window's end — the same rows, in the same order, as 0.40.0's full-window read, for windows, limits and cursors; one pool's from its history (swaps among other events, several at one ms)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    var svc = try lookup.Service.load(a, ms.store(), "ls_amm_x", idx.spec.maps, null);
-    const tp = try w.store.nameKey(a, "tm_color_" ++ "aa" ** 32 ++ "_0", &.{});
-    const pid: [36]u8 = .{0x77} ** 36;
-    var prng = std.Random.DefaultPrng.init(5);
-    const r = prng.random();
-    // 400 trades over times 0..199 (ties), every third of them also one pool's history Swap, with
-    // other events among them.
-    var seq: u64 = 0;
-    for (0..400) |n| {
-        const at = r.uintLessThan(u64, 200);
-        var txid: [32]u8 = undefined;
-        r.bytes(&txid);
-        const rec = try svc.store.putValue(a, .{ .map = try a.dupe(Entry, &.{
-            .{ .key = "kind", .value = .{ .text = "swap" } },
-            .{ .key = "txid", .value = .{ .bytes = try a.dupe(u8, &txid) } },
-            .{ .key = "at", .value = .{ .uint = at } },
-        }) });
-        try svc.map("trades").putLink(try atKey(a, tp, at, txid), rec);
-        if (n % 3 == 0) {
-            seq += 1;
-            var b: [16]u8 = undefined;
-            std.mem.writeInt(u64, b[0..8], at, .big);
-            std.mem.writeInt(u64, b[8..16], seq, .big);
-            try svc.map("history").putLink(try cat(a, &.{ tp, &pid, &b }), rec);
-            if (n % 9 == 0) {
-                seq += 1;
-                std.mem.writeInt(u64, b[8..16], seq, .big);
-                const other = try svc.store.putValue(a, .{ .map = try a.dupe(Entry, &.{ .{ .key = "kind", .value = .{ .text = "close" } }, .{ .key = "at", .value = .{ .uint = at } } }) });
-                try svc.map("history").putLink(try cat(a, &.{ tp, &pid, &b }), other);
-            }
-        }
-    }
-    for (0..400) |k| {
-        var q: idx.TradeQuery = .{ .limit = r.uintLessThan(usize, 60) + 1 };
-        if (r.boolean()) q.from = r.uintLessThan(u64, 210);
-        if (r.boolean()) q.to = r.uintLessThan(u64, 210);
-        if (k % 2 == 0) q.pool = pid;
-        if (r.boolean()) {
-            var bt: [32]u8 = undefined;
-            r.bytes(&bt);
-            q.before = .{ .at = r.uintLessThan(u64, 210), .txid = bt };
-        }
-        const want = try tradesFullWindow(a, &svc, tp, q);
-        const got = try idx.trades(a, &svc, tp, q);
-        try testing.expectEqual(want.len, got.len);
-        for (want, got) |x, y| {
-            try testing.expectEqual(x.at, y.at);
-            try testing.expectEqualSlices(u8, &x.txid, &y.txid);
-        }
-        // Paging by the last row's cursor to the end gives the window's rows exactly once.
-        if (k % 20 == 0 and got.len == q.limit) {
-            var seen: usize = got.len;
-            var cur = got[got.len - 1];
-            var pq = q;
-            while (true) {
-                pq.before = .{ .at = cur.at, .txid = cur.txid };
-                const pg = try idx.trades(a, &svc, tp, pq);
-                try testing.expectEqualDeep(try tradesFullWindow(a, &svc, tp, pq), pg);
-                seen += pg.len;
-                if (pg.len < pq.limit) break;
-                cur = pg[pg.len - 1];
-            }
-            try testing.expect(seen > 0);
-        }
-    }
-}
-
-/// The fixtures' history as admission called the hooks: the pool's deploy, its two Swaps, the
-/// validator's Rescind, the LP's Close of it — `admitted`, then `spent` for the coin each consumed.
-fn history(a: Allocator, e: *Env, svc: *lookup.Service) !void {
-    idx.now_ms = 1_000;
-    try twoSwaps(a, e, svc);
-    idx.now_ms = 2_000;
-    const rs = try ltx(a, e.f.txid("rescind"), e.f.tx("rescind"));
-    try idx.admitted(a, svc, e.topic, rs, &.{0}, &.{0});
-    try idx.spent(a, svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = 0 }, rs);
-    idx.now_ms = 3_000;
-    const cr = try ltx(a, e.f.txid("close_rescinded"), e.f.tx("close_rescinded"));
-    try idx.admitted(a, svc, e.topic, cr, &.{1}, &.{0});
-    try idx.spent(a, svc, e.topic, .{ .txid = e.f.txid("rescind"), .vout = 0 }, cr);
-}
-
-test "reindex (0.48.1, skein-overlay 0.23.0): the hooks re-run over the same history into a fresh index give the same index, byte for byte — they write only through the Service, read no head and carry nothing between calls but the maps; the step's time is the one input from outside (a re-run at another time stamps that time)" {
+test "positions {poolIds}: per pool its state, LP key and the LP fees of its standing Swaps (sats from buys, tokens from sells); closed after the Close; an unknown id closed with zeros; the dropped queries refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const e = try Env.init(a);
     defer e.deinit();
-    var live = try e.svc(a);
-    try history(a, e, &live);
-    const live_root = try live.save();
-    // A fresh index (what the reindex's head starts as: the empty state), the same calls in the same order.
-    var fresh = try e.svc(a);
-    try history(a, e, &fresh);
-    try testing.expectEqualSlices(u8, live_root, try fresh.save());
-    // Through the contract, as the engine's reindex thread calls the program: fn reindex begin (the
-    // empty index), the hooks over it, switch (the index's head the new one).
-    const arg = struct {
-        fn of(al: Allocator, service: []const u8, op: []const u8) !Value {
-            return .{ .map = try al.dupe(Entry, &.{
-                .{ .key = "kind", .value = .{ .text = "lookup-reindex" } },
-                .{ .key = "app", .value = .{ .text = "amm" } },
-                .{ .key = "service", .value = .{ .text = service } },
-                .{ .key = "program", .value = .{ .text = "amm-lookup" } },
-                .{ .key = "op", .value = .{ .text = op } },
-            }) };
-        }
-    }.of;
-    const begun = try lookup.reindexOp(a, idx.spec, e.ms.store(), try arg(a, e.service, "begin"), null);
-    try testing.expectEqualStrings("ls_amm", begun.answer.getText("index").?);
-    var re = try lookup.Service.loadIndex(a, e.ms.store(), e.service, "ls_amm", idx.spec.maps, begun.partial);
-    try history(a, e, &re);
-    const partial = try re.save();
-    try testing.expectEqualSlices(u8, live_root, partial);
-    const sw = try lookup.reindexOp(a, idx.spec, e.ms.store(), try arg(a, e.service, "switch"), partial);
-    try testing.expectEqualSlices(u8, live_root, sw.live.?);
-    try testing.expectEqualSlices(u8, begun.partial, sw.partial);
-    // At another time: the same maps but the rows the hooks stamp with the step's time (a trade row's
-    // and a history row's `at`, their keys).
-    var later = try e.svc(a);
-    idx.now_ms = 9_000;
-    try twoSwaps(a, e, &later);
-    var early = try e.svc(a);
-    idx.now_ms = 1_000;
-    try twoSwaps(a, e, &early);
-    try testing.expect(!std.mem.eql(u8, try early.save(), try later.save()));
-    try testing.expectEqual(try early.map("history").count(), try later.map("history").count());
+    var svc = try e.svc(a);
+    var ch = try e.chain(a);
+    const pid = try poolIdOfEnv(a, e);
+    try e.threeHops(a, &svc);
+    const buy = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_bsv_in"), 0))).?;
+    const sell = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_tokens_in"), 0))).?;
+    const unknown = "a0" ** 32 ++ "_0";
+    const ids = try e.q(a, &.{.{ .key = "poolIds", .value = .{ .array = try a.dupe(Value, &.{ .{ .text = pid }, .{ .text = unknown } }) } }});
+    const ans = (try idx.answer(a, &svc, &ch, ids)).freeform.array;
+    try testing.expectEqualStrings("live", ans[0].getText("status").?);
+    try testing.expectEqualStrings(vec.lp, ans[0].getText("lpPubKey").?);
+    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), ans[0].getText("outpoint").?);
+    try testing.expectEqual(buy.getUint("feeLp").?, ans[0].getUint("sats").?);
+    try testing.expectEqual(sell.getUint("feeLp").?, ans[0].getUint("tokens").?);
+    try testing.expectEqual(@as(u64, 2), ans[0].getUint("swaps").?);
+    try testing.expect(ans[0].get("current").?.get("lifetime") != null);
+    try testing.expectEqualStrings("closed", ans[1].getText("status").?);
+    try testing.expect(ans[1].get("lpPubKey").? == .null);
+    try testing.expectEqual(@as(u64, 0), ans[1].getUint("swaps").?);
+    try e.admit(a, &svc, "close", null, &.{1}, &.{e.op("swap_tokens_in", 0)});
+    try testing.expectEqualStrings("closed", (try idx.answer(a, &svc, &ch, ids)).freeform.array[0].getText("status").?);
+    // 0.49.0: the queries nothing reads are gone.
+    for ([_][]const u8{ "outpoint", "validatorIdentityKey", "validatorIdentityKeys", "commissionPkhs" }) |k|
+        try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, try e.q(a, &.{.{ .key = k, .value = .{ .text = "x" } }})));
+}
+
+/// `t` (a Swap spending `spent` at input 0) with its commission paid to `pkh` instead: the call's
+/// commissionPkh push and the commission output's script replaced (same txid: the hooks take it as
+/// given).
+fn withCommission(a: Allocator, t: bsvz.transaction.Transaction, pkh: [20]u8) !bsvz.transaction.Transaction {
+    const old = unhex(a, vec.commission_pkh);
+    const ul = try a.dupe(u8, t.inputs[0].unlocking_script.bytes);
+    const at = std.mem.indexOf(u8, ul, &([_]u8{0x14} ++ old[0..20].*)).?;
+    @memcpy(ul[at + 1 ..][0..20], &pkh);
+    const ins = try a.dupe(bsvz.transaction.Input, t.inputs);
+    ins[0].unlocking_script = bsvz.script.Script.init(ul);
+    var r = t;
+    r.inputs = ins;
+    const call = (try pool.parseSwapCall(a, ul)).?;
+    const cont = pool.poolOfScript(t.outputs[0].locking_script.bytes).?;
+    const l = try pool.feeLayout(call, cont);
+    const script = try pool.payoutScript(a, cont.asset_id, l.commission, pkh, call.bsv_in);
+    return withOutput(a, r, l.commission_at.?, script);
+}
+
+test "fees that are ours: the validator fee when the spent pool names this instance — filed in `bsv` for a buy (key [1, amm pool] under the spent pool's keyId), in `tokens` for a sell with the tally; not ours, nothing filed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    {
+        // Not ours: another identity.
+        const e = try Env.init(a);
+        defer e.deinit();
+        var svc = try e.svc(a);
+        idx.self_identity = key(7);
+        try e.threeHops(a, &svc);
+        try testing.expectEqual(@as(usize, 0), idx.filings.items.len);
+        try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, try idx.tokenPrefix(a, e.token)));
+    }
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    idx.self_identity = key33(vec.identity);
+    const tp = try idx.tokenPrefix(a, e.token);
+    try e.threeHops(a, &svc);
+    try testing.expectEqual(@as(usize, 2), idx.filings.items.len);
+    const b = idx.filings.items[0];
+    const bsw = e.f.tx("swap_bsv_in");
+    try testing.expectEqualSlices(u8, &e.f.txid("swap_bsv_in"), &b.txid);
+    try testing.expectEqual(@as(u32, 3), b.vout);
+    try testing.expectEqualStrings("bsv", b.basket);
+    try testing.expectEqualStrings("amm pool", b.protocol);
+    try testing.expectEqual(@as(u8, 1), b.protocol_level);
+    try testing.expectEqualStrings(vec.nonce, b.key_id); // the deploy's key: its nonce
+    try testing.expectEqualStrings("anyone", b.counterparty);
+    try testing.expectEqual(@as(u64, @intCast(bsw.outputs[3].satoshis)), b.satoshis);
+    const s = idx.filings.items[1];
+    try testing.expectEqualStrings("tokens", s.basket);
+    try testing.expectEqualStrings(try opStr(a, e.f.txid("pool_deploy"), 0), s.key_id); // the grandparent: the outpoint before the one the sell spends
+    const sell = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_tokens_in"), 0))).?;
+    const fee = sell.getUint("feeValidator").?;
+    try testing.expectEqual(fee, try idx.tally(a, &svc, tp));
+    try testing.expectEqual(@as(u64, sell.get("feeVouts").?.getUint("validator").?), s.vout);
+    // Not a commission of ours (the fixture's commission pays another key): no flag.
+    try testing.expectEqual(@as(usize, 0), Index.count("amm/commission/"));
+
+    // Our token fee output spent: it leaves the tally; that spend rejected: it is back.
+    var bld = bsvz.transaction.Builder.init(a);
+    const stx = e.f.tx("swap_tokens_in");
+    try bld.addInputFromTx(&stx, s.vout);
+    try bld.addOutput(.{ .satoshis = 1, .locking_script = stx.outputs[s.vout].locking_script });
+    const sp = try bld.build();
+    const raw = try sp.serialize(a);
+    const sp_l = try ltx(a, w.beef.txidOf(raw), sp);
+    try idx.admitted(a, &svc, e.topic, sp_l, &.{0}, &.{});
+    try idx.spent(a, &svc, e.topic, .{ .txid = e.f.txid("swap_tokens_in"), .vout = s.vout }, sp_l);
+    try e.commit(&svc);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+    try idx.rejected(a, &svc, e.topic, sp_l);
+    try e.commit(&svc);
+    try testing.expectEqual(fee, try idx.tally(a, &svc, tp));
+    // The sell rejected: its fee is gone from the tally.
+    try e.reject(a, &svc, "swap_tokens_in", null);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+}
+
+test "fees that are ours: a commission paying our [1, amm commission] key keyed by the spent pool outpoint — flagged under amm/commission/<op>, filed, a token commission in the tally; a commission to that key for ANOTHER outpoint is not ours; rejected, the flag reverted and the tally back" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    const me = key33(vec.own_key);
+    idx.self_identity = me; // not the validator: only the commission can be ours
+    const tp = try idx.tokenPrefix(a, e.token);
+    const sb = e.f.txid("swap_bsv_in");
+    const ours = try pool.commissionPkh(a, me, sb, 0);
+    const sell = try withCommission(a, e.f.tx("swap_tokens_in"), ours);
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    try e.admit(a, &svc, "swap_tokens_in", sell, &.{ 0, 2, 3, 4 }, &.{e.op("swap_bsv_in", 0)});
+    const row = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_tokens_in"), 0))).?;
+    const cv: u32 = @intCast(row.get("feeVouts").?.getUint("commission").?);
+    const flag = (try latestRow(a, try idx.commissionName(a, e.f.txid("swap_tokens_in"), cv))).?;
+    try testing.expectEqualStrings("commission", flag.getText("kind").?);
+    try testing.expectEqualStrings("token", flag.getText("asset").?);
+    try testing.expectEqual(row.getUint("feeCommission").?, flag.getUint("amount").?);
+    try testing.expectEqualStrings(&w.header.toHex(e.f.txid("swap_tokens_in")), flag.getText("swap").?);
+    try testing.expectEqual(@as(usize, 1), idx.filings.items.len);
+    const f = idx.filings.items[0];
+    try testing.expectEqualStrings("amm commission", f.protocol);
+    try testing.expectEqualStrings(try opStr(a, sb, 0), f.key_id);
+    try testing.expectEqualStrings("tokens", f.basket);
+    try testing.expectEqual(cv, f.vout);
+    try testing.expectEqual(row.getUint("feeCommission").?, try idx.tally(a, &svc, tp));
+    try e.reject(a, &svc, "swap_tokens_in", sell);
+    try testing.expect((try latestRow(a, try idx.commissionName(a, e.f.txid("swap_tokens_in"), cv))).?.getBool("reverted").?);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+
+    // Our key, but keyed by another outpoint: not ours.
+    const e2 = try Env.init(a);
+    defer e2.deinit();
+    var s2 = try e2.svc(a);
+    idx.self_identity = me;
+    const wrong = try withCommission(a, e2.f.tx("swap_tokens_in"), try pool.commissionPkh(a, me, sb, 1));
+    try e2.admit(a, &s2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e2.admit(a, &s2, "swap_bsv_in", null, &.{ 0, 1 }, &.{e2.op("pool_deploy", 0)});
+    try e2.admit(a, &s2, "swap_tokens_in", wrong, &.{ 0, 2, 3, 4 }, &.{e2.op("swap_bsv_in", 0)});
+    try testing.expectEqual(@as(usize, 0), Index.count("amm/commission/"));
+    try testing.expectEqual(@as(usize, 0), idx.filings.items.len);
+}
+
+/// The topic's own fact that `op` is spent by `by` (skein-overlay `<app>/topic/output/<op>`), as the
+/// engine emits it at `by`'s admission (after the hooks: in the index from the next step on).
+fn topicSpent(a: Allocator, op: lookup.Outpoint, by: [32]u8) !void {
+    const name = try std.fmt.allocPrint(a, "amm/topic/output/{s}.{d}", .{ &w.header.toHex(op.txid), op.vout });
+    try Index.put(name, .{ .map = try a.dupe(Entry, &.{
+        .{ .key = "event", .value = .{ .text = name } },
+        .{ .key = "state", .value = .{ .text = "spent" } },
+        .{ .key = "spentBy", .value = .{ .text = try a.dupe(u8, &w.header.toHex(by)) } },
+    }) });
+}
+
+test "order rule (skein-overlay 0.26.0): a proven B spending the pool output a held unmined A spent — B's admitted + spent heard BEFORE A's rejected — the pool continues at B's output, its trade counted once; A's rejection (nothing given back) unwinds only A; a fee output of ours spent by C then by a proven D leaves the tally once" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    idx.self_identity = key33(vec.identity);
+    const pid = try poolIdOfEnv(a, e);
+    const tp = try idx.tokenPrefix(a, e.token);
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    // A and B: two sells spending the buy's pool output (one transaction body under two txids: the
+    // hooks take a transaction as given).
+    const sell = e.f.tx("swap_tokens_in");
+    const ta: [32]u8 = .{0xa1} ** 32;
+    const tb: [32]u8 = .{0xb2} ** 32;
+    const la = try ltx(a, ta, sell);
+    const lb = try ltx(a, tb, sell);
+    const xp = e.op("swap_bsv_in", 0);
+    // A, held unmined: admitted; the topic's fact (its step's) says the pool output is spent by A.
+    try idx.admitted(a, &svc, e.topic, la, &.{ 0, 2, 3, 4 }, &.{});
+    try idx.spent(a, &svc, e.topic, xp, la);
+    try e.commit(&svc);
+    try topicSpent(a, xp, ta);
+    const fee = (try latestRow(a, try idx.outputName(a, ta, 0))).?.getUint("feeValidator").?;
+    try testing.expectEqual(fee, try idx.tally(a, &svc, tp));
+    // B, proven, heard before A's rejection: its continuation of the same pool output lists.
+    try idx.admitted(a, &svc, e.topic, lb, &.{ 0, 2, 3, 4 }, &.{});
+    try idx.spent(a, &svc, e.topic, xp, lb);
+    try e.commit(&svc);
+    try testing.expectEqual(2 * fee, try idx.tally(a, &svc, tp));
+    try testing.expectEqual(@as(u64, 3), (try idx.tokenCounters(a, &svc, tp)).trades);
+    // A rejected (double spent, by B): nothing given back — B consumes the pool output.
+    svc.given_back = &.{};
+    try idx.rejected(a, &svc, e.topic, la);
+    try e.commit(&svc);
+    try testing.expectEqual(fee, try idx.tally(a, &svc, tp)); // B's fee only
+    try testing.expectEqual(@as(u64, 2), (try idx.tokenCounters(a, &svc, tp)).trades); // buy + B
+    const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
+    try testing.expectEqualStrings("revert", rv.getText("kind").?);
+    try testing.expectEqualStrings(try opStr(a, tb, 0), rv.getText("outpoint").?); // the pool as it stands: B's
+    const all = try e.live(a, &svc);
+    try testing.expectEqual(@as(usize, 1), all.len);
+    try testing.expectEqualStrings(try opStr(a, tb, 0), all[0].getText("outpoint").?);
+    try testing.expectEqual(@as(usize, 3), (try idx.standing(a, pid)).len); // deploy, buy, B
+    try testing.expect((try latestRow(a, try idx.outputName(a, ta, 0))).?.getBool("reverted").?);
+    try testing.expect((try latestRow(a, try idx.outputName(a, tb, 0))).?.get("reverted") == null);
+
+    // B's fee output (ours) spent by C, then by a proven D: it leaves the tally once; C's rejection
+    // (nothing given back: D consumes it) does not bring it back.
+    const fv: u32 = @intCast((try latestRow(a, try idx.outputName(a, tb, 0))).?.get("feeVouts").?.getUint("validator").?);
+    var bld = bsvz.transaction.Builder.init(a);
+    try bld.addInputFromTx(&sell, fv);
+    try bld.addOutput(.{ .satoshis = 1, .locking_script = sell.outputs[fv].locking_script });
+    const body = try bld.build();
+    @constCast(body.inputs)[0].previous_outpoint.txid.bytes = tb; // it spends B's output (B's txid is the test's own)
+    const fx: lookup.Outpoint = .{ .txid = tb, .vout = fv };
+    const lc = try ltx(a, .{0xc3} ** 32, body);
+    const ld = try ltx(a, .{0xd4} ** 32, body);
+    try idx.spent(a, &svc, e.topic, fx, lc);
+    try e.commit(&svc);
+    try topicSpent(a, fx, lc.txid);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+    try idx.spent(a, &svc, e.topic, fx, ld);
+    try e.commit(&svc);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+    try idx.rejected(a, &svc, e.topic, lc);
+    try e.commit(&svc);
+    try testing.expectEqual(@as(u64, 0), try idx.tally(a, &svc, tp));
+    // Had C's coin been given back (no winner), it would be ours again.
+    svc.given_back = null;
+    try idx.rejected(a, &svc, e.topic, lc);
+    try e.commit(&svc);
+    try testing.expectEqual(fee, try idx.tally(a, &svc, tp));
 }

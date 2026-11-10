@@ -36,7 +36,6 @@ const eql = std.mem.eql;
 
 pub const app_name = "amm";
 const app_head = "amm/app";
-const submit_box = "amm/submit";
 
 pub fn main() u8 {
     return vm.main("amm-setup", run);
@@ -123,15 +122,13 @@ fn step(a: Allocator, in: Value) !void {
 
     const engine = try engineProgram(a, in);
     var answers: std.ArrayList(Value) = .empty;
-    var took = false;
-    for (try setup.registrations(a, d), 0..) |r, i| {
+    for (try setup.registrations(a, d, env)) |r| {
         const ans = try vm.call(a, engine, r.func, r.arg);
         if (try setup.refusalOf(a, r.func, ans)) |why| {
             // The step fails: the head move above and any registration before are not written.
             std.log.err("deploy: {s}", .{why});
             return error.RegistrationRefused;
         }
-        if (i == 0) took = setup.seeded(ans, d.txid);
         try answers.append(a, ans);
     }
 
@@ -141,10 +138,5 @@ fn step(a: Allocator, in: Value) !void {
         .{ .key = "token", .value = .{ .cid = token } },
         .{ .key = "registered", .value = .{ .array = answers.items } },
     });
-    if (!took) {
-        const me = vm.selfKey(in) orelse return error.NoSelfKey;
-        const m = try vm.send(a, me, submit_box, try setup.submitBody(a, wire, d.topic));
-        try fields.append(a, .{ .key = "submitted", .value = .{ .cid = m } });
-    }
     _ = try vm.finish(a, s, try result(a, fields.items));
 }

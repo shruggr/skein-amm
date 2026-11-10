@@ -25,7 +25,6 @@ const scbor = @import("sdk_cbor");
 const ov = @import("skein_overlay");
 const sktopic = @import("topic");
 const Oracle = @import("src/oracle.zig").Oracle;
-const rescind = @import("src/rescind.zig");
 const pool_lock = @import("src/lock.zig");
 
 const bsvz = w.bsvz;
@@ -66,6 +65,10 @@ const MemView = struct {
     txs: std.AutoHashMap([32]u8, []const u8),
     admitted: std.AutoHashMap([36]u8, void),
     spent: std.AutoHashMap([36]u8, [32]u8),
+    /// 0.49.0: `previousCoins` as skein-overlay 0.26.0 answers it — the topic's judgement alone (a
+    /// coin another held transaction spends is still a previous coin); the chain level answers
+    /// `liveSpender`.
+    topic_only: bool = false,
 
     fn init(a: std.mem.Allocator, id: [32]u8) MemView {
         return .{ .a = a, .id = id, .txs = .init(a), .admitted = .init(a), .spent = .init(a) };
@@ -105,7 +108,7 @@ const MemView = struct {
         for (tx.inputs, 0..) |in, i| {
             const k = key(.{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index });
             if (!self.admitted.contains(k)) continue;
-            if (self.spent.get(k)) |sp| if (!std.mem.eql(u8, &sp, &txid)) continue;
+            if (!self.topic_only) if (self.spent.get(k)) |sp| if (!std.mem.eql(u8, &sp, &txid)) continue;
             try out.append(self.a, @intCast(i));
         }
         return out.items;
@@ -134,8 +137,12 @@ const MemView = struct {
         }
         return out.items;
     }
+    fn liveSpenderImpl(ptr: *anyopaque, _: std.mem.Allocator, op: Outpoint) anyerror!?[32]u8 {
+        const self: *MemView = @ptrCast(@alignCast(ptr));
+        return self.spent.get(key(op));
+    }
     fn view(self: *MemView) view_mod.View {
-        return .{ .ptr = self, .rawTxFn = rawTxImpl, .previousCoinsFn = previousCoinsImpl, .spenderFn = spenderImpl, .spendersFn = spendersImpl };
+        return .{ .ptr = self, .rawTxFn = rawTxImpl, .previousCoinsFn = previousCoinsImpl, .spenderFn = spenderImpl, .spendersFn = spendersImpl, .liveSpenderFn = liveSpenderImpl };
     }
 };
 
@@ -428,7 +435,7 @@ const Node = struct {
     sent: Sent = .{},
     /// Transactions the chain app registered and broadcast (`Ingested.registered`).
     posts: usize = 0,
-    threads: std.AutoHashMapUnmanaged([32]u8, struct { ev: Value, ingest: []const u8 }) = .empty,
+    threads: std.AutoHashMapUnmanaged([32]u8, struct { ev: Value }) = .empty,
 
     fn init(a: std.mem.Allocator, ms: *w.store.MemStore, topic: []const u8) !Node {
         const in: Value = .{ .map = try a.dupe(cbor.Entry, &.{
@@ -465,7 +472,30 @@ const Node = struct {
         return error.UnexpectedCall;
     }
     fn cx(n: *Node, st: *ov.state.State) ov.submit.Ctx {
-        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = &n.sent, .sendFn = Sent.send, .answerFn = Sent.answer }, .st = st, .in = n.in, .thread = submission_thread };
+        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = n, .sendFn = wsend, .answerFn = wanswer, .ingestFn = wingest, .chainHeadFn = whead }, .st = st, .in = n.in };
+    }
+    fn wsend(ctx: *anyopaque, a: std.mem.Allocator, box: []const u8, body: Value) anyerror![]const u8 {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        return Sent.send(&n.sent, a, box, body);
+    }
+    fn wanswer(ctx: *anyopaque, a: std.mem.Allocator, to: []const u8, box: []const u8, body: Value) anyerror!void {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        return Sent.answer(&n.sent, a, to, box, body);
+    }
+    /// The chain app's `ingest`, an in-VM call in the step (skein-overlay 0.26.0, skein-chain 0.10.0):
+    /// stood in for by the chain state's own.
+    fn wingest(ctx: *anyopaque, a: std.mem.Allocator, arg: Value) anyerror!Value {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        const ch = try n.chain();
+        const got = try ch.ingest(arg.getBytes("beef") orelse return error.BadArgs);
+        n.posts += got.registered.len;
+        n.chain_root = try ch.save();
+        _ = a;
+        return .{ .map = &.{} };
+    }
+    fn whead(ctx: *anyopaque, _: std.mem.Allocator) anyerror!?[]const u8 {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        return n.chain_root;
     }
     fn headers(n: *Node, raws: []const []const u8) !void {
         const ch = try n.chain();
@@ -481,32 +511,38 @@ const Node = struct {
         const st = try n.state();
         const m = try ov.submit.begin(n.cx(st), ev);
         n.ov_root = try st.save();
-        try n.threads.put(n.a, txid, .{ .ev = ev, .ingest = m.ingests[m.ingests.len - 1] });
+        try n.threads.put(n.a, txid, .{ .ev = ev });
+        const done = m.stepped orelse return .{ .gate = .pending, .admitted = false, .applied = &.{} };
         const ch = try n.chain();
-        const got = try ch.ingest(ev.getBytes("beef").?);
-        n.posts += got.registered.len;
-        n.chain_root = try ch.save();
-        if (got.status == .proven) return n.answer(txid, .{ .proven = .{} }, .mined);
-        return .{ .gate = .pending, .admitted = false, .applied = &.{} };
+        const gate: Gated = if ((try ch.holds(txid)) and (try ch.status(txid)) == .proven) .mined else .pending;
+        return .{ .gate = gate, .admitted = done.admitted, .applied = done.applied };
     }
     fn answer(n: *Node, txid: [32]u8, ans: ov.submit.Answer, gate: Gated) !Stepped {
-        const t = n.threads.get(txid).?;
+        return n.answerOf(txid, txid, ans, gate);
+    }
+    fn answerOf(n: *Node, subject: [32]u8, txid: [32]u8, ans: ov.submit.Answer, gate: Gated) !Stepped {
+        const t = n.threads.get(subject).?;
         const st = try n.state();
-        const done = try ov.submit.answered(n.cx(st), t.ev, t.ingest, ans);
+        const done = try ov.submit.heard(n.cx(st), t.ev, txid, ans);
         n.ov_root = try st.save();
         return .{ .gate = gate, .admitted = done.admitted, .applied = done.applied };
     }
     /// A status provider's message about the transaction reaching the chain app, and the chain
     /// app's answer to the submission's thread.
     fn status(n: *Node, event: Value, tx_status: []const u8) !Stepped {
-        const txid = try ov.submit.txidOf(readBack(n.a, event));
+        return n.statusOf(event, try ov.submit.txidOf(readBack(n.a, event)), tx_status);
+    }
+    /// The same for an item `txid` of the submission (0.26.0: an item is admitted only after the
+    /// ones before it in the BEEF are).
+    fn statusOf(n: *Node, event: Value, txid: [32]u8, tx_status: []const u8) !Stepped {
+        const subject = try ov.submit.txidOf(readBack(n.a, event));
         const ch = try n.chain();
         const o = try ch.applyStatus(txid, tx_status, null);
         n.chain_root = try ch.save();
         return switch (o) {
-            .accepted => n.answer(txid, .accepted, .accepted),
-            .proven => n.answer(txid, .{ .proven = .{} }, .mined),
-            .rejected => n.answer(txid, .{ .rejected = tx_status }, .rejected),
+            .accepted => n.answerOf(subject, txid, .seen, .accepted),
+            .proven => n.answerOf(subject, txid, .{ .mined = .{} }, .mined),
+            .rejected => n.answerOf(subject, txid, .{ .rejected = tx_status }, .rejected),
             .pending => .{ .gate = .pending, .admitted = false, .applied = &.{} },
         };
     }
@@ -858,9 +894,9 @@ test "submission: the gate, answered from the state — a rejection admits nothi
         const again = try m.respond(a, req);
         try testing.expectEqual(@as(usize, 0), m.f.oracle.calls); // not signed again
         try testing.expectEqualSlices(u8, &r.reply.ok.txid.?, &again.next.wait_on);
-        // The thread it waits on: the one the broadcast record names (main.zig awaits it).
-        const rec = (try (try m.node.state()).pendingRecord(again.next.wait_on)).?;
-        try testing.expectEqualSlices(u8, submission_thread, rec.getCid("thread").?);
+        // 0.49.0 (skein-overlay 0.25.0): its pending record names no thread; main.zig answers from the state at once.
+        try testing.expect((try (try m.node.state()).pendingRecord(again.next.wait_on)) != null);
+        try expectRefused(try m.answer(a, req), .pending);
 
         // The network's word admits it; the thread rests; both waiting calls answer the same.
         _ = try m.node.status(ev, "SEEN_ON_NETWORK");
@@ -1208,6 +1244,16 @@ test "refused: the pool was already spent; the reply carries its newest state (u
     try testing.expectEqual(@as(u64, vec.pool2.bsv), s.satoshis);
     try testing.expectEqual(@as(u64, vec.pool2.tokens), s.pool.token_reserve);
     try testing.expectEqualSlices(u8, &key33(vec.pool2.validator), &s.pool.validator);
+
+    // 0.49.0 (skein-overlay 0.26.0): the topic's judgement still counts the spent pool as a previous
+    // coin; the chain level (a held spender not rejected) refuses it all the same, pool_spent.
+    f.mem.topic_only = true;
+    const r_chain = try f.spend(.swap, stale, pool_op);
+    try expectRefused(r_chain, .pool_spent);
+    try testing.expect(r_chain.refused.newest.?.live.outpoint.eql(.{ .txid = txidOf(f.raw("swap_tokens_in")), .vout = 0 }));
+    // The retry is still recognised as this very request.
+    try testing.expect((try f.spend(.swap, try request(a, f.raw("swap_bsv_in"), 0), pool_op)) == .ok);
+    f.mem.topic_only = false;
 
     // As the reply body has it.
     const body = try messages.replyValue(a, r);
@@ -1617,6 +1663,8 @@ test "relay request: a swap with its funding transaction as an unproven parent, 
     try testing.expectEqual(Gated.pending, first.gate);
     try testing.expectEqual(@as(usize, 2), m.node.posts); // the funding transaction and the swap, by the chain app
     try testing.expect((try (try m.node.chain()).txRaw(txidOf(p.funding))) != null); // held now
+    // 0.26.0: the funding transaction (an earlier item) is seen first; then the swap is admitted.
+    _ = try m.node.statusOf(ev, txidOf(p.funding), "RECEIVED");
     const done = try m.node.status(ev, "RECEIVED");
     try testing.expect(done.admitted);
     try testing.expectEqualSlices(u32, &.{ 0, 1 }, done.applied[0].outputs_to_admit);
@@ -1771,193 +1819,6 @@ test "relay request refused: an unsigned funding input, a bad funding signature 
 
 // --- the marketplace relay's deploy: the LP's deploy with its funding as an unproven parent ---
 
-// --- the validator's Rescind (0.13.0): the pool as the wallet's caller input, with a mocked wallet ---
-
-/// The validator wallet's coin (gen/vectors `validatorWallet`, key(0x77)): fund:6.
-const wallet_priv: [32]u8 = .{0x77} ** 32;
-
-/// A mocked wallet (skein's wallet program, #93: createAction with a caller input, signAction with
-/// its spends): the draft spends the caller's inputs first, then its own coin fund:6, its outputs the
-/// caller's and its change after them, a 600 sats' fee — gen/vectors' `rescind` exactly.
-const MockWallet = struct {
-    f: *Fx,
-    draft: ?Transaction = null,
-    declared: u64 = 0,
-
-    fn createAction(self: *MockWallet, a: std.mem.Allocator, body: Value) !Value {
-        try testing.expectEqualStrings("createAction", body.getText("op").?);
-        const in0 = body.getArray("inputs").?[0];
-        self.declared = in0.getUint("unlockingScriptLength").?;
-        try testing.expect(in0.get("unlockingScript") == null);
-        try testing.expect(body.get("options").?.getBool("noSend").?);
-        const op = in0.getText("outpoint").?;
-        const ib = try w.beef.parse(a, body.getBytes("inputBEEF").?);
-        const src_txid = w.header.fromHex(op[0..64]) catch unreachable;
-        try testing.expect(ib.find(src_txid) != null);
-        const vout = try std.fmt.parseInt(u32, op[65..], 10);
-        const fund = try Transaction.parse(a, self.f.raw("fund"));
-        const outs = body.getArray("outputs").?;
-        try testing.expectEqual(@as(usize, 1), outs.len);
-        var t = fund;
-        t.version = 1;
-        t.lock_time = 0;
-        t.inputs = try a.dupe(bsvz.transaction.Input, &.{
-            .{ .previous_outpoint = .{ .txid = .{ .bytes = src_txid }, .index = vout }, .unlocking_script = bsvz.script.Script.empty(), .sequence = 0xffffffff },
-            .{ .previous_outpoint = .{ .txid = .{ .bytes = txidOf(self.f.raw("fund")) }, .index = 6 }, .unlocking_script = bsvz.script.Script.empty(), .sequence = 0xffffffff },
-        });
-        const wl = try p2pkhLock(a, &bsvz.crypto.hash.hash160(&(try (try bsvz.primitives.ec.PrivateKey.fromBytes(wallet_priv)).publicKey()).toCompressedSec1()).bytes);
-        t.outputs = try a.dupe(bsvz.transaction.Output, &.{
-            .{ .satoshis = @intCast(outs[0].getUint("satoshis").?), .locking_script = bsvz.script.Script.init(outs[0].getBytes("lockingScript").?) },
-            .{ .satoshis = 50_000 - 600, .locking_script = bsvz.script.Script.init(wl) },
-        });
-        self.draft = t;
-        const raw = try t.serialize(a);
-        // The draft as Atomic BEEF, its inputBEEF the ancestry.
-        var entries: std.ArrayList(w.beef.Entry) = .empty;
-        try entries.appendSlice(a, ib.entries);
-        if (ib.find(txidOf(self.f.raw("fund"))) == null) try entries.append(a, .{ .txid = txidOf(self.f.raw("fund")), .format = .raw, .raw = self.f.raw("fund") });
-        try entries.append(a, .{ .txid = txidOf(raw), .format = .raw, .raw = raw });
-        const atomic = try w.beef.serialize(a, .{ .version = w.beef.V2, .atomic = txidOf(raw), .bumps = ib.bumps, .entries = entries.items });
-        return .{ .map = try a.dupe(cbor.Entry, &.{
-            .{ .key = "kind", .value = .{ .text = "wallet-result" } },
-            .{ .key = "op", .value = .{ .text = "createAction" } },
-            .{ .key = "txid", .value = .{ .text = &w.header.toHex(txidOf(raw)) } },
-            .{ .key = "tx", .value = .{ .bytes = atomic } },
-            .{ .key = "reference", .value = .{ .cid = "cid:draft" } },
-        }) };
-    }
-
-    fn signAction(self: *MockWallet, a: std.mem.Allocator, body: Value) !Value {
-        try testing.expectEqualStrings("signAction", body.getText("op").?);
-        try testing.expectEqualStrings("cid:draft", body.getCid("reference").?);
-        var t = self.draft.?;
-        const sp = body.get("spends").?;
-        try testing.expectEqual(@as(usize, 1), sp.map.len);
-        const i = try std.fmt.parseInt(usize, sp.map[0].key, 10);
-        const u = sp.map[0].value.getBytes("unlockingScript").?;
-        try testing.expect(u.len <= self.declared); // the wallet refuses a longer one (UnlockingScriptTooLong)
-        const ins = try a.dupe(bsvz.transaction.Input, t.inputs);
-        ins[i].unlocking_script = bsvz.script.Script.init(u);
-        t.inputs = ins;
-        // The wallet signs its own input (the fixture's signature: go-sdk's RFC 6979 nonce, which
-        // bsvz's signing does not reproduce); it must verify over this very transaction.
-        const fixture = try Transaction.parse(a, self.f.raw("rescind"));
-        const own = try a.dupe(bsvz.transaction.Input, t.inputs);
-        own[1].unlocking_script = fixture.inputs[1].unlocking_script;
-        t.inputs = own;
-        const fund = try Transaction.parse(a, self.f.raw("fund"));
-        try testing.expectEqual(unlock.InputCheck.verified, try unlock.checkInput(a, &t, 1, fund.outputs[6].locking_script.bytes, @intCast(fund.outputs[6].satoshis)));
-        const raw = try t.serialize(a);
-        return .{ .map = try a.dupe(cbor.Entry, &.{
-            .{ .key = "kind", .value = .{ .text = "wallet-result" } },
-            .{ .key = "op", .value = .{ .text = "signAction" } },
-            .{ .key = "txid", .value = .{ .text = &w.header.toHex(txidOf(raw)) } },
-            .{ .key = "tx", .value = .{ .bytes = try w.beef.serialize(a, .{ .version = w.beef.V2, .atomic = txidOf(raw), .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{.{ .txid = txidOf(raw), .format = .raw, .raw = raw }}) }) } },
-        }) };
-    }
-};
-
-test "rescind (0.13.0): the pool, followed from its deploy to its newest output; the wallet's createAction with it as a caller input (its unlock to come, the contract's one output: the pool, its key cleared; noSend); the draft's pool input written as Rescind (the wallet's change as Rúnar's) and signed by the pool's current validator key; the wallet's signAction — gen/vectors' rescind byte for byte" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in" });
-    var wallet: MockWallet = .{ .f = f };
-
-    // From the deploy (root names the pool it knows), to its newest output: swap_tokens_in:0.
-    const deploy_txid = txidOf(f.raw("pool_deploy"));
-    const t = switch (try rescind.targetOf(a, f.mem.view(), f.cfg.identity, .{ .txid = deploy_txid, .vout = 0 })) {
-        .ok => |t| t,
-        .refused => |why| {
-            std.debug.print("{s}\n", .{why});
-            return error.TestUnexpectedRefusal;
-        },
-    };
-    const sw2 = txidOf(f.raw("swap_tokens_in"));
-    try testing.expect(t.op.eql(.{ .txid = sw2, .vout = 0 }));
-    try testing.expectEqual(@as(u64, vec.pool2.bsv), t.satoshis);
-    try testing.expectEqualSlices(u8, &key33(vec.pool2.validator), &t.pool.validator);
-    try testing.expectEqualStrings(try validator.topicOf(a, f.id), try rescind.topicOf(a, t.pool));
-
-    // The contract's output: the pool written back, the same sats, its key cleared.
-    const fx = try Transaction.parse(a, f.raw("rescind"));
-    const o = try rescind.rescindOutput(a, t.script, t.satoshis);
-    try testing.expectEqualSlices(u8, fx.outputs[0].locking_script.bytes, o.script);
-    try testing.expectEqual(@as(u64, vec.pool2.bsv), o.satoshis);
-    try testing.expect(pool.poolOfScript(o.script).?.rescinded());
-
-    // The input BEEF: the pool's transaction with its ancestry.
-    const input_beef = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{
-        .{ .txid = txidOf(f.raw("fund")), .format = .raw, .raw = f.raw("fund") },
-        .{ .txid = txidOf(f.raw("token_deploy")), .format = .raw, .raw = f.raw("token_deploy") },
-        .{ .txid = deploy_txid, .format = .raw, .raw = f.raw("pool_deploy") },
-        .{ .txid = txidOf(f.raw("swap_bsv_in")), .format = .raw, .raw = f.raw("swap_bsv_in") },
-        .{ .txid = sw2, .format = .raw, .raw = f.raw("swap_tokens_in") },
-    }) });
-    const body = try rescind.createBody(a, t, input_beef);
-    try testing.expectEqualStrings("amm-rescind", body.getArray("labels").?[0].text);
-    const draft = try wallet.createAction(a, body);
-    const stage = rescind.stageOf(draft);
-    try testing.expect(stage == .draft);
-    const l = (try rescind.locate(a, f.cfg.identity, stage.draft.tx)).?;
-    try testing.expectEqual(@as(usize, 0), l.index);
-    const key_id = (try rescind.keyIdOf(a, f.mem.view(), l)).?;
-    var kb: [64 + 1 + 10]u8 = undefined;
-    try testing.expectEqualStrings(pool.keyId(&kb, txidOf(f.raw("swap_bsv_in")), 0), key_id); // the pool input of the swap that made it
-    // The oracle reproduces the Go fixture's signature of the pool input.
-    // (Rescind's call: code, sig, _changePKH, _changeAmount, preimage, method: six pushes.)
-    const fu = fx.inputs[0].unlocking_script.bytes;
-    var pushes: [6]brc162.Push = undefined;
-    var pos: usize = 0;
-    for (&pushes) |*p| {
-        p.* = brc162.readPush(fu, pos).?;
-        pos = p.next;
-    }
-    try testing.expectEqual(fu.len, pos);
-    try testing.expectEqual(@as(u8, 0x52), pushes[5].op); // Rescind
-    f.oracle.recorded = .{ .hash = unlock.sha256d(pushes[4].data), .der = pushes[1].data[0 .. pushes[1].data.len - 1] };
-    const u = try rescind.unlockRescind(a, l, key_id, f.oracle.oracle());
-    try testing.expectEqualSlices(u8, fu, u);
-    try testing.expect(u.len <= try rescind.maxUnlockLen(l.script));
-    const signed = try wallet.signAction(a, try rescind.signBody(a, stage.draft.reference, l.index, u));
-    const fin = rescind.stageOf(signed);
-    try testing.expect(fin == .signed);
-    const fb = try w.beef.parse(a, fin.signed);
-    try testing.expectEqualSlices(u8, f.raw("rescind"), fb.find(fb.atomic.?).?.raw.?);
-    // The topic takes it: the pool a coin consumed, the rescinded pool admitted at output 0.
-    _ = try f.mem.hold(f.raw("rescind"));
-    try testing.expect(f.mem.spent.contains(MemView.key(.{ .txid = sw2, .vout = 0 })));
-    try testing.expect(f.mem.admitted.contains(MemView.key(.{ .txid = txidOf(f.raw("rescind")), .vout = 0 })));
-
-    // A draft whose output 0 is not the contract's (the key kept): refused.
-    var bad = l;
-    const changed = try a.dupe(bsvz.transaction.Output, l.tx.outputs);
-    changed[0].locking_script = bsvz.script.Script.init(t.script);
-    bad.tx.outputs = changed;
-    try testing.expectError(error.NotTheContractsOutputs, rescind.unlockRescind(a, bad, key_id, f.oracle.oracle()));
-
-    // Rescinded now: refused (no second Rescind); no swap is signed for it. Not ours: another
-    // identity. Not held.
-    try testing.expect((try rescind.targetOf(a, f.mem.view(), f.cfg.identity, .{ .txid = deploy_txid, .vout = 0 })) == .refused);
-    const rop: Outpoint = .{ .txid = txidOf(f.raw("rescind")), .vout = 0 };
-    const rs_tx = try Transaction.parse(a, f.raw("rescind"));
-    try testing.expect((try validator.currentKeyId(a, f.mem.view(), pool.poolOfScript(rs_tx.outputs[0].locking_script.bytes).?, @intCast(rs_tx.outputs[0].satoshis), rop)) == null);
-    try expectRefused(try f.spend(.swap, try request(a, f.raw("swap_tokens_in"), 0), rop), .pool_not_an_input);
-    const g = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy" });
-    try testing.expect((try rescind.targetOf(a, g.mem.view(), key33(vec.pool0.validator), .{ .txid = deploy_txid, .vout = 0 })) == .refused);
-    try testing.expect((try rescind.targetOf(a, g.mem.view(), g.cfg.identity, .{ .txid = .{3} ** 32, .vout = 0 })) == .refused);
-    // A wallet answer that is no draft or signed Rescind.
-    try testing.expect(rescind.stageOf(.{ .map = &.{} }) == .failed);
-    // A resolved thread's result: its stdout, the record's CID in hex (a newline after it).
-    const res: Value = .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "exitCode", .value = .{ .uint = 0 } },
-        .{ .key = "stdout", .value = .{ .bytes = "01711220aa\n" } },
-    }) };
-    try testing.expectEqualSlices(u8, &.{ 0x01, 0x71, 0x12, 0x20, 0xaa }, (try rescind.resultCid(a, res)).?);
-    try testing.expect((try rescind.resultCid(a, .null)) == null);
-}
-
-/// A transaction with one input (`prev`:0, no script) and one output: its raw bytes.
 fn chained(a: std.mem.Allocator, prev: [32]u8) ![]const u8 {
     var raw: std.ArrayList(u8) = .empty;
     try raw.appendSlice(a, &.{ 1, 0, 0, 0, 1 });
@@ -1965,6 +1826,7 @@ fn chained(a: std.mem.Allocator, prev: [32]u8) ![]const u8 {
     try raw.appendSlice(a, &.{ 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1, 0x10, 0x27, 0, 0, 0, 0, 0, 0, 1, 0x51, 0, 0, 0, 0 });
     return raw.items;
 }
+
 
 test "unproven parents of a request whose BEEF is out of order (skein-sdk 0.11.1, David 2026-10-22): sorted, each parent's Atomic BEEF parents first" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

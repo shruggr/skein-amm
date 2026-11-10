@@ -46,6 +46,7 @@ pub const View = struct {
     previousCoinsFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator, topic: []const u8, tx: Transaction) anyerror![]const u32,
     spenderFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator, topic: []const u8, op: Outpoint) anyerror!?[32]u8,
     spendersFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator, op: Outpoint) anyerror![]const [32]u8,
+    liveSpenderFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator, op: Outpoint) anyerror!?[32]u8,
 
     /// A transaction the overlay holds.
     pub fn rawTx(self: View, a: std.mem.Allocator, txid: [32]u8) !?[]const u8 {
@@ -82,6 +83,13 @@ pub const View = struct {
     pub fn spenders(self: View, a: std.mem.Allocator, op: Outpoint) ![]const [32]u8 {
         return self.spendersFn(self.ptr, a, op);
     }
+
+    /// 0.49.0 (skein-overlay 0.26.0: spent-ness is chain state, `previousCoins` is the topic's
+    /// judgement alone): a held transaction spending `op` that the chain state has not rejected —
+    /// the chain level's "who spends X" — or null.
+    pub fn liveSpender(self: View, a: std.mem.Allocator, op: Outpoint) !?[32]u8 {
+        return self.liveSpenderFn(self.ptr, a, op);
+    }
 };
 
 /// The view over the app's overlay state and the chain state under it
@@ -107,7 +115,14 @@ pub const OverlayView = struct {
         const self: *OverlayView = @ptrCast(@alignCast(ptr));
         return self.st.ch.spendersOf(w.store.outpointKey(op.txid, op.vout));
     }
+    fn liveSpenderImpl(ptr: *anyopaque, _: std.mem.Allocator, op: Outpoint) anyerror!?[32]u8 {
+        const self: *OverlayView = @ptrCast(@alignCast(ptr));
+        for (try self.st.ch.spendersOf(w.store.outpointKey(op.txid, op.vout))) |sp| {
+            if ((try self.st.ch.status(sp)) != .rejected) return sp;
+        }
+        return null;
+    }
     pub fn view(self: *OverlayView) View {
-        return .{ .ptr = self, .rawTxFn = rawTxImpl, .previousCoinsFn = previousCoinsImpl, .spenderFn = spenderImpl, .spendersFn = spendersImpl };
+        return .{ .ptr = self, .rawTxFn = rawTxImpl, .previousCoinsFn = previousCoinsImpl, .spenderFn = spenderImpl, .spendersFn = spendersImpl, .liveSpenderFn = liveSpenderImpl };
     }
 };

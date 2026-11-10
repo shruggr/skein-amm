@@ -34,17 +34,13 @@
 //!                   outpoint's spender in the chain state, one lookup (0.47.0: `{outpoint, spentBy?}`;
 //!                   the pool-following `current`, `hops`, `closed` are gone: following a pool is
 //!                   `/pools/history`); 0.34.0: `?outpoint=a,b` one record per outpoint in query order (P8)
-//!   positions, validatorFees, commissionFees, readTerms, tx
+//!   positions, readTerms, tx, feeTokens
 //!                   the public read routes (0.34.0, reads.zig; docs/AMM.md "The public read API"):
-//!                   /positions (P4), /fees/validator (P5), /fees/commission (P6), /terms (P7), /tx (P9);
-//!                   plain GETs, cache headers per class (0.44.0: /swaps, P10, gone; 0.47.0: /pools/beef,
-//!                   P3, gone: a pool's transaction is `/tx?id=` of its current outpoint's txid)
-//!   trades, candles, stats
-//!                   the history reads (0.36.0, reads.zig `historyRead`): /trades (H1), /candles
-//!                   (H2), /stats (H3), over the pool lookup's trade rows
-//!   poolsAt, poolsHistory
-//!                   the pool history reads (0.40.0): /pools/at?t= (every pool listed at t), /pools/history
-//!                   (the events of a window), over the lookup's `history` and `closes`
+//!                   /positions (P4), /terms (P7), /tx (P9), /fees/tokens (0.49.0: the token fee
+//!                   tally); plain GETs, cache headers per class. 0.49.0: /fees/validator,
+//!                   /fees/commission gone (no reader); /trades, /candles, /stats, /pools/at,
+//!                   /pools/history gone from the instance: the Open Exchange host folds them from
+//!                   the pool events (amm-lookup index.zig "THE EVENTS")
 //!   amm.swap.terms  an in-VM call of the interface amm.swap/1 (interface.zig; 0.44.0: submit and status gone)
 //!   amm.pool.terms, amm.pool.affirm   an in-VM call of the interface amm.pool/1 (the validator's terms,
 //!                   0.9.0; the affirmation of a proposed pool, 0.11.0: amm-validator's fn `affirm`
@@ -65,7 +61,7 @@
 //! `{kind: "amm-app-state", swaps}`, is gone; a record an earlier version wrote is not read).
 //!
 //! Config: none of its own (0.44.1: `config.amm.ammP2p` / genesis `defaults.ammP2p`, the catch-up's,
-//! gone; 0.16.0: no `commission`, the commission key is the instance's own, `commissionKey`); the
+//! gone; 0.16.0: no `commission`; 0.49.0: the commission key is per swap, `commissionOf`); the
 //! functions' declarations: the app record's `provides`, else genesis `defaults.ammProvides`
 //! (JSON) (README.md).
 const std = @import("std");
@@ -96,7 +92,15 @@ const eql = std.mem.eql;
 /// The imports skein-overlay's `sk` module does not declare: the signer.
 const ext = struct {
     extern "skein" fn wallet(frame: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
+    extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
 };
+
+/// The kernel's event index read (skein 0.5.0 `events`): what amm-lookup's answers read (0.49.0, the
+/// pool rows are events).
+fn readEvents(a: Allocator, q: Value) anyerror!Value {
+    const bytes = try cbor.encode(a, q);
+    return cbor.decode(a, try vm.result(a, ext.events, .{ bytes.ptr, @as(u32, @intCast(bytes.len)) }));
+}
 
 pub fn main() u8 {
     return vm.main("amm-p2p", run);
@@ -109,6 +113,8 @@ var overlay_in: ?Value = null;
 
 fn run(a: Allocator) anyerror!void {
     const in = try vm.input(a);
+    amm_lookup.reader = readEvents;
+    amm_lookup.app = iface.app_name;
     const is_call = eql(u8, in.getText("kind") orelse "", "call");
     overlay_in = ov.engine_vm.configured(a, in, if (is_call) vm.callArg(a, in) catch null else null) catch null;
     if (is_call) return call(a, in);
@@ -181,10 +187,13 @@ fn spendsRead(a: Allocator, in: Value, arg: Value) !Value {
     return reads.httpCached(a, 200, "application/json", .state, try reads.spendsJson(a, ss));
 }
 
-/// The public read routes' functions (0.34.0; the manifest's filters name them).
-const Read = enum { positions, validatorFees, commissionFees, readTerms, tx, trades, candles, stats, poolsAt, poolsHistory };
+/// The public read routes' functions (0.34.0; the manifest's filters name them). 0.49.0: `/fees/validator`
+/// and `/fees/commission` are gone (no reader); `/trades`, `/candles`, `/stats`, `/pools/at` and
+/// `/pools/history` are gone from the instance — the Open Exchange host answers them as folds over
+/// the pool events (`amm/hop`, `amm/pool/<poolId>`); `/fees/tokens` (the token fee tally) is new.
+const Read = enum { positions, readTerms, tx, feeTokens };
 
-/// One public read (reads.zig): P4 to P7, P9 (0.44.0: P10 `/swaps` gone with the relay records; 0.47.0: P3 `/pools/beef` gone).
+/// One public read (reads.zig): P4, P7, P9, the tally.
 fn publicRead(a: Allocator, in: Value, arg: Value, r: Read) !Value {
     const q = arg.getText("query") orelse "";
     switch (r) {
@@ -194,33 +203,15 @@ fn publicRead(a: Allocator, in: Value, arg: Value, r: Read) !Value {
     }
     const rec = (try headRecord(a, token_head)) orelse return reads.httpError(a, 404, "no token yet: this instance has had no deploy");
     const token = rec.getText("tokenId") orelse return reads.httpError(a, 404, "no token yet: this instance has had no deploy");
-    const st = try loadState(a, in);
     var svc = try reads.loadLookup(a, vm.store(), try vm.head(a, try lookup.headName(a, iface.app_name, amm_lookup.service_name)));
-    // The history reads (0.36.0): the trade rows, each trade's height from the overlay's `placed`.
-    const hist: ?reads.History = switch (r) {
-        .trades => .trades,
-        .candles => .candles,
-        .stats => .stats,
-        .poolsAt => .poolsAt,
-        .poolsHistory => .poolsHistory,
-        else => null,
-    };
-    if (hist) |h| return reads.historyRead(a, &svc, st.ch, st.map("placed"), token, h, q, @intCast(st.now));
-    const list = switch (r) {
-        .positions => "pool",
-        .validatorFees => "id",
-        .commissionFees => "pkh",
-        else => unreachable,
-    };
-    const keys = try reads.queryList(a, q, list);
-    const ks = keys orelse return reads.httpError(a, 400, try std.fmt.allocPrint(a, "want ?{s}=k1,k2", .{list}));
-    const field = switch (r) {
-        .positions => "poolIds",
-        .validatorFees => "validatorIdentityKeys",
-        .commissionFees => "commissionPkhs",
-        else => unreachable,
-    };
-    const v = reads.lookupAnswer(a, &svc, st.ch, token, field, ks) catch |e| return badQuery(a, e);
+    if (r == .feeTokens) {
+        const units = try amm_lookup.tally(a, &svc, try amm_lookup.tokenPrefix(a, token));
+        return reads.httpCached(a, 200, "application/json", .state, try reads.tallyJson(a, token, units));
+    }
+    const st = try loadState(a, in);
+    const keys = try reads.queryList(a, q, "pool");
+    const ks = keys orelse return reads.httpError(a, 400, "want ?pool=k1,k2");
+    const v = reads.lookupAnswer(a, &svc, st.ch, token, "poolIds", ks) catch |e| return badQuery(a, e);
     return reads.httpCached(a, 200, "application/json", .state, try reads.valueJson(a, v));
 }
 
@@ -242,9 +233,8 @@ fn termsRead(a: Allocator, in: Value) !Value {
         .commission_bps = @intCast(tt.commission_bps),
         .min_leg_sats = tt.min_leg_sats,
     } else null;
-    const com = try commissionKey(a);
     const m = try marketNow(a);
-    return reads.httpCached(a, 200, "application/json", .state, try reads.termsJson(a, v, com.pkh, m.min_commission_bps));
+    return reads.httpCached(a, 200, "application/json", .state, try reads.termsJson(a, v, identity, m.min_commission_bps));
 }
 
 /// P9 `/tx?id=<txid>`: the transaction's Atomic BEEF from the chain state (its ancestry back to
@@ -441,14 +431,12 @@ fn poolTermsFn(c: *app.Call) anyerror!scbor.Value {
     return toSdk(a, answer);
 }
 
-/// This exchange's commission key (0.16.0, the agent's call, "David to review"): hash160 of this
-/// instance's own key for the commission, through the signer: BRC-43 level 1, protocol `amm
-/// commission`, key ID `relay`, counterparty anyone, forSelf (interface.zig `commission_protocol`; as
-/// the validator's keys are derived, amm-validator oracle.zig). No config (`config.amm.commission`,
-/// to 0.15.0, is gone).
-fn commissionKey(a: Allocator) !iface.Commission {
-    const pk = try wire.publicKeyResult(try walletCall(a, try wire.getPublicKeyFrameFor(a, iface.commission_protocol.level, iface.commission_protocol.name, iface.commission_key_id, .anyone, true)));
-    return .{ .pkh = w.bsvz.crypto.hash.hash160(&pk).bytes };
+/// This exchange's commission (0.49.0): the identity its per-swap commission keys derive from
+/// (interface.zig `Commission`; src/pool.zig `commissionPkh`), from the input's `self`. No signer call.
+fn commissionOf(in: Value) iface.Commission {
+    const k = (if (in.get("self")) |me| me.getBytes("identity") else null) orelse return .{};
+    if (k.len != 33) return .{};
+    return .{ .identity = k[0..33].* };
 }
 
 /// The market record now (0.16.0): the root of the head `amm/market` (market.zig), or the default
@@ -461,12 +449,12 @@ fn marketNow(a: Allocator) !iface.market.Market {
     return iface.market.current(head, try appRecord(a));
 }
 
-/// amm.swap.terms {} → {commissionPkh: bytes(20) | null, minCommissionBps}: what the page names as
-/// Swap's commissionPkh before it builds the swap, and (0.16.0) this market's minimum commission,
-/// the pools the Swap page lists.
+/// amm.swap.terms {} → {identityKey: bytes(33) | null, minCommissionBps}: the identity a page derives
+/// each leg's commissionPkh from (0.49.0, keyed by the pool outpoint the leg spends), and (0.16.0)
+/// this market's minimum commission, the pools the Swap page lists.
 fn termsFn(c: *app.Call) anyerror!scbor.Value {
     const a = c.a;
-    const com = commissionKey(a) catch |e| return failure(a, e);
+    const com = commissionOf(ctx.in);
     const m = marketNow(a) catch |e| return failure(a, e);
     return toSdk(a, iface.terms(a, com, m) catch |e| return failure(a, e));
 }

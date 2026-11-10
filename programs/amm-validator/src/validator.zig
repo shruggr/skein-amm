@@ -468,10 +468,13 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     if (!validating(cfg, topic)) return notValidating(a, topic);
     if (cur.pool.rescinded()) return refuse(.rescinded, null);
 
-    // 3. Still live in the topic.
+    // 3. Still live: a coin of the topic (its judgement, `previousCoins`) that no held transaction
+    // the chain state has not rejected spends (0.49.0, skein-overlay 0.26.0: spent-ness is chain
+    // state; the topic's judgement no longer drops a coin another held transaction spends).
     const previous = try v.previousCoins(a, topic, tx);
-    if (std.mem.indexOfScalar(u32, previous, @intCast(pi)) == null) {
-        if (try v.spender(a, topic, req.pool)) |sp| {
+    const live_by = try v.liveSpender(a, req.pool);
+    if (std.mem.indexOfScalar(u32, previous, @intCast(pi)) == null or live_by != null) {
+        if (live_by orelse try v.spender(a, topic, req.pool)) |sp| {
             // This very request, signed already (held: awaiting the
             // broadcaster, or admitted): a retry. Answered again, not signed
             // again; its submission is routed again and the answer comes

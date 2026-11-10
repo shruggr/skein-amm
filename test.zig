@@ -574,6 +574,23 @@ test "pool: swaps, the LP's Close and the validator's Rescind admitted; pool.che
 
 // --- the program: topic names and the topic contract ---
 
+test "pool (0.49.0): the commission key per swap — [1, \"amm commission\"], key ID <txid>_<vout> of the spent pool outpoint, counterparty anyone; the client's pinned vector (web/ui test/keys.test.ts)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // PrivateKey(1)'s public key: the generator point.
+    var identity: [33]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&identity, "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    const txid = try w.header.fromHex("aa11bb22cc33dd44ee55ff660011223344556677889900112233445566778899");
+    const k = try pool.commissionKey(a, identity, txid, 0);
+    try testing.expectEqualStrings("023b53a7f873496a435d9a0087ec161edb8c90e0b1a0e5901cf2aa268067b21e49", &std.fmt.bytesToHex(k, .lower));
+    const pkh = try pool.commissionPkh(a, identity, txid, 0);
+    try testing.expectEqualStrings("3596b7bd46071cdfc8bf21ff720dad8b7ae1f677", &std.fmt.bytesToHex(pkh, .lower));
+    // Another outpoint, another key; not the validator's key for the same outpoint.
+    try testing.expect(!std.mem.eql(u8, &pkh, &try pool.commissionPkh(a, identity, txid, 1)));
+    try testing.expect(!std.mem.eql(u8, &k, &try pool.validatorKey(a, identity, txid, 0)));
+}
+
 test {
     _ = @import("terms");
 }
