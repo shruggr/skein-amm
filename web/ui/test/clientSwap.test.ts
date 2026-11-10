@@ -25,7 +25,9 @@ const ID_B = `${"b2".repeat(32)}_0`;
 let current: Map<string, PoolState>;
 const outcomes: SwapOutcome[] = [];
 const relayed: { pool: string; order?: string; last: boolean }[] = [];
-const prepared: { satsPerKb: number; order?: string; last: boolean; pool: string; amountIn: bigint }[] = [];
+const prepared: { satsPerKb: number; order?: string; last: boolean; pool: string; amountIn: bigint; commissionPkh?: string }[] = [];
+/** 0.49.0: the pools answer's `market.identityKey` (null: the relay names none). */
+let marketId: string | null = null;
 const staged: unknown[] = [];
 const movedBack: string[] = [];
 let resolved: ResolvedLeg[][] = [];
@@ -60,8 +62,8 @@ vi.mock("../src/market/swapAction", async (orig) => {
   return {
     ...real,
     selectLegInputs: vi.fn(() => (covers ? { sats: [satsRow], tokens: [], need: { need: 1 } } : null)),
-    prepareSwap: vi.fn(async (i: { leg: { outpoint: string; amountIn: bigint }; pool: PoolState; satsPerKb: number; order?: string; last: boolean }) => {
-      prepared.push({ satsPerKb: i.satsPerKb, ...(i.order ? { order: i.order } : {}), last: i.last, pool: i.leg.outpoint, amountIn: i.leg.amountIn });
+    prepareSwap: vi.fn(async (i: { leg: { outpoint: string; amountIn: bigint }; pool: PoolState; satsPerKb: number; order?: string; last: boolean; commissionPkh: string | null }) => {
+      prepared.push({ satsPerKb: i.satsPerKb, ...(i.order ? { order: i.order } : {}), last: i.last, pool: i.leg.outpoint, amountIn: i.leg.amountIn, ...(i.commissionPkh ? { commissionPkh: i.commissionPkh } : {}) });
       return { pool: i.leg.outpoint, validator: i.pool.validatorIdentityKey, order: i.order ?? "own", last: i.last, satsInputs: [satsRow], tokenInputs: [], swap: { toBinary: () => [prepared.length] } } as unknown as PreparedSwap;
     }),
   };
@@ -89,7 +91,7 @@ vi.mock("../src/lib/overlay", async (orig) => {
     readSpendsAll: vi.fn(async (_b: string, ops: string[]) => spentRead(ops)),
     // 0.41.0: the server's pools route, read before each leg: the listed pools as they are now.
     readPools: vi.fn(async () => (poolsReads++, {
-      market: { commissionPkh: null, minCommissionBps: 0 },
+      market: { identityKey: marketId, minCommissionBps: 0 },
       validators: [{ identity: SKEIN, peerId: PEER }],
       pools: listedIds.flatMap((id) => (current.has(id) ? [{ ...current.get(id)!, poolId: id, lpPubKey: "", swaps: 0, validatorPeerId: PEER }] : [])),
     })),
@@ -97,6 +99,8 @@ vi.mock("../src/lib/overlay", async (orig) => {
 });
 
 const { createClient } = await import("../src/index");
+const { deriveCommissionPkh } = await import("../src/lib/keys");
+const { parseOutpoint } = await import("../src/lib/tokenId");
 
 const pool = (outpoint: string, bsv: bigint, tokens: bigint): PoolState => ({ outpoint, bsvReserve: bsv, tokenReserve: tokens, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: SKEIN });
 const A0 = `${"c1".repeat(32)}_0`;
@@ -104,7 +108,7 @@ const B0 = `${"c2".repeat(32)}_0`;
 const A1 = `${"d1".repeat(32)}_0`;
 /** The Swap page's held answer: pools A (and B), the validator beating. */
 const held = (withB = false) => ({
-  market: { commissionPkh: null, minCommissionBps: 0 },
+  market: { identityKey: marketId, minCommissionBps: 0 },
   validators: [{ identity: SKEIN, peerId: PEER }],
   pools: [
     { ...pool(A0, 1_000_000n, 5_000_000n), poolId: ID_A, lpPubKey: "", swaps: 0, validatorPeerId: PEER },
@@ -139,6 +143,7 @@ beforeEach(() => {
   txReads.length = 0;
   listedIds = [];
   poolsReads = 0;
+  marketId = null;
 });
 
 describe("the quote (0.40.0)", () => {
@@ -234,6 +239,36 @@ describe("executeSwap (0.40.0): one swap at a time, legs one at a time", () => {
     expect(seen).toEqual(["staging", "relaying", "repricing", "relaying", "done"]);
     expect(r.status).toBe("filled");
     expect(resolveCalls).toBe(2);
+  });
+
+  it("0.49.0: the commission key per swap — each leg's commissionPkh is the market identity's child keyed by the pool outpoint THAT leg spends; a repriced leg on a new outpoint derives again; no identity: none (the taker's own)", async () => {
+    marketId = "02" + "44".repeat(32);
+    const c = client();
+    const q = buy(c, 400_000n, true);
+    outcomes.push(accepted("e1".repeat(32)), accepted("e2".repeat(32)));
+    afterRelay = (spent) => current.delete(spent === A0 ? ID_A : ID_B);
+    await c.executeSwap(q);
+    expect(prepared).toHaveLength(2);
+    for (const p of prepared) expect(p.commissionPkh).toBe(deriveCommissionPkh(marketId!, parseOutpoint(p.pool)!));
+    expect(prepared[0]!.commissionPkh).not.toBe(prepared[1]!.commissionPkh);
+
+    prepared.length = 0;
+    current.set(ID_A, pool(A0, 1_000_000n, 5_000_000n));
+    const q2 = buy(c);
+    const newer = pool(A1, 1_000_200n, 4_999_000n);
+    outcomes.push({ status: "refused", id: "r1", reason: "pool_spent", pool: newer }, accepted());
+    afterRelay = () => current.set(ID_A, newer);
+    await c.executeSwap(q2);
+    expect(prepared.map((p) => p.pool)).toEqual([A0, A1]);
+    expect(prepared.map((p) => p.commissionPkh)).toEqual([deriveCommissionPkh(marketId!, parseOutpoint(A0)!), deriveCommissionPkh(marketId!, parseOutpoint(A1)!)]);
+
+    prepared.length = 0;
+    marketId = null;
+    current.set(ID_A, pool(A0, 1_000_000n, 5_000_000n));
+    outcomes.push(accepted());
+    afterRelay = null;
+    await c.executeSwap(buy(c));
+    expect(prepared.map((p) => p.commissionPkh)).toEqual([undefined]);
   });
 
   it("refused otherwise (below_minimum): that outpoint excluded, the next pool takes the leg; no pool left: stop no_pool, the rows moved back in ONE action", async () => {

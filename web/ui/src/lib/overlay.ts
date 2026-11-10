@@ -9,12 +9,12 @@
  * | # | route | answer |
  * |---|---|---|
  * | P1 | `GET <origin>/amm/pools` | `[{tokenId, …P2 row}]`, every enabled token's live pools (the host's) |
- * | P2 | `GET <origin>/@<token>/amm/pools` (0.41.0: a plain read only) | `{market: {commissionPkh, minCommissionBps}, validators: [{identity, peerId, minLegSats?}] (0.34.1: beating now; 0.40.0: the minimum leg its terms announce), pools: [{poolId, lpPubKey, outpoint, bsvReserve, tokenReserve, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, validatorPeerId, swaps}]}`: only pools whose validator beats now and whose commission is at or above the market's minimum (the host's) |
+ * | P2 | `GET <origin>/@<token>/amm/pools` (0.41.0: a plain read only) | `{market: {identityKey, minCommissionBps} (0.49.0: was commissionPkh), validators: [{identity, peerId, minLegSats?}] (0.34.1: beating now; 0.40.0: the minimum leg its terms announce), pools: [{poolId, lpPubKey, outpoint, bsvReserve, tokenReserve, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, validatorPeerId, swaps}]}`: only pools whose validator beats now and whose commission is at or above the market's minimum (the host's) |
  * | (P3) | gone in 0.47.0: a pool's transaction is P9 `/tx?id=` of its current outpoint's txid (the pools list carries the outpoint) |
  * | P4 | `GET /@<token>/amm/positions?pool=id1,id2` (0.40.0) | `[{poolId, lpPubKey, status: live|rescinded|closed, outpoint?, current?, sats, tokens, swaps}]` |
  * | P5 | `GET /@<token>/amm/fees/validator?id=k1,k2` | `[{validatorIdentityKey, sats, tokens, swaps, pools}]` |
  * | P6 | `GET /@<token>/amm/fees/commission?pkh=h1,h2` | `[{commissionPkh, sats, tokens, swaps}]` |
- * | P7 | `GET /@<token>/amm/terms` | `{validator: {identity, peerId, lpFeeBps, validatorFeeBps, commissionBps, minLegSats} | null, market: {commissionPkh, minCommissionBps}}` |
+ * | P7 | `GET /@<token>/amm/terms` | `{validator: {identity, peerId, lpFeeBps, validatorFeeBps, commissionBps, minLegSats} | null, market: {identityKey, minCommissionBps}}` (0.49.0: was commissionPkh) |
  * | P8 | `GET /@<token>/amm/spends?outpoint=a,b` | `[{outpoint, spentBy?}]` (one outpoint: the object; 0.47.0: one lookup each, no pool following) |
  * | P9 | `GET /@<token>/amm/tx?id=<txid>` | the transaction's BEEF (bytes) |
  * | (P10) | gone in 0.44.0: the host relays a leg (`POST /@<token>/amm/swap`, src/market/relay.ts), nothing is recorded |
@@ -155,17 +155,20 @@ function poolRows(x: unknown): PoolRow[] {
   return (Array.isArray(x) ? x : []).map(toPoolRow).filter((r): r is PoolRow => r !== null);
 }
 
-/** The market of a token instance, as P2 carries it: where its relay takes the commission (hash160 hex), its minimum commission. */
+/**
+ * The market of a token instance, as P2 carries it (0.49.0): the exchange instance's identity key (compressed hex;
+ * each leg's commission key is its child, `deriveCommissionPkh` in src/lib/keys.ts), its minimum commission.
+ */
 export interface Market {
-  commissionPkh: string | null;
+  identityKey: string | null;
   minCommissionBps: number;
 }
 
 function toMarket(x: unknown): Market {
   const m = x as Record<string, unknown> | null;
-  const pkh = typeof m?.commissionPkh === "string" && /^[0-9a-fA-F]{40}$/.test(m.commissionPkh) ? m.commissionPkh.toLowerCase() : null;
+  const id = typeof m?.identityKey === "string" && /^0[23][0-9a-fA-F]{64}$/.test(m.identityKey) ? m.identityKey.toLowerCase() : null;
   const min = typeof m?.minCommissionBps === "number" && Number.isInteger(m.minCommissionBps) ? m.minCommissionBps : 0;
-  return { commissionPkh: pkh, minCommissionBps: min };
+  return { identityKey: id, minCommissionBps: min };
 }
 
 /** A validator beating on the token's topic now (P2's `validators`, 0.34.1): its identity key and libp2p peer ID; 0.40.0, the minimum leg its terms announce (sats on the leg's sats side; absent: none). */

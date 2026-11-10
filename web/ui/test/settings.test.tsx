@@ -13,7 +13,7 @@ vi.mock("../src/data/exchange", async (orig) => ({ ...(await orig<typeof import(
 
 const { enableCandidates } = await import("../src/data/exchange");
 const { shortTokenId } = await import("../src/lib/tokenId");
-const { DISCOVERY_OFF_TEXT, EnableList, NOTHING_TO_ENABLE_TEXT, enableSentText, enablePriceText, exchangeWalletText, priceSats } = await import("../src/ox/Settings");
+const { DISCOVERY_OFF_TEXT, EnableList, NOTHING_TO_ENABLE_TEXT, enableSentText, enablePriceText, exchangeBalanceText, priceSats } = await import("../src/ox/Settings");
 
 const A = `${"a1".repeat(32)}_0`;
 const B = `${"b1".repeat(32)}_0`;
@@ -137,6 +137,6 @@ describe("Settings: the price to enable a token and the exchange's wallet (0.42.
   it("the texts", () => {
     expect(enablePriceText(undefined)).toBe("Off: only you enable tokens.");
     expect(enablePriceText(2000)).toBe("Anyone with a wallet can enable a token for 2000 sats. Only you can disable it.");
-    expect(exchangeWalletText({ sats: 2000, outputs: 1, withdrawals: [] })).toBe("Exchange wallet: 2000 sats");
+    expect(exchangeBalanceText({ sats: 2000, outputs: 1 })).toBe("Exchange wallet: 2000 sats");
   });
 });
