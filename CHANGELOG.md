@@ -4,12 +4,12 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
-## Unreleased (branch `recognizers`; planned 0.49.0)
+## 0.49.0 (release candidate, branch `release-0.49`; not tagged)
 
 The pool lookup as a RECOGNIZER (agent-env plans/research/plan-pass-recognizers-2026-11-09.md; David
 2026-11-09 "INDEXES vs SUMMARIES", point 8 "fees at admission", "TOKEN TALLY", "COMMISSION KEY PER
 SWAP", "RESCIND"). On skein-overlay v0.26.0, skein-sdk v0.19.0 (through it), the token image on
-skein-chain v0.10.0. skein-1color stays at v0.17.2 here: its re-pin is one line in build.zig.zon.
+skein-chain v0.10.0. skein-1color v0.18.0 (the color lookup on events). skein-sdk v0.20.0 for the signer client and the named call. Joined with the client branch `client-0.49` (Withdraw removed; the commission key per swap). Needs the kernel's named call and approvals (skein branch `call-permissions`), the signer app and the wallet app installed with approvals.
 
 - amm-lookup keeps no index. Its maps `pools`, `spentPools`, `history`, `closes`, `trades` and
   `byCommission` are gone. It emits what it recognizes. `<app>/pool/<poolId>`: one row per hop, deploy |
@@ -42,6 +42,7 @@ skein-chain v0.10.0. skein-1color stays at v0.17.2 here: its re-pin is one line 
   chain state has not rejected answers `pool_spent`. A resubmission while pending is answered from the
   state, since the pending record names no thread. Settlement is read before pending.
 - amm-setup: the seed is the door's envelope, and the engine submits it. The fallback submit is gone.
+- Every key and signature goes through the signer app (skein-sdk `signer.requestAs`, under `signer.nameFor`'s name); the raw `wallet` import is not used. The fee filing is the wallet app's `file` by the named call under the basket; a refusal fails the hook (F3). etc/app.json `calls`: signer [`1/amm pool`, `2/skein instance/self`, `2/metanet handles envelope/anyone`], wallet [`bsv`, `tokens`]; no `services`.
 - etc/app.json: `lookupVersion`, the `reindex` role and route, the libp2p receive row, `rescind` and the
   dropped reads are gone; `feeTokens` is new.
 

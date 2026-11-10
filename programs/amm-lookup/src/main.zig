@@ -33,7 +33,7 @@ pub fn readEvents(a: std.mem.Allocator, q: cbor.Value) anyerror!cbor.Value {
     return cbor.decode(a, try vm.result(a, ext.events, .{ bytes.ptr, @as(u32, @intCast(bytes.len)) }));
 }
 
-pub const version = "0.1.0";
+pub const version = "0.49.0";
 
 pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
     return .{

@@ -1,6 +1,6 @@
 .{
     .name = .skein_amm,
-    .version = "0.24.1",
+    .version = "0.49.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
@@ -14,10 +14,13 @@
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
         // into bin/. (Its pages, www/, are outside the package's paths: scripts/color-pages.sh
         // copies them from the same tag's tarball by URL and sha256.)
-        // The signer app's client (lib/signer.zig, skein-sdk branch `signer-client` 12c75c4): every
-        // signature and key goes through the signer app by a kernel-checked name. A PATH dependency
-        // until the SDK tags it: then one url/hash line.
-        .skein_sdk_signer = .{ .path = "../wt-sdk-signer-client" },
+        // skein-sdk v0.20.0 for its signer client (lib/signer.zig: every signature and key through the
+        // signer app by a kernel-checked name) and the named call (`sk.callAs`). The overlay's own SDK
+        // (chain, cbor, …) comes through skein_overlay.
+        .skein_sdk_signer = .{
+            .url = "https://github.com/shruggr/skein-sdk/archive/refs/tags/v0.20.0.tar.gz",
+            .hash = "skein_sdk-0.20.0-YroFBGc4HACEuIOmCs1eYaSpsjCKtFwEsaPX9fvH7XnW",
+        },
         .skein_1color = .{
             .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.18.0.tar.gz",
             .hash = "skein_1color-0.18.0-_DlbUgVQIgBMMmu7BVoQwAuRCqdw33UzZy1emaOPsTR7",
