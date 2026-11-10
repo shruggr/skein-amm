@@ -25,7 +25,7 @@ skein-chain v0.10.0. skein-1color stays at v0.17.2 here: its re-pin is one line 
   pool names this instance; its invoice is `[1, "amm pool"]`, keyed by the spent pool's `keyId`,
   counterparty anyone. The commission is ours when it pays `[1, "amm commission"]`, keyed by the pool
   outpoint the Swap spends. Each is FILED through `fileWithWallet`, in basket `bsv` or `tokens`.
-  `fileWithWallet` is a seam: today it only records the call, and it cannot fail. Token fees go into the
+  `fileWithWallet` is a seam: today it only records the call, and it cannot fail. Once the real call is wired in, a refused filing fails the hook's step (F3, David: a broken install, not a case to handle). Token fees go into the
   tally, which a spend or a rejection adjusts. A second spender of a coin, such as a proven winner, does
   not subtract it again. A rejection re-credits only the coins in `givenBack`.
 - `/lookup ls_amm_<id>`: `{tokenId}` and `{tokenId, poolIds}` keep their answers. `{tokenId, outpoint}`,

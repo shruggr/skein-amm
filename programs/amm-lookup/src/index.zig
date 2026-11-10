@@ -125,8 +125,11 @@ pub var filings: std.ArrayList(Filing) = .empty;
 /// THE SEAM to the wallet app (shruggr/skein-wallet, not built) through the kernel's named call
 /// (`callAs`, not built): file `f` with the wallet under its basket name. Today it only RECORDS
 /// the call it would make, and it cannot fail.
-/// DECISION POINT (F3, not decided): when the wallet refuses a filing — fail this hook (the
-/// admission stalls) or skip the filing and admit.
+/// RULE (F3, David 2026-11-09): no special handling for a refused filing. An app's protocols and
+/// baskets are approved together at install, so a refusal means a broken install; admitting swaps
+/// while earning unrecorded fees is worse than stopping. When the real call is wired in, a refused
+/// or failed `file` is an error like any other: it returns the error and the hook's step fails (no
+/// skip, no `unfiled` event).
 pub fn fileWithWallet(a: Allocator, f: Filing) void {
     filings.append(a, f) catch {};
 }
