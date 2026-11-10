@@ -1,9 +1,14 @@
 // skein-amm#5 acceptance (0.22.0) on a scratch one-key host (RocksDB, as equiv/onekey.ts sets it up): an instance
 // from skein-amm's image/token, born owned (`owned: true`, #164); the host chain fed regtest headers; ONE
 // event {kind: "deploy", beef} in amm/deploy (Router.admitEvent) with a deploy mined in the test → the
-// instance serves tm_color_<id>, ls_color_<id>, ls_amm_<id>, beats on tm_color_<id>-live and
-// ls_amm_<id>-live, answers GET /amm/token, and ls_color_<id>'s color-admission answers the deploy; a
-// second deploy event is refused and changes nothing; the store replays to itself.
+// instance serves tm_color_<id>, ls_color_<id>, ls_amm_<id>, beats on tm_color_<id>-live, answers GET
+// /amm/token, and ls_color_<id>'s color-admission answers the deploy; a second deploy event is refused
+// and changes nothing; the store replays to itself.
+// 0.49.0 (branch recognizers; NOT RUN since the update — needs a skein host on 0.6.x and its kernel):
+// the app's version is etc/app.json's (was a fixed 0.22.0); no ls_amm_<id>-live beat (gone in 0.48.0);
+// the seed is the door's envelope and the engine submits it (no amm-setup fallback submit), checked by
+// the overlay's own fact `amm/topic/tx/<txid>` {verdict: admitted} on the host's events read. UNVERIFIED:
+// the `/@<h>/amm/.live/<name>` path on that host, and the `/@<h>/events/<name>` read's JSON shape.
 //
 //
 // It imports skein's host by relative path: copy it into a skein checkout's .scratch/ (beside src/) and run it there.
@@ -11,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,7 +133,8 @@ try {
   keep(H);
   const k = (await rO.hydrate(H)).kernel;
   const appRec = await k.store.get(await k.call("head", appHead("amm")) as CID) as { version?: string; programs?: Record<string, unknown> };
-  check(appRec.version === "0.22.0" && "amm-setup" in (appRec.programs ?? {}), `(image/token) amm ${appRec.version}, programs: ${Object.keys(appRec.programs ?? {}).join(", ")}`);
+  const want = (JSON.parse(readFileSync(join(AMM, "etc/app.json"), "utf8")) as { version: string }).version;
+  check(appRec.version === want && "amm-setup" in (appRec.programs ?? {}), `(image/token) amm ${appRec.version} (want ${want}), programs: ${Object.keys(appRec.programs ?? {}).join(", ")}`);
   const grants = await k.store.get(await k.call("head", "grants") as CID) as { roles?: Record<string, Uint8Array[]> };
   check((grants.roles?.root ?? []).map((x) => Buffer.from(x).toString("hex")).join() === owner, "born owned: root is the owner's key (no claim)");
   check((await k.dispatch()).rows.some((r) => r.transport === "event" && r.address === "amm/deploy" && JSON.stringify(r.filters) === '["kernel.beef"]'), "the event route amm/deploy names kernel.beef");
@@ -165,8 +171,12 @@ try {
   check(lk.status === 200 && lkb.type === "output-list" && (lkb.outputs?.length ?? 0) === 1, `ls_color_<A> color-admission answers the deploy (${lk.status} ${JSON.stringify(lkb).slice(0, 120)})`);
   const liveT = await until("tm_color_<A>-live", async () => { const x = await getJson(`/@${H}/amm/.live/${tmA}-live`) as unknown[] | undefined; return x?.length ? x : undefined; }, 60_000).catch(() => undefined);
   check(!!liveT, `beats on tm_color_<A>-live (${liveT?.length ?? 0} beat(s) seen, ${Date.now() - t0} ms after the event)`);
-  const liveL = await until("ls_amm_<A>-live", async () => { const x = await getJson(`/@${H}/amm/.live/${ammA}-live`) as unknown[] | undefined; return x?.length ? x : undefined; }, 60_000).catch(() => undefined);
-  check(!!liveL, `beats on ls_amm_<A>-live (${liveL?.length ?? 0})`);
+  // 0.49.0: the seed went in as the engine's own submission: the overlay's verdict fact on the deploy.
+  const verdict = await until("amm/topic/tx/<deploy> admitted", async () => {
+    const x = await getJson(`/@${H}/events/amm/topic/tx/${dA.id("hex")}?latest=1`) as Array<{ record?: { verdict?: string } }> | undefined;
+    return x?.some((r) => r.record?.verdict === "admitted") ? x : undefined;
+  }, 20_000).catch(() => undefined);
+  check(!!verdict, `the overlay's fact amm/topic/tx/<deploy>: admitted (the seed, submitted by the engine)`);
 
   // ------------------------------------------------ a second deploy event: refused, nothing changes
   const heads0 = JSON.stringify([await k.call("head", "amm/token"), await k.call("head", "amm/topics"), await k.call("head", "amm/lookups")].map(String));
