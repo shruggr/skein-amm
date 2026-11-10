@@ -164,25 +164,22 @@ export interface Defaults {
   enablePriceSats?: number;
 }
 
-/** The exchange's wallet (0.42.0, open-exchange 0.15.0; `GET <swap>/wallet`, the host's read of swap's wallet): its sats and coin count. */
-export interface ExchangeWallet {
+/**
+ * The exchange's balance (0.49.0: read-only; Withdraw removed): the sats swap's wallet holds and its coin count.
+ * Read today from `GET <swap>/wallet` (the host's read, open-exchange 0.15.0+); `readExchangeBalance` is the one
+ * place to re-point when the wallet app's balance read exists.
+ */
+export interface ExchangeBalance {
   sats: number;
   outputs: number;
-  /** The admin's withdrawals, each kept by the swap app once proven; n counts from 1. */
-  withdrawals: { n: number; txid: string; sats: number; at: number; outputIndex: number; derivationPrefix: string; derivationSuffix: string; senderIdentityKey: string }[];
 }
 
-/** `GET <swap>/wallet`: `{sats, outputs, withdrawals}`. */
-export async function readWallet(base: string, fetchFn: typeof fetch = fetch): Promise<ExchangeWallet> {
+/** The exchange's balance: `GET <swap>/wallet` → `{sats, outputs}` (other fields ignored). */
+export async function readExchangeBalance(base: string, fetchFn: typeof fetch = fetch): Promise<ExchangeBalance> {
   const a = (await getJson(`${base}/wallet`, fetchFn)) as Record<string, unknown> | null;
-  const ws = Array.isArray(a?.withdrawals) ? (a.withdrawals as Record<string, unknown>[]) : [];
   return {
     sats: typeof a?.sats === "number" ? a.sats : 0,
     outputs: typeof a?.outputs === "number" ? a.outputs : 0,
-    withdrawals: ws.filter((w) => typeof w.n === "number" && typeof w.txid === "string").map((w) => ({
-      n: w.n as number, txid: w.txid as string, sats: Number(w.sats ?? 0), at: Number(w.at ?? 0), outputIndex: Number(w.outputIndex ?? 0),
-      derivationPrefix: String(w.derivationPrefix ?? ""), derivationSuffix: String(w.derivationSuffix ?? ""), senderIdentityKey: String(w.senderIdentityKey ?? ""),
-    })),
   };
 }
 

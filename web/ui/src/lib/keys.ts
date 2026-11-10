@@ -1,4 +1,4 @@
-import { KeyDeriver, PublicKey, type WalletProtocol } from "@bsv/sdk";
+import { Hash, KeyDeriver, PublicKey, Utils, type WalletProtocol } from "@bsv/sdk";
 
 /**
  * Validator key derivation (docs/notes.md, "Validator derivation" and
@@ -52,4 +52,25 @@ export function deriveValidatorPubKey(
 export function deriveFirstValidatorPubKey(validatorIdentityHex: string, nonceHex: string): string {
   const anyone = new KeyDeriver("anyone");
   return anyone.derivePublicKey(AMM_POOL_PROTOCOL, nonceHex.toLowerCase(), PublicKey.fromString(validatorIdentityHex), false).toString();
+}
+
+/**
+ * The market commission key (0.49.0, one per swap): BRC-43 security level 1, protocol "amm commission", key ID the
+ * outpoint of the pool output the leg SPENDS in the same `<txid display hex>_<vout>` form as `validatorKeyId`,
+ * counterparty "anyone" — a child of the exchange instance's identity key (the pools answer's `market.identityKey`),
+ * public one-way like the validator key above: the client derives it per leg, the exchange's relay checks the same.
+ */
+export const AMM_COMMISSION_PROTOCOL: WalletProtocol = [1, "amm commission"];
+
+/** The commission public key (hex, compressed) for a leg spending `outpoint`, as a child of the market identity. */
+export function deriveCommissionPubKey(marketIdentityHex: string, outpoint: { txid: string; vout: number }): string {
+  const anyone = new KeyDeriver("anyone");
+  return anyone
+    .derivePublicKey(AMM_COMMISSION_PROTOCOL, validatorKeyId(outpoint), PublicKey.fromString(marketIdentityHex), false)
+    .toString();
+}
+
+/** Hash160 (hex) of `deriveCommissionPubKey`: the leg's Swap `commissionPkh`. */
+export function deriveCommissionPkh(marketIdentityHex: string, outpoint: { txid: string; vout: number }): string {
+  return Utils.toHex(Hash.hash160(Utils.toArray(deriveCommissionPubKey(marketIdentityHex, outpoint), "hex")));
 }

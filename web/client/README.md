@@ -73,7 +73,7 @@ The client (each an async function unless noted):
 - settings (root): `deployBeef`, `enableToken`, `tokensToEnable`, `disableToken`, `defaults`,
   `setDefaultTerms`, `clearDefaultTerms`, `setDefaultMarket`, `clearDefaultMarket`, `tokenTerms`,
   `setTokenTerms` (0.40.0: the terms `{lpBps, validatorBps, commissionBps, minLegSats?}`), `discoveryState`, `setDiscovery`,
-  `setEnablePrice`, `exchangeWallet`, `withdrawAll`, `settleWithdrawals` (0.42.x);
+  `setEnablePrice` (0.42.x), `exchangeBalance` (0.49.0: read-only `{sats, outputs}`; Withdraw removed);
 - the paid enable (0.42.2, anyone signed; open-exchange 0.15.3): `enableTokenPaid(tokenId, {deployBeef?})` — the price
   from `/amm/defaults`, a BRC-29 payment to the exchange built as a protected noSend (0.42.3: BRC-177, `p nosend expiry seconds 600`; not sent: the exchange's take-in sends it),
   ONE BEEF with the deploy and the payment, `POST /amm/enable?tokenId=&paymentTxid=&paymentVout=&derivationPrefix=

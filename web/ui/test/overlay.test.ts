@@ -22,14 +22,14 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 
 describe("the pools routes (P1, P2)", () => {
   it("P2: {market, pools}; each row the engine's PoolState (bigints) with its pool id (0.40.0), LP key, swap count and its validator's peer ID; a validator's minimum leg (0.40.0)", () => {
-    const a = parsePools({ market: { commissionPkh: "AB".repeat(20), minCommissionBps: 5 }, validators: [{ identity: K.toUpperCase(), peerId: PEER, minLegSats: 2000 }, { identity: LP, peerId: PEER, minLegSats: 0 }, { junk: 1 }], pools: [row("aa_0", { validatorPeerId: PEER }), { junk: true }] });
-    expect(a.market).toEqual({ commissionPkh: "ab".repeat(20), minCommissionBps: 5 });
+    const a = parsePools({ market: { identityKey: "02" + "AB".repeat(32), minCommissionBps: 5 }, validators: [{ identity: K.toUpperCase(), peerId: PEER, minLegSats: 2000 }, { identity: LP, peerId: PEER, minLegSats: 0 }, { junk: 1 }], pools: [row("aa_0", { validatorPeerId: PEER }), { junk: true }] });
+    expect(a.market).toEqual({ identityKey: "02" + "ab".repeat(32), minCommissionBps: 5 });
     // 0.34.1: the validators beating on the token's topic now; 0.40.0: a minimum of 0 is none.
     expect(a.validators).toEqual([{ identity: K, peerId: PEER, minLegSats: 2000n }, { identity: LP, peerId: PEER }]);
     expect(a.pools).toEqual([
       { outpoint: "aa_0", bsvReserve: 1000000n, tokenReserve: 5000000n, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, poolId: "dd_0", lpPubKey: LP, swaps: 3, validatorPeerId: PEER },
     ]);
-    expect(parsePools({ pools: [] })).toEqual({ market: { commissionPkh: null, minCommissionBps: 0 }, pools: [], validators: [] });
+    expect(parsePools({ pools: [] })).toEqual({ market: { identityKey: null, minCommissionBps: 0 }, pools: [], validators: [] });
     expect(toPoolRow(row("x_0", { commissionBps: undefined }))?.commissionBps).toBe(0n);
   });
 
@@ -65,9 +65,9 @@ describe("P7 /terms, P9 /tx (0.44.0: no P10 /swaps; 0.47.0: no P3 /pools/beef)",
   });
 
   it("P7: the validator's terms with its identity and peer, and the market; no terms, validator null", async () => {
-    const t = await readTerms("http://x/@t/amm", (async () => json({ validator: { identity: K, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25, minLegSats: 2000 }, market: { commissionPkh: "55".repeat(20), minCommissionBps: 10 } })) as never);
-    expect(t).toEqual({ validator: { identity: K, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25, minLegSats: 2000 }, market: { commissionPkh: "55".repeat(20), minCommissionBps: 10 } });
-    const none = await readTerms("http://x/@t/amm", (async () => json({ validator: null, market: { commissionPkh: null, minCommissionBps: 0 } })) as never);
+    const t = await readTerms("http://x/@t/amm", (async () => json({ validator: { identity: K, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25, minLegSats: 2000 }, market: { identityKey: "03" + "55".repeat(32), minCommissionBps: 10 } })) as never);
+    expect(t).toEqual({ validator: { identity: K, peerId: PEER, lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25, minLegSats: 2000 }, market: { identityKey: "03" + "55".repeat(32), minCommissionBps: 10 } });
+    const none = await readTerms("http://x/@t/amm", (async () => json({ validator: null, market: { identityKey: null, minCommissionBps: 0 } })) as never);
     expect(none.validator).toBeNull();
   });
 

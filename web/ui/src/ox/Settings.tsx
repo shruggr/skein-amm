@@ -17,9 +17,8 @@
  * `tm_color` served by an instance of its own, started or stopped by the host.
  * The price to enable a token (0.42.0, open-exchange 0.15.0): one field, root's `price {sats}`
  * (empty: off, only the admin enables); any signed sender may then enable a token on
- * `POST /amm/enable` for it. The exchange's wallet: the sats it holds (`GET <swap>/wallet`), one
- * Withdraw (everything, a payment to the admin's wallet, taken in at once; disabled at 0 sats), and
- * the latest withdrawal taken in again on load (`settleWithdrawals`).
+ * `POST /amm/enable` for it. The exchange's balance (0.49.0, read-only; Withdraw removed): the sats
+ * its wallet holds (`exchangeBalance`).
  */
 import { useEffect, useState } from "react";
 import { shortTokenId } from "../lib/tokenId";
@@ -33,21 +32,19 @@ import {
   setDefaultTerms,
   setDiscovery,
   setEnablePrice,
-  settleWithdrawals,
-  withdrawAll,
   setTokenTerms,
   tokenTerms,
   useClaimStatus,
   useDefaults,
   useDiscovery,
-  useExchangeWallet,
+  useExchangeBalance,
   useRegisteredTokens,
   useTokensToEnable,
   type Data,
   type Defaults,
   type Discovery,
   type EnableCandidate,
-  type ExchangeWallet,
+  type ExchangeBalance,
   type EnableSent,
   type RegisteredToken,
   type Session,
@@ -470,53 +467,23 @@ function EnablePriceCard({ defaults }: { defaults: Data<Defaults> }) {
   );
 }
 
-/** The exchange's wallet line (0.42.0). */
-export function exchangeWalletText(w: ExchangeWallet): string {
+/** The exchange's balance line (0.42.0; 0.49.0 read-only). */
+export function exchangeBalanceText(w: ExchangeBalance): string {
   return `Exchange wallet: ${w.sats} sats`;
 }
 
-/** What the Withdraw button says once sent (0.42.0). */
-export const WITHDRAW_SENT_TEXT = (sats: number) => `Withdrawn: ${sats} sats are in your wallet.`;
-
-/** The exchange's wallet (0.42.0, root only): what the paid enables paid into it, and one Withdraw. */
-function ExchangeWalletCard({ wallet }: { wallet: Data<ExchangeWallet> }) {
-  const [error, busy, run] = useAct();
-  const [done, setDone] = useState<string | null>(null);
-  useEffect(() => {
-    void settleWithdrawals().then((t) => { if (t.length > 0) wallet.reload(); });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const sats = wallet.data?.sats ?? 0;
+/** The exchange's balance (0.49.0, root only, read-only): what the paid enables paid into it. No Withdraw. */
+function ExchangeBalanceCard({ balance }: { balance: Data<ExchangeBalance> }) {
   return (
     <section className="panel stack-sm" aria-labelledby="wallet-h">
       <h2 id="wallet-h" className="h2">
         Exchange wallet
       </h2>
-      {wallet.data === null ? (
-        <p className="muted">{wallet.error ? `Could not read the exchange's wallet: ${wallet.error}` : "Reading the exchange's wallet…"}</p>
+      {balance.data === null ? (
+        <p className="muted">{balance.error ? `Could not read the exchange's wallet: ${balance.error}` : "Reading the exchange's wallet…"}</p>
       ) : (
-        <p className="fg2">{exchangeWalletText(wallet.data)}</p>
+        <p className="fg2">{exchangeBalanceText(balance.data)}</p>
       )}
-      <div className="row row-wrap">
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || sats <= 0}
-          onClick={() => {
-            setDone(null);
-            run(async () => {
-              const x = await withdrawAll();
-              setDone(WITHDRAW_SENT_TEXT(x.sats));
-              wallet.reload();
-            });
-          }}
-        >
-          {busy ? "Sending…" : "Withdraw"}
-        </button>
-      </div>
-      <span className="help">Everything in the exchange&apos;s wallet goes to your own wallet, less the network fee.</span>
-      {error && <Notice kind="bad">Could not send: {error}</Notice>}
-      {done && <Notice kind="ok">{done}</Notice>}
     </section>
   );
 }
@@ -741,7 +708,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
   const reg = useRegisteredTokens(connected && root);
   const defs = useDefaults(connected && root);
   const disc = useDiscovery(connected && root);
-  const wallet = useExchangeWallet(connected && root);
+  const balance = useExchangeBalance(connected && root);
   const claim = useClaimStatus(connected);
   const unclaimed = claim.data?.claimed === false;
   return (
@@ -764,7 +731,7 @@ export function Settings({ session, root }: { session: Session; root: boolean })
           <DefaultTermsCard defaults={defs} />
           <DefaultMarketCard defaults={defs} />
           <EnablePriceCard defaults={defs} />
-          <ExchangeWalletCard wallet={wallet} />
+          <ExchangeBalanceCard balance={balance} />
           <DiscoveryCard discovery={disc} />
           <EnableCard discovery={disc} />
           <section className="panel stack-sm" aria-labelledby="regd-h">

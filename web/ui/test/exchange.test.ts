@@ -30,10 +30,8 @@ import {
   setDefaultMarket,
   setDefaultTerms,
   setEnablePrice,
-  exchangeWallet,
+  exchangeBalance,
   exchangeClient,
-  withdrawAll,
-  settleWithdrawals,
   setTokenTerms,
   tokenTerms,
   setDiscovery,
@@ -114,7 +112,7 @@ interface Instance {
   pools: Record<string, unknown[]>;
   /** H3 / H4 (0.39.0): each token's stats record. */
   stats: Record<string, Record<string, unknown>>;
-  market: { commissionPkh: string | null; minCommissionBps: number };
+  market: { identityKey: string | null; minCommissionBps: number };
   /** P2's `validators` (0.34.1): beating on the token's topic now. */
   validators: { identity: string; peerId: string }[];
   /** The transactions P3's BEEF carries. */
@@ -154,7 +152,7 @@ function instance(): Instance {
     discovery: { on: false },
     pools: { [TOKEN]: [wirePool(poolDeploy.id("hex"), v.pool0)] },
     stats: { [TOKEN]: statsRow(TOKEN, { sats: v.pool0.bsv, tokens: v.pool0.tokens }, 1) },
-    market: { commissionPkh: null, minCommissionBps: 0 },
+    market: { identityKey: null, minCommissionBps: 0 },
     validators: [{ identity: SKEIN, peerId: PEER }],
     poolTxs: [fund, tokenDeploy, poolDeploy],
     beefGone: false,
@@ -207,7 +205,6 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
     if (path === "/tokens") return json(inst.enabled);
     if (path === "/defaults") return json(inst.defaults);
     if (path === "/wallet") return json(inst.wallet);
-    if (path === "/wallet/tx") return u.searchParams.get("n") === "1" ? bytes([1, 1, 1, 1, 9]) : json({ status: "error" }, 404);
     if (path === "/discovery") return json(inst.discovery);
     if (path === "/admin") return json({});
     if (path === "/pools") return json(inst.enabled.filter((t) => t.status === "enabled").flatMap((t) => (inst.pools[String(t.tokenId)] ?? []).map((p) => ({ tokenId: t.tokenId, ...(p as object) }))));
@@ -619,7 +616,7 @@ describe("exchange.ts, wired", () => {
     expect(inst.sent).toHaveLength(4);
   });
 
-  it("setEnablePrice (0.42.0): the admin's {fn: price, args: {sats}} to swap's <app>/admin, null = off; bad values refused before anything is sent; enablePriceSats on the defaults; exchangeWallet = GET /amm/wallet", async () => {
+  it("setEnablePrice (0.42.0): the admin's {fn: price, args: {sats}} to swap's <app>/admin, null = off; bad values refused before anything is sent; enablePriceSats on the defaults; exchangeBalance = GET /amm/wallet (read-only)", async () => {
     inst.defaults = { enablePriceSats: null };
     expect(await defaults()).toEqual({});
     inst.defaults = { enablePriceSats: 2000 };
@@ -634,35 +631,8 @@ describe("exchange.ts, wired", () => {
     for (const bad of [0, -5, 1.5]) await expect(setEnablePrice(bad)).rejects.toThrow(/whole number/);
     expect(inst.sent).toHaveLength(2);
     inst.wallet = { sats: 2000, outputs: 1 };
-    expect(await exchangeWallet()).toEqual({ sats: 2000, outputs: 1, withdrawals: [] });
+    expect(await exchangeBalance()).toEqual({ sats: 2000, outputs: 1 });
     expect(inst.requests.at(-1)).toBe("GET /amm/wallet");
-  });
-
-  it("withdrawAll (0.42.1): the admin's {fn: withdraw} (no args); the withdrawal the read then lists taken in at once — internalizeAction, its output as a wallet payment with the record's derivation and sender, no label; nothing to withdraw refused before sending; settleWithdrawals takes the latest in again", async () => {
-    connect();
-    inst.wallet = { sats: 0, outputs: 0, withdrawals: [] };
-    await expect(withdrawAll()).rejects.toThrow(/nothing to withdraw/);
-    expect(inst.sent).toHaveLength(0);
-    const w1 = { n: 1, txid: "ab".repeat(32), sats: 1977, at: 5, outputIndex: 0, derivationPrefix: "cHJl", derivationSuffix: "c3Vm", senderIdentityKey: SKEIN };
-    inst.wallet = { sats: 2000, outputs: 1, withdrawals: [] };
-    // The exchange answers the message: the next read lists the withdrawal.
-    const sent0 = inst.sent.length;
-    const was = inst.wallet;
-    Object.defineProperty(inst, "wallet", { configurable: true, get: () => (inst.sent.length > sent0 ? { sats: 0, outputs: 0, withdrawals: [w1] } : was), set: () => {} });
-    const n0 = internalized.length;
-    expect(await withdrawAll()).toEqual(w1);
-    const m = inst.sent[0]!.body.message as { messageBox: string; body: Uint8Array };
-    expect(m.messageBox).toBe("amm/admin");
-    expect(decode(m.body)).toEqual({ fn: "withdraw" });
-    expect(internalized.length).toBe(n0 + 1);
-    const ia = internalized.at(-1) as { tx: number[]; outputs: unknown[]; labels?: string[]; description: string };
-    expect(ia.tx).toEqual([1, 1, 1, 1, 9]);
-    expect(ia.labels).toBeUndefined();
-    expect(ia.outputs).toEqual([{ outputIndex: 0, protocol: "wallet payment", paymentRemittance: { derivationPrefix: "cHJl", derivationSuffix: "c3Vm", senderIdentityKey: SKEIN } }]);
-    expect(await settleWithdrawals()).toEqual([w1.txid]);
-    expect(internalized.length).toBe(n0 + 2);
-    delete (inst as { wallet?: unknown }).wallet;
-    inst.wallet = { sats: 0, outputs: 0, withdrawals: [] };
   });
 
   it("enableTokenPaid (0.42.2): the price from /amm/defaults (none: refused, nothing built); a BRC-29 payment to the exchange's key, noSend, exactly the price; ONE BEEF with the deploy and the payment, POSTed signed with the payment named; the row back; a refusal → ClientError refused with the code, the unsent payment aborted", async () => {

@@ -17,8 +17,8 @@
  *   `positionsAll` — plain GETs of the history routes (H1–H6, src/lib/overlay.ts).
  * - **Swap** (D11–D16; 0.40.0; 0.41.0): the token's pools route `GET /@<token>/amm/pools`, a plain
  *   read (`tokenPools`): the pools whose validator is beating and whose commission meets the
- *   market's minimum (the host's filter), each validator's minimum leg, the market's commission key
- *   hash; a quote is the matching engine's plan over that list (no request); a swap (`executeSwap`)
+ *   market's minimum (the host's filter), each validator's minimum leg, the market's identity key
+ *   (0.49.0: each leg's commission key is its child keyed by the pool outpoint the leg spends); a quote is the matching engine's plan over that list (no request); a swap (`executeSwap`)
  *   stages what the swap basket lacks by ONE wallet action, then per leg the pools route read fresh,
  *   ONE `GET /@<token>/amm/tx?id=` of the chosen pool's current outpoint (0.47.0: `/pools/beef`
  *   is gone) and the leg's ONE plain `POST /@<token>/amm/swap`
@@ -46,10 +46,11 @@
  * are numbers: sats per whole token.
  */
 import { Beef, Transaction, createNonce, type WalletInterface } from "@bsv/sdk";
-import { BRC29_PROTOCOL, WALLET_PAYMENT, p2pkhHexOf } from "./wallet/brc29.js";
+import { BRC29_PROTOCOL, p2pkhHexOf } from "./wallet/brc29.js";
 import { send1Color, type Send1ColorResult } from "@1sat/actions";
 import { nextLeg, priceOf, type Leg, type PoolState, type Plan, type PricePair } from "@dcasegr/amm-engine";
 import { outpointText, parseOutpoint, parseTokenId, sdkTokenId, tokenIdText } from "./lib/tokenId.js";
+import { deriveCommissionPkh } from "./lib/keys.js";
 import { DEFAULT_FEE_RATE_SATS_PER_KB, appName, exchangeBase, tokenBase } from "./lib/config.js";
 import {
   ammLookupService,
@@ -96,7 +97,7 @@ import {
   type PoolEventMessage,
   type SignedFetch,
 } from "./lib/overlay.js";
-import { authFetchPerInstance, instanceBase, readDefaults, readDiscovery, readTokens, readWallet, sendMessage, type Defaults, type Discovery, type EnabledToken, type ExchangeWallet, type ListedToken } from "./lib/skein.js";
+import { authFetchPerInstance, instanceBase, readDefaults, readDiscovery, readTokens, readExchangeBalance, sendMessage, type Defaults, type Discovery, type EnabledToken, type ExchangeBalance, type ListedToken } from "./lib/skein.js";
 import { depthOf } from "./market/prices.js";
 import { buildPlanRequest, legMinerFeeSats, quote as planQuote } from "./market/plan.js";
 import { validatorStatus } from "./market/view.js";
@@ -406,7 +407,7 @@ export interface RegisteredToken {
   status: EnabledToken["status"];
 }
 
-export type { EnabledToken, Defaults, Discovery, ExchangeWallet, PoolRow, PoolsAnswer, Candle, CandleSeries, CandleTf, Holders, PoolAt, PoolHistoryPage, SpendAll, TokenPosition, TokenStats, Trade, TradesPage };
+export type { EnabledToken, Defaults, Discovery, ExchangeBalance, PoolRow, PoolsAnswer, Candle, CandleSeries, CandleTf, Holders, PoolAt, PoolHistoryPage, SpendAll, TokenPosition, TokenStats, Trade, TradesPage };
 export type { PoolEvent, PoolEventMessage, PoolRevert } from "./lib/overlay.js";
 export type { Price } from "./lib/overlay.js";
 export { parsePoolEventMessage } from "./lib/overlay.js";
@@ -1223,7 +1224,10 @@ function makeClient(opts: ClientOptions, s: Shared) {
         excluded.add(row.outpoint);
         continue;
       }
-      const common: PlanLegInput = { wallet, tokenId, meta, direction, leg, pool: row, poolOutput, commissionPkh: answer.market.commissionPkh, satsPerKb: feeRate };
+      // 0.49.0: the commission key per swap — the market identity's child keyed by the pool outpoint this leg spends.
+      const spends = parseOutpoint(row.outpoint);
+      const commissionPkh = answer.market.identityKey && spends ? deriveCommissionPkh(answer.market.identityKey, spends) : null;
+      const common: PlanLegInput = { wallet, tokenId, meta, direction, leg, pool: row, poolOutput, commissionPkh, satsPerKb: feeRate };
       const inputs = selectLegInputs(common, await swapSatsHoldings(wallet), buy ? [] : await swapHoldings(wallet, tokenId));
       if (!inputs) {
         why = "fees";
@@ -1853,9 +1857,9 @@ function makeClient(opts: ClientOptions, s: Shared) {
     emit();
   }
 
-  /** The exchange's wallet (0.42.0, open-exchange 0.15.0; `GET <swap>/wallet`, the host's read): the sats swap's wallet holds and its coin count. */
-  async function exchangeWallet(): Promise<ExchangeWallet> {
-    return readWallet(swapBase, ff);
+  /** The exchange's balance (0.49.0, read-only; Withdraw removed): the sats swap's wallet holds and its coin count (`readExchangeBalance`). */
+  async function exchangeBalance(): Promise<ExchangeBalance> {
+    return readExchangeBalance(swapBase, ff);
   }
 
   /**
@@ -1927,63 +1931,6 @@ function makeClient(opts: ClientOptions, s: Shared) {
     } catch (e) {
       await wallet.abortAction({ reference: txid }).catch(() => {});
       throw e;
-    }
-  }
-
-  /** A withdrawal's payment taken in by the admin's wallet: `internalizeAction`, output `outputIndex` as a wallet payment from swap (BRC-29, ts-stack's recipient side). */
-  async function takeInWithdrawal(wallet: WalletInterface, x: ExchangeWallet["withdrawals"][number], tx: number[]): Promise<boolean> {
-    const r = await wallet.internalizeAction({
-      tx,
-      outputs: [{ outputIndex: x.outputIndex, protocol: WALLET_PAYMENT, paymentRemittance: { derivationPrefix: x.derivationPrefix, derivationSuffix: x.derivationSuffix, senderIdentityKey: x.senderIdentityKey } }],
-      description: `Open Exchange withdraw ${x.n}`,
-    });
-    return r.accepted;
-  }
-
-  /** Withdrawal `n`'s Atomic BEEF (`GET <swap>/wallet/tx?n=`). */
-  async function withdrawalTx(n: number): Promise<number[]> {
-    const res = await freshFetch(`${swapBase}/wallet/tx?n=${n}`);
-    if (!res.ok) throw new Error(`GET ${swapBase}/wallet/tx?n=${n}: ${res.status}`);
-    return Array.from(new Uint8Array(await res.arrayBuffer()));
-  }
-
-  /**
-   * Withdraws everything in the exchange's wallet to the admin's own (0.42.1, open-exchange 0.15.2): the admin's
-   * `{fn: "withdraw"}` to swap's `<app>/admin`. swap's program pays every coin to a BRC-29 key derived for the
-   * sender and hands the transaction over unsent; this function waits for the read to list it (`GET <swap>/wallet`,
-   * at most 10 s — the message's answer reaches no page), then takes it in (`internalizeAction`, a wallet payment:
-   * that is what sends it). → the withdrawal.
-   */
-  async function withdrawAll(): Promise<ExchangeWallet["withdrawals"][number]> {
-    const { wallet, signedFor } = needWallet();
-    const w = await readWallet(swapBase, freshFetch as typeof fetch);
-    if (w.sats <= 0) throw new Error("the exchange's wallet holds nothing to withdraw");
-    const me = await swapIdentity();
-    await sendMessage(signedFor(swapBase), swapBase, me, `${app()}/admin`, { fn: "withdraw" });
-    let x: ExchangeWallet["withdrawals"][number] | undefined;
-    for (let i = 0; i < 40 && !x; i++) {
-      await new Promise((r) => setTimeout(r, 250));
-      x = (await readWallet(swapBase, freshFetch as typeof fetch)).withdrawals.find((y) => y.n > w.withdrawals.length);
-    }
-    if (!x) throw new Error("the exchange has not answered the withdraw yet: Settings takes it in when it does");
-    if (!(await takeInWithdrawal(wallet, x, await withdrawalTx(x.n)))) throw new Error("the wallet did not accept the withdrawal");
-    emit();
-    return x;
-  }
-
-  /**
-   * The latest withdrawal taken in again (0.42.1; on Settings load): for a page lost between the withdraw's answer
-   * and its take-in (taking in a payment the wallet holds is harmless). Never throws. → its txid, or none.
-   */
-  async function settleWithdrawals(): Promise<string[]> {
-    if (!boundWallet) return [];
-    try {
-      const w = await readWallet(swapBase, freshFetch as typeof fetch);
-      const x = w.withdrawals.at(-1);
-      if (!x) return [];
-      return (await takeInWithdrawal(boundWallet, x, await withdrawalTx(x.n))) ? [x.txid] : [];
-    } catch {
-      return [];
     }
   }
 
@@ -2075,9 +2022,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
     discoveryState: guard(discoveryState),
     setDiscovery: guard(setDiscovery),
     setEnablePrice: guard(setEnablePrice),
-    exchangeWallet: guard(exchangeWallet),
-    withdrawAll: guard(withdrawAll),
+    exchangeBalance: guard(exchangeBalance),
     enableTokenPaid: guard(enableTokenPaid),
-    settleWithdrawals,
   };
 }
