@@ -23,22 +23,22 @@
 //! the overlay's own form `<txid hex>.<vout>`, a pool id `<txid hex>_<vout>`, the deploy outpoint):
 //!
 //!   <app>/pool/<poolId>            one per hop of the pool: THE HOP ROW (`hopRow`), or a revert row
-//!   <app>/output/<txid>.<vout>     the hop row of the listed pool output it names; `{kind: "revert",
+//!   <app>/output/<txid>.<vout>     the hop row of the listed pool output it names; `{type: "revert",
 //!                                  reverted: true, txid, poolId, at}` when its transaction is unwound
 //!   <app>/hop                      every row of every `<app>/pool/…`, again (the instance-wide order)
 //!   <app>/commission/<txid>.<vout> a Swap's commission output that pays THIS instance's commission
-//!                                  key (the settled history flag): `{kind: "commission", swap,
+//!                                  key (the settled history flag): `{type: "commission", swap,
 //!                                  poolId, asset: "bsv"|"token", amount, at}`; `{…, reverted: true}`
 //!                                  when the Swap is unwound
 //!
-//! THE HOP ROW (text and numbers only): `{kind: deploy|swap|close|rescind, txid, tokenId, poolId,
+//! THE HOP ROW (text and numbers only): `{type: deploy|swap|close|rescind, txid, tokenId, poolId,
 //! outpoint?, bsvReserve?, tokenReserve?, lpPubKey, liquidityFeeBps, validationFeeBps,
 //! commissionBps, validatorIdentityKey, at, swaps, keyId?}` — `at` the admitting step's time in ms,
 //! `swaps` the pool's Swap count (0 the deploy; a rescind's the next count), `keyId` the key id the
 //! hop's ValidatorPubKey is derived under (a deploy's its nonce in hex, a Swap continuation's the
 //! spent outpoint `<txid>_<vout>`; none for a close or a rescind); a Swap's adds `side, amountIn,
 //! amountOut, feeLp, feeValidator, feeCommission, commissionPkh, payoutPkh, feeVouts: {lp?,
-//! validator?, commission?}` (the fee outputs' indices). A revert row: `{kind: "revert", txid: <the
+//! validator?, commission?}` (the fee outputs' indices). A revert row: `{type: "revert", txid: <the
 //! unwound transaction>, tokenId, poolId, at}` and, when the pool is still there after the undo, the
 //! pool's fields as they stand (`outpoint, bsvReserve, tokenReserve, lpPubKey, the three rates,
 //! validatorIdentityKey, swaps, keyId?`).
@@ -365,7 +365,7 @@ pub fn fieldsOfRow(rec: Value) !PoolFields {
 }
 
 fn kindOf(rec: Value) []const u8 {
-    return rec.getText("kind") orelse "";
+    return rec.getText("type") orelse "";
 }
 
 /// The input of `tx` that spends txid:vout, or null.
@@ -421,10 +421,10 @@ fn poolPart(a: Allocator, es: *std.ArrayList(Entry), pf: PoolFields, with_output
     if (with_output) if (pf.key_id) |k| try es.append(a, .{ .key = "keyId", .value = .{ .text = k } });
 }
 
-/// A hop row's head: `kind`, `txid`, `tokenId`.
+/// A hop row's head: `type`, `txid`, `tokenId`.
 fn rowHead(a: Allocator, es: *std.ArrayList(Entry), kind: []const u8, txid: [32]u8, token: []const u8) !void {
     try es.appendSlice(a, &.{
-        .{ .key = "kind", .value = .{ .text = kind } },
+        .{ .key = "type", .value = .{ .text = kind } },
         .{ .key = "txid", .value = .{ .text = try a.dupe(u8, &w.header.toHex(txid)) } },
         .{ .key = "tokenId", .value = .{ .text = token } },
     });
@@ -768,7 +768,7 @@ fn recognizeFees(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, row
             if (!t.bsv_in) try adjustTally(a, svc, tp, t.commission, true);
             try svc.emit(.{ .map = try a.dupe(Entry, &.{
                 .{ .key = "event", .value = .{ .text = try commissionName(a, tx.txid, @intCast(v)) } },
-                .{ .key = "kind", .value = .{ .text = "commission" } },
+                .{ .key = "type", .value = .{ .text = "commission" } },
                 .{ .key = "swap", .value = .{ .text = try a.dupe(u8, &w.header.toHex(tx.txid)) } },
                 .{ .key = "poolId", .value = row.get("poolId").? },
                 .{ .key = "asset", .value = .{ .text = if (t.bsv_in) "bsv" else "token" } },
@@ -936,7 +936,7 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
                 const cname = try commissionName(a, tx.txid, @intCast(cv));
                 if (try latestOf(a, cname)) |c| if (!isReverted(c)) try svc.emit(.{ .map = try a.dupe(Entry, &.{
                     .{ .key = "event", .value = .{ .text = cname } },
-                    .{ .key = "kind", .value = .{ .text = "commission" } },
+                    .{ .key = "type", .value = .{ .text = "commission" } },
                     .{ .key = "reverted", .value = .{ .boolean = true } },
                     .{ .key = "swap", .value = c.get("swap") orelse .null },
                     .{ .key = "poolId", .value = c.get("poolId") orelse .null },
@@ -946,7 +946,7 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
         }
         try svc.emit(.{ .map = try a.dupe(Entry, &.{
             .{ .key = "event", .value = .{ .text = try outputName(a, tx.txid, vout) } },
-            .{ .key = "kind", .value = .{ .text = "revert" } },
+            .{ .key = "type", .value = .{ .text = "revert" } },
             .{ .key = "reverted", .value = .{ .boolean = true } },
             .{ .key = "txid", .value = .{ .text = try a.dupe(u8, &w.header.toHex(tx.txid)) } },
             .{ .key = "poolId", .value = row.get("poolId").? },

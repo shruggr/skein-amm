@@ -74,9 +74,9 @@ function rawBeef(tx: Transaction, parents: Transaction[]): number[] {
   return b.toBinary();
 }
 
-function event(tx: Transaction, kind: PoolEvent["kind"], extra: Partial<PoolEvent> = {}): PoolEvent {
+function event(tx: Transaction, type: PoolEvent["type"], extra: Partial<PoolEvent> = {}): PoolEvent {
   return {
-    kind,
+    type,
     txid: tx.id("hex"),
     poolId: POOL_ID,
     lpPubKey: pool.state.lpPubKey,

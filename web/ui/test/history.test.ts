@@ -93,7 +93,7 @@ describe("the history readers (H1–H6)", () => {
   });
 
   it("0.40.0: poolsAt GET /@<token>/amm/pools/at?t=; poolHistory GET /@<token>/amm/pools/history (forward paging: next → after); spendsAll GET /amm/spends?outpoint=a,b", async () => {
-    const ev = { kind: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910, tokenReserve: 4902394, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 20, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) };
+    const ev = { type: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910, tokenReserve: 4902394, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 20, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) };
     const { c, asked } = clientOver((u) =>
       u.pathname.endsWith("/pools/at")
         ? json([{ ...pool(LP1, `${"0d".repeat(32)}_0`), at: 5, swaps: 4 }, { junk: 1 }])
@@ -106,7 +106,7 @@ describe("the history readers (H1–H6)", () => {
     const p1 = await c.poolHistory(T, { from: 1, to: 9, pool: idOf(LP1), limit: 2 });
     expect(p1.next).toBe("ab".repeat(52));
     expect(p1.events).toEqual([
-      { kind: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910n, tokenReserve: 4902394n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000n, amountOut: 97606n, feeLp: 60n, feeValidator: 10n, feeCommission: 20n, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) },
+      { type: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910n, tokenReserve: 4902394n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000n, amountOut: 97606n, feeLp: 60n, feeValidator: 10n, feeCommission: 20n, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) },
     ]);
     const p2 = await c.poolHistory(T, { after: p1.next! });
     expect(p2.next).toBeNull();
@@ -120,16 +120,16 @@ describe("the history readers (H1–H6)", () => {
 });
 
 describe("the pool event feeds (E1, 0.41.0)", () => {
-  const swapRow = { kind: "swap", txid: "CD".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910, tokenReserve: 4902394, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 20, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) };
+  const swapRow = { type: "swap", txid: "CD".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910, tokenReserve: 4902394, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 20, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) };
 
   it("a message: {tokenId, …row} — an H8 row typed as readPoolHistory types it; a revert with the pool after the undo, or with none left; anything else null", () => {
     expect(parsePoolEventMessage({ tokenId: T, ...swapRow })).toEqual({
-      tokenId: T, kind: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910n, tokenReserve: 4902394n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000n, amountOut: 97606n, feeLp: 60n, feeValidator: 10n, feeCommission: 20n, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20),
+      tokenId: T, type: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910n, tokenReserve: 4902394n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000n, amountOut: 97606n, feeLp: 60n, feeValidator: 10n, feeCommission: 20n, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20),
     });
-    expect(parsePoolEventMessage({ tokenId: T, kind: "revert", txid: "AB".repeat(32), poolId: idOf(LP1), outpoint: `${"11".repeat(32)}_0`, bsvReserve: 1000000, tokenReserve: 5000000, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 9, swaps: 0 })).toEqual({
-      tokenId: T, kind: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9, outpoint: `${"11".repeat(32)}_0`, bsvReserve: 1000000n, tokenReserve: 5000000n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, swaps: 0,
+    expect(parsePoolEventMessage({ tokenId: T, type: "revert", txid: "AB".repeat(32), poolId: idOf(LP1), outpoint: `${"11".repeat(32)}_0`, bsvReserve: 1000000, tokenReserve: 5000000, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 9, swaps: 0 })).toEqual({
+      tokenId: T, type: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9, outpoint: `${"11".repeat(32)}_0`, bsvReserve: 1000000n, tokenReserve: 5000000n, lpPubKey: LP1, liquidityFeeBps: 30n, validationFeeBps: 5n, commissionBps: 10n, validatorIdentityKey: K, swaps: 0,
     });
-    expect(parsePoolEventMessage({ tokenId: T, kind: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 })).toEqual({ tokenId: T, kind: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 });
+    expect(parsePoolEventMessage({ tokenId: T, type: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 })).toEqual({ tokenId: T, type: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 });
     expect(parsePoolEventMessage({ ...swapRow })).toBeNull();
     expect(parsePoolEventMessage({ tokenId: T, kind: "merge", txid: "ab".repeat(32), poolId: idOf(LP1) })).toBeNull();
   });
@@ -161,8 +161,8 @@ describe("the pool event feeds (E1, 0.41.0)", () => {
       expect(made.map((m) => m.url)).toEqual([`${ORIGIN}/@${T}/amm/events`, `${ORIGIN}/amm/events`]);
       made[0]!.fns.get("pool")!({ data: JSON.stringify({ tokenId: T, ...swapRow }) });
       made[0]!.fns.get("pool")!({ data: "not json" });
-      made[1]!.fns.get("pool")!({ data: JSON.stringify({ tokenId: T, kind: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 }) });
-      expect(got.map((x) => (x as { kind: string }).kind)).toEqual(["swap", "revert"]);
+      made[1]!.fns.get("pool")!({ data: JSON.stringify({ tokenId: T, type: "revert", txid: "ab".repeat(32), poolId: idOf(LP1), at: 9 }) });
+      expect(got.map((x) => (x as { type: string }).type)).toEqual(["swap", "revert"]);
       off1();
       off2();
       expect(made.every((m) => m.closed)).toBe(true);

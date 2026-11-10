@@ -16,7 +16,10 @@ skein-chain v0.10.0. skein-1color v0.18.0 (the color lookup on events). skein-sd
   swap | close | rescind, plus a revert row. `<app>/output/<txid>.<vout>`: the hop row of the pool output
   it lists, or `{reverted: true}`. `<app>/hop`: every row again, in the instance's order.
   `<app>/commission/<txid>.<vout>`: the history flag, written only when the commission is ours. A row
-  gains `tokenId`, `keyId` and, on a Swap, `feeVouts`. Every field is text or a number; `at` is in ms.
+  gains `tokenId`, `keyId` and, on a Swap, `feeVouts`. The row's kind is the field `type` (deploy | swap |
+  close | rescind | revert; the commission flag's `commission`): an emitted record's `kind` and `app`
+  are the kernel's to set, and a record carrying either is refused (skein scheduler.zig). The client's
+  `PoolEvent.type` / `PoolRevert.type` follow (were `kind`). Every field is text or a number; `at` is in ms.
   Earlier facts are read back from the kernel's event index in the step: the pool a Swap spends, a
   re-admission, our fees, what a rejection unwinds. The Close is re-derived from the spending
   transaction, because a step does not see its own emits. It stores only summaries: the counters, and the

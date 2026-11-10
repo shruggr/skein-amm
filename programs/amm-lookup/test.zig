@@ -297,6 +297,9 @@ const Env = struct {
     }
     /// The step ends: its emits enter the index.
     fn commit(_: *Env, s: *lookup.Service) !void {
+        // The kernel's emit rule (skein scheduler.zig: "an event's 'kind' and 'app' are the kernel's
+        // to set"): a record carrying either is refused.
+        for (s.events.items) |ev| if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
         for (s.events.items) |ev| try Index.put(ev.getText("event").?, ev);
         s.events = .empty;
     }
@@ -376,7 +379,7 @@ test "deploy: an affirmed pool deploy is emitted as its hop under amm/pool/<pool
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{}); // a dupe hook call
     try testing.expectEqual(@as(usize, 3), Index.names.items.len);
     const row = (try latestRow(a, try idx.poolName(a, pid))).?;
-    try testing.expectEqualStrings("deploy", row.getText("kind").?);
+    try testing.expectEqualStrings("deploy", row.getText("type").?);
     try testing.expectEqualStrings(&w.header.toHex(pd), row.getText("txid").?);
     try testing.expectEqualStrings(e.token, row.getText("tokenId").?);
     try testing.expectEqualStrings(pid, row.getText("poolId").?);
@@ -389,7 +392,7 @@ test "deploy: an affirmed pool deploy is emitted as its hop under amm/pool/<pool
     try testing.expectEqual(@as(u64, 0), row.getUint("swaps").?);
     try testing.expectEqualStrings(vec.nonce, row.getText("keyId").?);
     // The same row under the output's name and the instance-wide name.
-    try testing.expectEqualStrings("deploy", (try latestRow(a, try idx.outputName(a, pd, 0))).?.getText("kind").?);
+    try testing.expectEqualStrings("deploy", (try latestRow(a, try idx.outputName(a, pd, 0))).?.getText("type").?);
     try testing.expectEqualStrings(pid, (try latestRow(a, "amm/hop")).?.getText("poolId").?);
 
     // {tokenId}: THE pool row (0.48.0 shape: 12 fields, `lifetime` last).
@@ -438,7 +441,7 @@ test "swap: a Swap's continuation of a listed pool is its next hop — the pool 
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
     const row = (try latestRow(a, try idx.poolName(a, pid))).?;
-    try testing.expectEqualStrings("swap", row.getText("kind").?);
+    try testing.expectEqualStrings("swap", row.getText("type").?);
     try testing.expectEqualStrings(try opStr(a, sw, 0), row.getText("outpoint").?);
     try testing.expectEqual(@as(u64, 1), row.getUint("swaps").?);
     try testing.expectEqual(@as(u64, vec.pool1.bsv), row.getUint("bsvReserve").?);
@@ -473,7 +476,7 @@ test "swap: a Swap's continuation of a listed pool is its next hop — the pool 
     var s2 = try e2.svc(a);
     try e2.admit(a, &s2, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
     try e2.admit(a, &s2, "swap_bad_next", null, &.{ 0, 1 }, &.{e2.op("pool_deploy", 0)});
-    try testing.expectEqualStrings("close", (try latestRow(a, try idx.poolName(a, pid))).?.getText("kind").?);
+    try testing.expectEqualStrings("close", (try latestRow(a, try idx.poolName(a, pid))).?.getText("type").?);
     try testing.expectEqual(@as(usize, 0), (try e2.live(a, &s2)).len);
 }
 
@@ -490,7 +493,7 @@ test "close and rescind: the LP's Close is the pool's close hop (no output), the
         try e.threeHops(a, &svc);
         try e.admit(a, &svc, c.name, null, c.outs, &.{e.op("swap_tokens_in", 0)});
         const end = (try latestRow(a, try idx.poolName(a, pid))).?;
-        try testing.expectEqualStrings(c.kind, end.getText("kind").?);
+        try testing.expectEqualStrings(c.kind, end.getText("type").?);
         try testing.expectEqualStrings(&w.header.toHex(e.f.txid(c.name)), end.getText("txid").?);
         try testing.expectEqual(std.mem.eql(u8, c.kind, "rescind"), end.get("outpoint") != null);
         try testing.expectEqual(@as(usize, 0), (try e.live(a, &svc)).len);
@@ -501,7 +504,7 @@ test "close and rescind: the LP's Close is the pool's close hop (no output), the
 
         try e.reject(a, &svc, c.name, null);
         const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
-        try testing.expectEqualStrings("revert", rv.getText("kind").?);
+        try testing.expectEqualStrings("revert", rv.getText("type").?);
         try testing.expectEqualStrings(try opStr(a, sw2, 0), rv.getText("outpoint").?);
         const back = try e.live(a, &svc);
         try testing.expectEqual(@as(usize, 1), back.len);
@@ -526,11 +529,11 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     try testing.expect(out.getBool("reverted").?);
     try testing.expectEqualStrings(pid, out.getText("poolId").?);
     const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
-    try testing.expectEqualStrings("revert", rv.getText("kind").?);
+    try testing.expectEqualStrings("revert", rv.getText("type").?);
     try testing.expectEqualStrings(&w.header.toHex(sw), rv.getText("txid").?);
     try testing.expectEqualStrings(pid, rv.getText("outpoint").?);
     try testing.expectEqual(@as(u64, 0), rv.getUint("swaps").?);
-    try testing.expectEqualStrings("revert", (try latestRow(a, "amm/hop")).?.getText("kind").?);
+    try testing.expectEqualStrings("revert", (try latestRow(a, "amm/hop")).?.getText("type").?);
     try testing.expectEqual(@as(u64, 0), (try idx.tokenCounters(a, &svc, tp)).trades);
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
@@ -548,7 +551,7 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     try e.reject(a, &svc, "swap_bsv_in", null);
     try e.reject(a, &svc, "pool_deploy", null);
     const gone = (try latestRow(a, try idx.poolName(a, pid))).?;
-    try testing.expectEqualStrings("revert", gone.getText("kind").?);
+    try testing.expectEqualStrings("revert", gone.getText("type").?);
     try testing.expect(gone.get("outpoint") == null);
     try testing.expectEqual(@as(usize, 0), (try e.live(a, &svc)).len);
 }
@@ -684,7 +687,7 @@ test "fees that are ours: a commission paying our [1, amm commission] key keyed 
     const row = (try latestRow(a, try idx.outputName(a, e.f.txid("swap_tokens_in"), 0))).?;
     const cv: u32 = @intCast(row.get("feeVouts").?.getUint("commission").?);
     const flag = (try latestRow(a, try idx.commissionName(a, e.f.txid("swap_tokens_in"), cv))).?;
-    try testing.expectEqualStrings("commission", flag.getText("kind").?);
+    try testing.expectEqualStrings("commission", flag.getText("type").?);
     try testing.expectEqualStrings("token", flag.getText("asset").?);
     try testing.expectEqual(row.getUint("feeCommission").?, flag.getUint("amount").?);
     try testing.expectEqualStrings(&w.header.toHex(e.f.txid("swap_tokens_in")), flag.getText("swap").?);
@@ -763,7 +766,7 @@ test "order rule (skein-overlay 0.26.0): a proven B spending the pool output a h
     try testing.expectEqual(fee, try idx.tally(a, &svc, tp)); // B's fee only
     try testing.expectEqual(@as(u64, 2), (try idx.tokenCounters(a, &svc, tp)).trades); // buy + B
     const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
-    try testing.expectEqualStrings("revert", rv.getText("kind").?);
+    try testing.expectEqualStrings("revert", rv.getText("type").?);
     try testing.expectEqualStrings(try opStr(a, tb, 0), rv.getText("outpoint").?); // the pool as it stands: B's
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);

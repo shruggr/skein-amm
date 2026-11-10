@@ -706,6 +706,7 @@ const Events = struct {
         amm_idx.filer = noFile;
     }
     fn commit(svc: *lookup_mod.Service) !void {
+        for (svc.events.items) |ev| if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
         for (svc.events.items) |ev| {
             try event_names.append(a, ev.getText("event").?);
             try records.append(a, ev);

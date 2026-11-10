@@ -175,8 +175,8 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
     const out0 = tx.outputs[0];
     const pool = out0?.lockingScript ? PoolTemplate.decode(out0.lockingScript) : null;
     if (!pool) return { stop: `${event.txid}'s output 0 is not a pool` };
-    const rescind = event.kind === "rescind" || PoolTemplate.rescinded(pool);
-    const wantFee = event.kind === "swap" && (event.feeLp ?? 0n) > 0n && !rescind;
+    const rescind = event.type === "rescind" || PoolTemplate.rescinded(pool);
+    const wantFee = event.type === "swap" && (event.feeLp ?? 0n) > 0n && !rescind;
     if (wantFee && !tx.outputs[2]) return { stop: `${event.txid} names an LP fee and has no output 2` };
     const txid = tx.id("hex").toLowerCase();
     const contKnown = knownPools.has(pointKey(txid, 0));

@@ -731,7 +731,8 @@ export async function readPoolsAt(base: string, t: number, fetchFn?: FetchFn): P
 
 /** One event of a pool's history (H8): a deploy, a swap (with its trade fields), a close or a rescind, at the admitting step's time. */
 export interface PoolEvent {
-  kind: "deploy" | "swap" | "close" | "rescind";
+  /** 0.49.0: `type` (an emitted record's `kind` is the kernel's to set). */
+  type: "deploy" | "swap" | "close" | "rescind";
   txid: string;
   poolId: string;
   /** The pool's output after the event (deploy, swap, rescind), `<txid>_<vout>`. */
@@ -765,11 +766,11 @@ export interface PoolHistoryPage {
 function toPoolEvent(x: unknown): PoolEvent | null {
   const r = x as Record<string, unknown> | null;
   if (!r || typeof r !== "object" || typeof r.txid !== "string" || typeof r.poolId !== "string") return null;
-  if (r.kind !== "deploy" && r.kind !== "swap" && r.kind !== "close" && r.kind !== "rescind") return null;
+  if (r.type !== "deploy" && r.type !== "swap" && r.type !== "close" && r.type !== "rescind") return null;
   const big = (k: string) => (r[k] === undefined || r[k] === null ? {} : { [k]: wireBig(r[k]) });
   const text = (k: string) => (typeof r[k] === "string" ? { [k]: String(r[k]).toLowerCase() } : {});
   return {
-    kind: r.kind,
+    type: r.type,
     txid: r.txid.toLowerCase(),
     poolId: r.poolId.toLowerCase(),
     ...(typeof r.outpoint === "string" ? { outpoint: r.outpoint } : {}),
@@ -799,7 +800,7 @@ function toPoolEvent(x: unknown): PoolEvent | null {
  * `swaps`), or none of those when the pool no longer exists.
  */
 export interface PoolRevert {
-  kind: "revert";
+  type: "revert";
   txid: string;
   poolId: string;
   at: number;
@@ -818,8 +819,8 @@ export interface PoolRevert {
 export type PoolEventMessage = { tokenId: string } & (PoolEvent | PoolRevert);
 
 function toPoolRevert(r: Record<string, unknown>): PoolRevert | null {
-  if (r.kind !== "revert" || typeof r.txid !== "string" || typeof r.poolId !== "string") return null;
-  const base: PoolRevert = { kind: "revert", txid: r.txid.toLowerCase(), poolId: r.poolId.toLowerCase(), at: int(r.at) };
+  if (r.type !== "revert" || typeof r.txid !== "string" || typeof r.poolId !== "string") return null;
+  const base: PoolRevert = { type: "revert", txid: r.txid.toLowerCase(), poolId: r.poolId.toLowerCase(), at: int(r.at) };
   if (typeof r.outpoint !== "string") return base;
   return {
     ...base,
@@ -839,7 +840,7 @@ function toPoolRevert(r: Record<string, unknown>): PoolRevert | null {
 export function parsePoolEventMessage(x: unknown): PoolEventMessage | null {
   const r = x as Record<string, unknown> | null;
   if (!r || typeof r !== "object" || typeof r.tokenId !== "string") return null;
-  const row = r.kind === "revert" ? toPoolRevert(r) : toPoolEvent(r);
+  const row = r.type === "revert" ? toPoolRevert(r) : toPoolEvent(r);
   return row ? { tokenId: r.tokenId, ...row } : null;
 }
 
