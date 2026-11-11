@@ -4,10 +4,10 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
-## 0.51.0 (branch `one-step-0.51`; not tagged)
+## 0.51.0 (2026-11-11)
 
-On skein-overlay 0.28.0 (e8e439b, branch `one-step-0.28`), skein-1color 0.20.0 (b7f0794, branch `one-step-0.20`), skein-sdk 0.22.0 (1a6b875, the
-signer client); the token image on skein-chain 0.12.0 (2f276b6), each by commit until tagged.
+On skein-overlay v0.28.0, skein-1color v0.20.0, skein-sdk v0.22.0 (the signer client); the token image
+on skein-chain v0.12.0, each by tag.
 
 - amm-validator: a swap is ONE step (David 2026-11-11, plans/one-step-swap-settled-2026-11-11.md rules 5-7):
   `proveRequest`, then every input checked unspent in this instance's view before signing (the pool's:
