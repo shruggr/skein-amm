@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.51.1 (branch `trim-submits-0.51.1`; not tagged)
+
+A client-only release: @dcasegr/amm-engine and @dcasegr/amm-client. The token app, its programs and
+etc/app.json stay at 0.51.0.
+
+- Every submission the client makes follows the rule "raw outside the token's topic, txid-only inside"
+  (David 2026-11-11), applied once in `submitToOverlay` (src/lp/close.ts): the stage with tokens, the move
+  back, the deploy, the rebalance and the close. The body is `submissionBeef(topic, beef)`: the Atomic
+  BEEF's subject raw (always, a pool output on it or not), its ancestry walked by `topicBeef`
+  (src/market/swapAction.ts) — a transaction the topic admitted as far as the page knows (`topicAdmitted`:
+  one carrying a pool output of this token) by txid only, its ancestry dropped; a proven one raw with its
+  BUMP; any other raw, its inputs walked. A staging transaction spending a swap's payout no longer carries
+  the pool's unmined chain.
+- `fundingBeef` is `topicBeef` over its sources (the same bytes as 0.45.0's walk).
+- No retry: a door that refuses a txid-only entry it does not hold answers the submit with its refusal, and
+  the error carries the door's answer in full (no longer cut at 300 characters).
+- 0.51.1 in @dcasegr/amm-engine and amm-client.
+
 ## 0.51.0 (2026-11-11)
 
 On skein-overlay v0.28.0, skein-1color v0.20.0, skein-sdk v0.22.0 (the signer client); the token image

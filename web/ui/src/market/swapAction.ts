@@ -520,24 +520,61 @@ export function topicAdmitted(assetId: string, poolTxid: string): (txid: string,
  * inputs name.
  */
 export function fundingBeef(beef: Beef, fundingTxid: string, sources: string[], o: { poolTxid?: string; admitted?: (txid: string, tx?: Transaction) => boolean } = {}): number[] {
-  const admitted = o.admitted ?? (() => false);
   const all = new Beef();
   for (const txid of new Set([fundingTxid, ...sources])) all.mergeBeef(beef.toBinaryAtomic(txid));
+  return topicBeef(all, [], o.admitted ?? (() => false), { sources: [fundingTxid, ...sources], extraTxidOnly: o.poolTxid, atomic: fundingTxid });
+}
+
+/**
+ * "Raw outside the token's topic, txid-only inside" (0.45.0's rule; 0.51.1, David 2026-11-11: every submission the
+ * client makes) over `beef`: each of `subjects` RAW (never txid-only, even when it carries a pool output — a deploy,
+ * a close), its ancestry walked; each of `o.sources` walked as an ancestor. Walking a transaction: absent, txid-only
+ * already, or admitted by the topic (`admitted`) → a txid-only entry, its ancestry dropped; proven by a BUMP → raw
+ * with its BUMP; any other → raw, and its inputs walked. `o.extraTxidOnly` (the pool's transaction) is added by txid
+ * when the walk did not reach it. `o.atomic`: the bytes are an Atomic BEEF envelope (BRC-95's prefix and that txid)
+ * around the V2 BEEF; else the V2 BEEF alone.
+ */
+export function topicBeef(
+  beef: Beef,
+  subjects: string[],
+  admitted: (txid: string, tx?: Transaction) => boolean,
+  o: { sources?: string[]; extraTxidOnly?: string; atomic?: string } = {},
+): number[] {
   const out = new Beef();
   const done = new Set<string>();
-  const visit = (txid: string) => {
+  const visit = (txid: string, subject: boolean) => {
     if (done.has(txid)) return;
     done.add(txid);
-    const e = all.findTxid(txid);
+    const e = beef.findTxid(txid);
     const tx = e?.tx ?? (e?.rawTx ? Transaction.fromBinary(e.rawTx) : undefined);
-    if (!e || e.isTxidOnly || !tx || admitted(txid, tx)) { out.mergeTxidOnly(txid); return; }
-    if (e.bumpIndex !== undefined) { out.mergeRawTx(tx.toBinary(), out.mergeBump(all.bumps[e.bumpIndex]!)); return; }
-    for (const i of tx.inputs) if (i.sourceTXID) visit(i.sourceTXID);
+    if (!e || e.isTxidOnly || !tx || (!subject && admitted(txid, tx))) {
+      if (subject) throw new Error(`the BEEF does not carry its subject ${txid} raw`);
+      out.mergeTxidOnly(txid);
+      return;
+    }
+    if (e.bumpIndex !== undefined) { out.mergeRawTx(tx.toBinary(), out.mergeBump(beef.bumps[e.bumpIndex]!)); return; }
+    for (const i of tx.inputs) if (i.sourceTXID) visit(i.sourceTXID, false);
     out.mergeRawTx(tx.toBinary());
   };
-  for (const txid of new Set([fundingTxid, ...sources])) visit(txid);
-  if (o.poolTxid && !done.has(o.poolTxid)) { done.add(o.poolTxid); out.mergeTxidOnly(o.poolTxid); }
-  return [...ATOMIC_BEEF_PREFIX, ...Utils.toArray(fundingTxid, "hex").reverse(), ...out.toBinary()];
+  for (const txid of new Set(subjects)) visit(txid, true);
+  for (const txid of new Set(o.sources ?? [])) visit(txid, false);
+  if (o.extraTxidOnly && !done.has(o.extraTxidOnly)) { done.add(o.extraTxidOnly); out.mergeTxidOnly(o.extraTxidOnly); }
+  return o.atomic ? [...ATOMIC_BEEF_PREFIX, ...Utils.toArray(o.atomic, "hex").reverse(), ...out.toBinary()] : out.toBinary();
+}
+
+/**
+ * A submission's body under the token's topic (0.51.1): `bytes` an Atomic BEEF (the wallet's, as every page submit
+ * sends) to the topic `tm_color_<tokenId>` → `topicBeef` of its subject by `topicAdmitted` of the token's pool
+ * asset id (the pool's transaction not known here), in the Atomic envelope. A token with no pools (a `<txid>_<vout>`
+ * id, vout > 0) admits nothing by that test. Any other topic, or a BEEF that is not Atomic, is sent as given.
+ */
+export function submissionBeef(topic: string, bytes: number[]): number[] {
+  const ref = topic.startsWith("tm_color_") ? parseTokenId(topic.slice("tm_color_".length)) : null;
+  if (!ref) return bytes;
+  const beef = Beef.fromBinary(bytes);
+  if (!beef.atomicTxid) return bytes;
+  const admitted = ref.vout === 0 ? topicAdmitted(assetIdOf(ref.txid), "") : () => false;
+  return topicBeef(beef, [beef.atomicTxid], admitted, { atomic: beef.atomicTxid });
 }
 
 /** Builds and signs the leg (see the module comment). Throws `PoolBuildError` / `LegShapeError`; the wallet is left as it was. */

@@ -22,7 +22,7 @@
  */
 import { Beef, PublicKey, Transaction, type WalletInterface } from "@bsv/sdk";
 import { PoolTemplate, type CallPlan, type PoolUtxo } from "../pool/index.js";
-import { poolUtxoFrom, spendValid } from "../market/swapAction.js";
+import { poolUtxoFrom, spendValid, submissionBeef } from "../market/swapAction.js";
 import type { LookupOutput } from "../lib/overlay.js";
 import type { LpKeyRef } from "./positions.js";
 import { identityKeyOf } from "../wallet/brc29.js";
@@ -160,6 +160,8 @@ export type Steak = Record<string, { outputsToAdmit: number[]; coinsToRetain: nu
  * admits an unsigned POST at the overlay's `submit` row (sender `*`, filter `beef`), and
  * `@bsv/sdk`'s AuthFetch refuses the `x-topics` header client-side. 0.38.0 (D14): `x-topics` is
  * the BRC-22 JSON array (`xTopics`), the one form the client sends (the host takes a comma list too).
+ * 0.51.1 (David 2026-11-11): the body is `submissionBeef(topic, beef)` — raw outside the token's topic,
+ * txid-only inside (`topicBeef`); a refusal (any non-2xx but 503) throws with the door's answer in full.
  */
 export async function submitToOverlay(
   base: string,
@@ -171,11 +173,11 @@ export async function submitToOverlay(
   const res = await fetchFn(url, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": xTopics([topic]) },
-    body: new Uint8Array(beef),
+    body: new Uint8Array(submissionBeef(topic, beef)),
   });
   const text = await res.text();
   if (res.status === 503) return {};
-  if (!res.ok) throw new Error(`POST ${url}: ${res.status} ${text.slice(0, 300)}`);
+  if (!res.ok) throw new Error(`POST ${url}: ${res.status} ${text}`);
   let steak: unknown;
   try {
     steak = JSON.parse(text);
