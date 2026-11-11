@@ -700,18 +700,25 @@ const Events = struct {
         a = al;
         event_names = .empty;
         records = .empty;
-        amm_idx.reader = read;
         amm_idx.app = "amm";
         amm_idx.self_identity = null;
         amm_idx.filer = noFile;
     }
-    fn commit(svc: *lookup_mod.Service) !void {
-        for (svc.events.items) |ev| if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
-        for (svc.events.items) |ev| {
-            try event_names.append(a, ev.getText("event").?);
-            try records.append(a, ev);
-        }
-        svc.events = .empty;
+    /// A step's end: nothing to do (skein 0.8.0: a step sees its own events; an emit enters at once).
+    fn commit(_: *lookup_mod.Service) !void {}
+    var dummy: u8 = 0;
+    /// The kernel the lookup raises and reads with (skein-overlay 0.27.0): an emit enters at once,
+    /// refused as the kernel refuses an event's `kind` / `app`.
+    fn kernel() lookup_mod.Kernel {
+        return .{ .ctx = &dummy, .emitFn = emitK, .eventsFn = eventsK };
+    }
+    fn emitK(_: *anyopaque, _: Allocator, ev: Value) anyerror!void {
+        if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
+        try event_names.append(a, ev.getText("event").?);
+        try records.append(a, ev);
+    }
+    fn eventsK(_: *anyopaque, al: Allocator, q: Value) anyerror!Value {
+        return read(al, q);
     }
     fn item(al: Allocator, n: []const u8, r: Value) !Value {
         return .{ .map = try al.dupe(cbor.Entry, &.{ .{ .key = "name", .value = .{ .text = n } }, .{ .key = "record", .value = r } }) };
@@ -790,6 +797,8 @@ const ReadEnv = struct {
         const s1 = unhex(a, vec.swap_bsv_in);
         const s2 = unhex(a, vec.swap_tokens_in);
         Events.reset(a);
+        e.svc.kernel = Events.kernel();
+        e.svc.app = "amm";
         try amm_idx.admitted(a, &e.svc, e.topic, try ltxOf(a, pd), &.{ 0, 1, 2 }, &.{0});
         try Events.commit(&e.svc);
         try amm_idx.admitted(a, &e.svc, e.topic, try ltxOf(a, s1), &.{ 0, 1 }, &.{0});

@@ -72,8 +72,8 @@ pub const service_name = "ls_amm";
 
 /// The stored summaries (0.49.0: the index maps `pools`, `spentPools`, `history`, `closes`,
 /// `trades` and `byCommission` are gone; what they found is in the events). `counters`: `p ‖ tp ‖
-/// poolId` the pool's, `t ‖ tp` the token's, `v ‖ tp ‖ validator identity` the validator's (0.47.0),
-/// `f ‖ tp` the token fee tally (0.49.0).
+/// poolId` the pool's (0.47.0; 0.50.0: the token's `t ‖ tp` and the validator's `v ‖ …` gone, no
+/// reader), `f ‖ tp` the token fee tally (0.49.0).
 pub const maps = [_][]const u8{"counters"};
 
 // ---------------------------------------------------------------- the step's context
@@ -81,23 +81,17 @@ pub const maps = [_][]const u8{"counters"};
 /// The step's time (ms): the in-VM call input's `now`, set by main.zig. A row's `at`.
 pub var now_ms: u64 = 0;
 
-/// The app the engine runs in (the hook's `app`): every event name's first segment.
+/// The app the engine runs in (`svc.app`, set at each hook's and answer's entry): every event
+/// name's first segment.
 pub var app: []const u8 = "amm";
 
 /// This instance's identity key (the call input's `self.identity`), for the fees that are ours;
 /// null: no fee is ours.
 pub var self_identity: ?[33]u8 = null;
 
-/// A read of the kernel's event index (skein docs/VM.md "The event index"): `{name | prefix,
-/// after?, limit?, latest?}` → `[{name, place, cid, record}]`, oldest first. main.zig sets it to
-/// skein-sdk `sk.events`; the tests to an index of their own. In a step it sees what earlier steps
-/// emitted, never this step's own emits.
-pub const Reader = *const fn (Allocator, Value) anyerror!Value;
-pub var reader: Reader = noEvents;
-
-fn noEvents(_: Allocator, _: Value) anyerror!Value {
-    return .{ .array = &.{} };
-}
+// Events are the lookup's own (skein-overlay 0.27.0): raised with `svc.emit` and read with
+// `svc.events` / `svc.latest`, the kernel's own in the hook's execution; a step sees its own events
+// (skein 0.8.0), facts raised earlier in it by the overlay or another hook included.
 
 // ---------------------------------------------------------------- the wallet filing (THE SEAM)
 
@@ -232,8 +226,8 @@ pub fn commissionName(a: Allocator, txid: [32]u8, vout: u32) ![]const u8 {
 // ---------------------------------------------------------------- reading the event index
 
 /// The records under exactly `name`, oldest first.
-pub fn recordsOf(a: Allocator, name: []const u8) ![]const Value {
-    const ans = try reader(a, .{ .map = try a.dupe(Entry, &.{.{ .key = "name", .value = .{ .text = name } }}) });
+pub fn recordsOf(a: Allocator, svc: *Service, name: []const u8) ![]const Value {
+    const ans = try svc.events(.{ .map = try a.dupe(Entry, &.{.{ .key = "name", .value = .{ .text = name } }}) });
     return recordsIn(a, ans);
 }
 
@@ -245,8 +239,8 @@ fn recordsIn(a: Allocator, ans: Value) ![]const Value {
 }
 
 /// The latest record under exactly `name`, or null.
-pub fn latestOf(a: Allocator, name: []const u8) !?Value {
-    const ans = try reader(a, .{ .map = try a.dupe(Entry, &.{
+pub fn latestOf(a: Allocator, svc: *Service, name: []const u8) !?Value {
+    const ans = try svc.events(.{ .map = try a.dupe(Entry, &.{
         .{ .key = "name", .value = .{ .text = name } },
         .{ .key = "latest", .value = .{ .boolean = true } },
     }) });
@@ -255,8 +249,8 @@ pub fn latestOf(a: Allocator, name: []const u8) !?Value {
 }
 
 /// The latest record of every name under `prefix` (one per name, in name order).
-fn latestUnder(a: Allocator, prefix: []const u8) ![]const Value {
-    return recordsIn(a, try reader(a, .{ .map = try a.dupe(Entry, &.{
+fn latestUnder(a: Allocator, svc: *Service, prefix: []const u8) ![]const Value {
+    return recordsIn(a, try svc.events(.{ .map = try a.dupe(Entry, &.{
         .{ .key = "prefix", .value = .{ .text = prefix } },
         .{ .key = "latest", .value = .{ .boolean = true } },
     }) }));
@@ -267,8 +261,8 @@ fn isReverted(rec: Value) bool {
 }
 
 /// The listed pool output's hop row at txid:vout (the latest `<app>/output/…`, not reverted), or null.
-pub fn outputRow(a: Allocator, txid: [32]u8, vout: u32) !?Value {
-    const r = (try latestOf(a, try outputName(a, txid, vout))) orelse return null;
+pub fn outputRow(a: Allocator, svc: *Service, txid: [32]u8, vout: u32) !?Value {
+    const r = (try latestOf(a, svc, try outputName(a, txid, vout))) orelse return null;
     return if (isReverted(r)) null else r;
 }
 
@@ -379,8 +373,6 @@ fn inputSpending(tx: lookup.Tx, txid: [32]u8, vout: u32) ?usize {
 
 /// Why output 0 of `tx` continues the listed pool `was` (its hop row, at was_txid:was_vout) — the
 /// listing rule (b), or a validator's Rescind of it (same LpPubKey, the Rescind method) — or null.
-/// The same test `admitted` lists by, so `spent` can tell a Close without reading what this step
-/// emitted (the step's own emits are not in the index it reads, plan M2).
 const Continuation = enum { swap, rescind };
 fn continuationOf(a: Allocator, tx: lookup.Tx, was: Value, was_txid: [32]u8, was_vout: u32) !?Continuation {
     if (tx.tx.outputs.len == 0) return null;
@@ -515,11 +507,7 @@ pub const PoolCounters = struct {
     last_trade_at: ?u64 = null,
 };
 
-/// A token's counters (`t ‖ tp`).
-pub const TokenCounters = struct { volume_sats: u64 = 0, volume_tokens: u64 = 0, trades: u64 = 0 };
 
-/// A validator's counters (`v ‖ tp ‖ identity`).
-pub const ValidatorCounters = struct { swaps: u64 = 0, fee_sats: u64 = 0, fee_tokens: u64 = 0 };
 
 const pool_fields = .{
     .{ "satsIn", "sats_in" },             .{ "satsOut", "sats_out" },
@@ -528,17 +516,9 @@ const pool_fields = .{
     .{ "validatorSats", "validator_sats" }, .{ "validatorTokens", "validator_tokens" },
     .{ "commissionSats", "commission_sats" }, .{ "commissionTokens", "commission_tokens" },
 };
-const token_fields = .{ .{ "volumeSats", "volume_sats" }, .{ "volumeTokens", "volume_tokens" }, .{ "trades", "trades" } };
-const validator_fields = .{ .{ "swaps", "swaps" }, .{ "feeSats", "fee_sats" }, .{ "feeTokens", "fee_tokens" } };
 
 fn poolCountersKey(a: Allocator, tp: []const u8, pid: []const u8) ![]u8 {
     return cat(a, &.{ "p", tp, pid });
-}
-fn tokenCountersKey(a: Allocator, tp: []const u8) ![]u8 {
-    return cat(a, &.{ "t", tp });
-}
-fn validatorCountersKey(a: Allocator, tp: []const u8, identity: []const u8) ![]u8 {
-    return cat(a, &.{ "v", tp, identity });
 }
 fn tallyKey(a: Allocator, tp: []const u8) ![]u8 {
     return cat(a, &.{ "f", tp });
@@ -573,12 +553,6 @@ fn writeCounters(comptime T: type, comptime fields: anytype, a: Allocator, svc: 
 pub fn poolCounters(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !PoolCounters {
     return readCounters(PoolCounters, pool_fields, a, svc, try poolCountersKey(a, tp, pid));
 }
-pub fn tokenCounters(a: Allocator, svc: *Service, tp: []const u8) !TokenCounters {
-    return readCounters(TokenCounters, token_fields, a, svc, try tokenCountersKey(a, tp));
-}
-pub fn validatorCounters(a: Allocator, svc: *Service, tp: []const u8, identity: []const u8) !ValidatorCounters {
-    return readCounters(ValidatorCounters, validator_fields, a, svc, try validatorCountersKey(a, tp, identity));
-}
 
 /// The token fee tally (0.49.0, David 2026-11-09 "TOKEN TALLY"): the token units of the fee outputs
 /// that are ours and unspent, a running number (`counters` under `f ‖ tp`, `{kind:
@@ -609,8 +583,9 @@ fn bump(x: *u64, n: u64, add: bool) void {
     x.* = if (add) std.math.add(u64, x.*, n) catch std.math.maxInt(u64) else x.* -| n;
 }
 
-/// A Swap's hop row counted in (`add`) or unwound: its pool's, its token's and its validator's
-/// counters. `last_other` (an unwind): the pool's latest other Swap's time, for `lastTradeAt`.
+/// A Swap's hop row counted in (`add`) or unwound: its pool's counters (0.50.0: the token's and the
+/// validator's are gone — nothing read them since 0.49.0; the host folds token-wide figures from
+/// `amm/hop`).
 fn countTrade(a: Allocator, svc: *Service, tp: []const u8, row: Value, add: bool) !void {
     const pid_op = try parseOutpoint(row.getText("poolId") orelse return error.BadEvent);
     const pid = w.store.outpointKey(pid_op.txid, pid_op.vout);
@@ -639,22 +614,9 @@ fn countTrade(a: Allocator, svc: *Service, tp: []const u8, row: Value, add: bool
     if (add) {
         p.last_trade_at = if (p.last_trade_at) |t| @max(t, at) else at;
     } else if (p.last_trade_at != null and p.last_trade_at.? == at) {
-        p.last_trade_at = try lastSwapAt(a, try poolIdText(a, &pid), row.getText("txid") orelse "");
+        p.last_trade_at = try lastSwapAt(a, svc, try poolIdText(a, &pid), row.getText("txid") orelse "");
     }
     try writeCounters(PoolCounters, pool_fields, a, svc, pk, "amm-pool-counters", p);
-    const tk = try tokenCountersKey(a, tp);
-    var t = try readCounters(TokenCounters, token_fields, a, svc, tk);
-    const v = volumeOf(row);
-    bump(&t.volume_sats, v.sats, add);
-    bump(&t.volume_tokens, v.tokens, add);
-    bump(&t.trades, 1, add);
-    try writeCounters(TokenCounters, token_fields, a, svc, tk, "amm-token-counters", t);
-    const identity = try hex33(row, "validatorIdentityKey");
-    const vk = try validatorCountersKey(a, tp, &identity);
-    var vc = try readCounters(ValidatorCounters, validator_fields, a, svc, vk);
-    bump(&vc.swaps, 1, add);
-    if (bsv_in) bump(&vc.fee_sats, val, add) else bump(&vc.fee_tokens, val, add);
-    try writeCounters(ValidatorCounters, validator_fields, a, svc, vk, "amm-validator-counters", vc);
 }
 
 /// A pool's counters as its row carries them (`lifetime`, 0.47.0).
@@ -670,9 +632,9 @@ fn lifetimeValue(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !
 
 /// A pool's hops as they stand (oldest first): its `<app>/pool/<poolId>` rows with every hop a later
 /// revert unwound taken out (a revert unwinds the hops of its `txid`). One exact-name read.
-pub fn standing(a: Allocator, pid_text: []const u8) ![]const Value {
+pub fn standing(a: Allocator, svc: *Service, pid_text: []const u8) ![]const Value {
     var out: std.ArrayList(Value) = .empty;
-    for (try recordsOf(a, try poolName(a, pid_text))) |r| {
+    for (try recordsOf(a, svc, try poolName(a, pid_text))) |r| {
         if (eql(u8, kindOf(r), "revert")) {
             const t = r.getText("txid") orelse "";
             var i: usize = out.items.len;
@@ -688,8 +650,8 @@ pub fn standing(a: Allocator, pid_text: []const u8) ![]const Value {
 }
 
 /// The latest standing Swap's time of a pool other than the Swap `skip` (its txid hex); null none.
-fn lastSwapAt(a: Allocator, pid_text: []const u8, skip: []const u8) !?u64 {
-    const hops = try standing(a, pid_text);
+fn lastSwapAt(a: Allocator, svc: *Service, pid_text: []const u8, skip: []const u8) !?u64 {
+    const hops = try standing(a, svc, pid_text);
     var i: usize = hops.len;
     while (i > 0) {
         i -= 1;
@@ -707,7 +669,7 @@ fn lastSwapAt(a: Allocator, pid_text: []const u8, skip: []const u8) !?u64 {
 /// `<app>/commission/<txid>.<vout>` flag stands.
 const Ours = struct { vout: u32, units: u64, token: bool };
 
-fn oursOfRow(a: Allocator, row: Value, txid: [32]u8, buf: *[2]Ours) ![]const Ours {
+fn oursOfRow(a: Allocator, svc: *Service, row: Value, txid: [32]u8, buf: *[2]Ours) ![]const Ours {
     var n: usize = 0;
     if (!eql(u8, kindOf(row), "swap")) return buf[0..0];
     const token = eql(u8, row.getText("side") orelse "", "sell");
@@ -716,7 +678,7 @@ fn oursOfRow(a: Allocator, row: Value, txid: [32]u8, buf: *[2]Ours) ![]const Our
         buf[n] = .{ .vout = @intCast(v), .units = row.getUint("feeValidator") orelse 0, .token = token };
         n += 1;
     };
-    if (fv.getUint("commission")) |v| if (try latestOf(a, try commissionName(a, txid, @intCast(v)))) |c| if (!isReverted(c)) {
+    if (fv.getUint("commission")) |v| if (try latestOf(a, svc, try commissionName(a, txid, @intCast(v)))) |c| if (!isReverted(c)) {
         buf[n] = .{ .vout = @intCast(v), .units = c.getUint("amount") orelse 0, .token = token };
         n += 1;
     };
@@ -725,10 +687,10 @@ fn oursOfRow(a: Allocator, row: Value, txid: [32]u8, buf: *[2]Ours) ![]const Our
 
 /// When txid:vout is a token fee output of ours: its units; else null. Read from the Swap's own
 /// continuation row (`<app>/output/<txid>.0`, an earlier step's) and its commission flag.
-fn ourTokenFee(a: Allocator, txid: [32]u8, vout: u32) !?u64 {
-    const row = (try outputRow(a, txid, 0)) orelse return null;
+fn ourTokenFee(a: Allocator, svc: *Service, txid: [32]u8, vout: u32) !?u64 {
+    const row = (try outputRow(a, svc, txid, 0)) orelse return null;
     var buf: [2]Ours = undefined;
-    for (try oursOfRow(a, row, txid, &buf)) |o| if (o.vout == vout and o.token) return o.units;
+    for (try oursOfRow(a, svc, row, txid, &buf)) |o| if (o.vout == vout and o.token) return o.units;
     return null;
 }
 
@@ -812,6 +774,7 @@ fn tradeOf(a: Allocator, tx: lookup.Tx, input: usize, cont: PoolFields, was: Val
 /// ours recognized. An output already recognized (its `<app>/output/…` standing) is passed over:
 /// a re-admission is counted once.
 pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, _: []const u32) anyerror!void {
+    app = svc.app;
     const id = tokenIdOf(topic) orelse return; // not a token topic: nothing of ours
     if (outputs_to_admit.len == 0) return;
     if (try judge(a, id, tx, outputs_to_admit) != null) return;
@@ -821,13 +784,13 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
         if (vout >= tx.tx.outputs.len) continue;
         const o = tx.tx.outputs[vout];
         var pf = poolAt(tx.txid, vout, o.locking_script.bytes, @intCast(o.satoshis)) orelse continue;
-        if ((try outputRow(a, tx.txid, vout)) != null) continue; // recognized already
+        if ((try outputRow(a, svc, tx.txid, vout)) != null) continue; // recognized already
         const here: ParsedOutpoint = .{ .txid = tx.txid, .vout = vout };
         // A Swap's continuation, or a Rescind, at output 0: of a listed pool this tx spends.
         if (vout == 0) {
             const took = for (tx.tx.inputs) |in| {
                 const op = in.previous_outpoint;
-                const was = (try outputRow(a, op.txid.bytes, op.index)) orelse continue;
+                const was = (try outputRow(a, svc, op.txid.bytes, op.index)) orelse continue;
                 if (try continuationOf(a, tx, was, op.txid.bytes, op.index)) |how| break .{ how, was, ParsedOutpoint{ .txid = op.txid.bytes, .vout = op.index } };
             } else null;
             if (took) |s| {
@@ -863,18 +826,20 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
 }
 
 /// A previous coin was consumed. A listed pool output (its `<app>/output/…` standing) whose spender
-/// continues it with no listed continuation (the same test `admitted` lists by: `continuationOf`,
-/// re-derived from the spending transaction, since this step's own emits are not readable) is
-/// the pool's Close. A token fee output of ours leaves the tally.
+/// lists no next hop of the same pool (its `<app>/output/<spender>.0`, raised by `admitted` in this
+/// step) is the pool's Close. A token fee output of ours leaves the tally.
 pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, spender: lookup.Tx) anyerror!void {
+    app = svc.app;
     _ = tokenIdOf(topic) orelse return;
     const tp = try topicPrefix(a, topic);
     // Our token fee output leaves the tally — once: a second spender of the coin (skein-overlay
     // 0.26.0: a proven winner B heard after the loser A) finds it spent already by the topic's
     // fact (`<app>/topic/output/<op>`, A's step's), and A's rejection does not give it back.
-    if (try ourTokenFee(a, outpoint.txid, outpoint.vout)) |units| if (!try spentByOther(a, outpoint, spender.txid)) try adjustTally(a, svc, tp, units, false);
-    const was = (try outputRow(a, outpoint.txid, outpoint.vout)) orelse return;
-    if ((try continuationOf(a, spender, was, outpoint.txid, outpoint.vout)) != null) return;
+    if (try ourTokenFee(a, svc, outpoint.txid, outpoint.vout)) |units| if (!try spentByOther(a, svc, outpoint, spender.txid)) try adjustTally(a, svc, tp, units, false);
+    const was = (try outputRow(a, svc, outpoint.txid, outpoint.vout)) orelse return;
+    // Continued: the spender's output 0 is this pool's next hop — `admitted` raised it, earlier in
+    // this same step (skein 0.8.0: a step sees its own events).
+    if (try outputRow(a, svc, spender.txid, 0)) |next| if (eql(u8, next.getText("poolId") orelse "", was.getText("poolId") orelse "-")) return;
     var pf = try fieldsOfRow(was);
     pf.key_id = null;
     try emitHop(a, svc, try hopRow(a, "close", spender.txid, try tokenTextOf(a, topic), pf, false, null), null);
@@ -882,9 +847,9 @@ pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Ou
 
 /// Whether the topic's own fact says txid:vout is spent already by a transaction other than
 /// `by` (skein-overlay `<app>/topic/output/<op>` `{state: spent, spentBy}`, an earlier step's).
-fn spentByOther(a: Allocator, op: lookup.Outpoint, by: [32]u8) !bool {
+fn spentByOther(a: Allocator, svc: *Service, op: lookup.Outpoint, by: [32]u8) !bool {
     const name = try std.fmt.allocPrint(a, "{s}/topic/output/{s}.{d}", .{ app, &w.header.toHex(op.txid), op.vout });
-    const f = (try latestOf(a, name)) orelse return false;
+    const f = (try latestOf(a, svc, name)) orelse return false;
     if (!eql(u8, f.getText("state") orelse "", "spent")) return false;
     return !eql(u8, f.getText("spentBy") orelse "", &w.header.toHex(by));
 }
@@ -900,9 +865,9 @@ fn givenBack(svc: *Service, i: usize) bool {
 /// A pool's state after an unwind of `txid`: its latest standing hop other than `txid`'s (a
 /// deploy's, a Swap's or a rescind's: the pool's fields; a close's: none), or null when the pool
 /// is gone.
-fn afterUndo(a: Allocator, pid_text: []const u8, txid: [32]u8) !?Value {
+fn afterUndo(a: Allocator, svc: *Service, pid_text: []const u8, txid: [32]u8) !?Value {
     const hex = &w.header.toHex(txid);
-    const hops = try standing(a, pid_text);
+    const hops = try standing(a, svc, pid_text);
     var i: usize = hops.len;
     while (i > 0) {
         i -= 1;
@@ -918,23 +883,24 @@ fn afterUndo(a: Allocator, pid_text: []const u8, txid: [32]u8) !?Value {
 /// listed pool it spent given back, or none), its commission flag `{reverted}`; a Swap's counts
 /// unwound; the tally loses its fees of ours and gets back the fee outputs of ours it had spent.
 pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyerror!void {
+    app = svc.app;
     _ = tokenIdOf(topic) orelse return;
     const tp = try topicPrefix(a, topic);
     const token = try tokenTextOf(a, topic);
     var touched: std.ArrayList(struct { pid: [36]u8, live: ?Value }) = .empty;
     for (0..tx.tx.outputs.len) |vi| {
         const vout: u32 = @intCast(vi);
-        const row = (try outputRow(a, tx.txid, vout)) orelse continue;
+        const row = (try outputRow(a, svc, tx.txid, vout)) orelse continue;
         const pid_op = try parseOutpoint(row.getText("poolId") orelse return error.BadEvent);
         if (eql(u8, kindOf(row), "swap") and row.get("amountIn") != null) {
             try countTrade(a, svc, tp, row, false);
             var buf: [2]Ours = undefined;
             // Its fee outputs of ours leave the tally — those still unspent (a spent one left it at
             // its spend: the topic's fact `<app>/topic/output/<op>` says spent).
-            for (try oursOfRow(a, row, tx.txid, &buf)) |o| if (o.token and !try spentByOther(a, .{ .txid = tx.txid, .vout = o.vout }, tx.txid)) try adjustTally(a, svc, tp, o.units, false);
+            for (try oursOfRow(a, svc, row, tx.txid, &buf)) |o| if (o.token and !try spentByOther(a, svc, .{ .txid = tx.txid, .vout = o.vout }, tx.txid)) try adjustTally(a, svc, tp, o.units, false);
             if (row.get("feeVouts")) |fv| if (fv.getUint("commission")) |cv| {
                 const cname = try commissionName(a, tx.txid, @intCast(cv));
-                if (try latestOf(a, cname)) |c| if (!isReverted(c)) try svc.emit(.{ .map = try a.dupe(Entry, &.{
+                if (try latestOf(a, svc, cname)) |c| if (!isReverted(c)) try svc.emit(.{ .map = try a.dupe(Entry, &.{
                     .{ .key = "event", .value = .{ .text = cname } },
                     .{ .key = "type", .value = .{ .text = "commission" } },
                     .{ .key = "reverted", .value = .{ .boolean = true } },
@@ -957,11 +923,11 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
     for (tx.tx.inputs, 0..) |in, i| {
         const op = in.previous_outpoint;
         const back = givenBack(svc, i);
-        if (back) if (try ourTokenFee(a, op.txid.bytes, op.index)) |units| try adjustTally(a, svc, tp, units, true);
-        const was = (try outputRow(a, op.txid.bytes, op.index)) orelse continue;
+        if (back) if (try ourTokenFee(a, svc, op.txid.bytes, op.index)) |units| try adjustTally(a, svc, tp, units, true);
+        const was = (try outputRow(a, svc, op.txid.bytes, op.index)) orelse continue;
         // A pool this tx continued or closed: the pool's latest standing hop is this tx's.
         const pid_text = was.getText("poolId") orelse return error.BadEvent;
-        const hops = try standing(a, pid_text);
+        const hops = try standing(a, svc, pid_text);
         if (hops.len == 0) continue;
         if (!eql(u8, hops[hops.len - 1].getText("txid") orelse "", &w.header.toHex(tx.txid))) continue;
         const pid_op = try parseOutpoint(pid_text);
@@ -970,7 +936,7 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
     // Each pool's revert row: the pool as it stands without this tx's hops (the hop it spent given
     // back, or — a proven winner's — the hop that took its coin), or none.
     for (touched.items) |t| {
-        const row = try revertRow(a, tx.txid, token, t.pid, try afterUndo(a, try poolIdText(a, &t.pid), tx.txid));
+        const row = try revertRow(a, tx.txid, token, t.pid, try afterUndo(a, svc, try poolIdText(a, &t.pid), tx.txid));
         try svc.emit(try named(a, try poolName(a, try poolIdText(a, &t.pid)), row));
         try svc.emit(try named(a, try hopName(a), row));
     }
@@ -1005,11 +971,6 @@ pub fn priceOf(rec: Value) ?Price {
     return if (p.tokens == 0) null else p;
 }
 
-fn volumeOf(rec: Value) struct { sats: u64, tokens: u64 } {
-    const p = priceOf(rec) orelse return .{ .sats = 0, .tokens = 0 };
-    return .{ .sats = p.sats, .tokens = p.tokens };
-}
-
 /// THE pool row the live list and the positions answer (0.48.0 shape): `{poolId, outpoint,
 /// bsvReserve, tokenReserve, lpPubKey, liquidityFeeBps, validationFeeBps, commissionBps,
 /// validatorIdentityKey, at, swaps, lifetime}` from a standing hop row.
@@ -1022,15 +983,28 @@ fn poolStateValue(a: Allocator, svc: *Service, tp: []const u8, hop: Value) !Valu
     return .{ .map = es.items };
 }
 
+/// Whether the chain says the output `<txid>_<vout>` (a hop row's `outpoint`) is spent: its fact
+/// `chain/output/<txid>.<vout>` (skein-chain 0.10.0) latest `state: "spent"` — a live spender held,
+/// whether or not the topic admitted it. Spent-ness is chain state (David 2026-11-09): the answers
+/// read it here, so a pool output a transaction the topic did not admit spent (no `spent` hook ever
+/// fires for it) is not answered live.
+fn spentOnChain(a: Allocator, svc: *Service, outpoint_text: []const u8) !bool {
+    const op = try parseOutpoint(outpoint_text);
+    const name = try std.fmt.allocPrint(a, "chain/output/{s}.{d}", .{ &w.header.toHex(op.txid), op.vout });
+    const f = (try svc.latest(name)) orelse return false;
+    return eql(u8, f.getText("state") orelse "", "spent");
+}
+
 /// A pool's state from its standing hops: its current hop (a deploy's or a Swap's: live; a
-/// rescind's: rescinded), or closed.
+/// rescind's: rescinded) while the chain has not spent its output, or closed.
 const State = struct { status: []const u8, current: ?Value, lp: ?Value };
-fn stateOf(a: Allocator, pid_text: []const u8, token: []const u8) !?State {
-    const hops = try standing(a, pid_text);
+fn stateOf(a: Allocator, svc: *Service, pid_text: []const u8, token: []const u8) !?State {
+    const hops = try standing(a, svc, pid_text);
     if (hops.len == 0) return null;
     const top = hops[hops.len - 1];
     if (!eql(u8, top.getText("tokenId") orelse "", token)) return null;
     const k = kindOf(top);
+    if (top.getText("outpoint")) |o| if (try spentOnChain(a, svc, o)) return .{ .status = "closed", .current = null, .lp = top.get("lpPubKey") };
     if (eql(u8, k, "deploy") or eql(u8, k, "swap")) return .{ .status = "live", .current = top, .lp = top.get("lpPubKey") };
     if (eql(u8, k, "rescind")) return .{ .status = "rescinded", .current = top, .lp = top.get("lpPubKey") };
     return .{ .status = "closed", .current = null, .lp = top.get("lpPubKey") };
@@ -1040,15 +1014,16 @@ fn stateOf(a: Allocator, pid_text: []const u8, token: []const u8) !?State {
 /// the latest row of every `<app>/pool/…`; a pool whose latest is a revert is read whole.
 fn answerAll(a: Allocator, svc: *Service, tp: []const u8, token: []const u8) !lookup.Answer {
     var out: std.ArrayList(Value) = .empty;
-    for (try latestUnder(a, try std.fmt.allocPrint(a, "{s}/pool/", .{app}))) |r| {
+    for (try latestUnder(a, svc, try std.fmt.allocPrint(a, "{s}/pool/", .{app}))) |r| {
         if (!eql(u8, r.getText("tokenId") orelse "", token)) continue;
         const k = kindOf(r);
         var hop = r;
         if (eql(u8, k, "revert")) {
-            const st = (try stateOf(a, r.getText("poolId") orelse continue, token)) orelse continue;
+            const st = (try stateOf(a, svc, r.getText("poolId") orelse continue, token)) orelse continue;
             if (!eql(u8, st.status, "live")) continue;
             hop = st.current.?;
         } else if (!eql(u8, k, "deploy") and !eql(u8, k, "swap")) continue;
+        if (try spentOnChain(a, svc, hop.getText("outpoint") orelse continue)) continue;
         try out.append(a, try poolStateValue(a, svc, tp, hop));
     }
     return .{ .freeform = .{ .array = out.items } };
@@ -1067,8 +1042,8 @@ fn answerPools(a: Allocator, svc: *Service, tp: []const u8, token: []const u8, v
         var sats: u64 = 0;
         var tokens: u64 = 0;
         var swaps: u64 = 0;
-        const st = try stateOf(a, pid_text, token);
-        if (st != null) for (try standing(a, pid_text)) |h| {
+        const st = try stateOf(a, svc, pid_text, token);
+        if (st != null) for (try standing(a, svc, pid_text)) |h| {
             if (!eql(u8, kindOf(h), "swap") or h.get("amountIn") == null) continue;
             const fee = h.getUint("feeLp") orelse 0;
             if (eql(u8, h.getText("side") orelse "", "buy")) sats += fee else tokens += fee;
@@ -1099,6 +1074,7 @@ fn answerPools(a: Allocator, svc: *Service, tp: []const u8, token: []const u8, v
 /// 0.49.0: `{outpoint}`, `{validatorIdentityKey}`, `{validatorIdentityKeys}` and `{commissionPkhs}`
 /// are gone (no reader).
 pub fn answer(a: Allocator, svc: *Service, _: *Chain, query: Value) anyerror!lookup.Answer {
+    app = svc.app;
     if (query != .map) return error.BadQuery;
     const token_text = query.getText("tokenId") orelse return error.BadQuery;
     const topic = try topicOf(a, token_text);

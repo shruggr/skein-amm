@@ -1,25 +1,30 @@
-// The token app end to end on a real kernel (skein-amm 0.49.0): ONE token instance born from an image
-// that installs, at birth and with their approvals, the chain app (skein-chain 0.10.0), the signer app
-// (skein-signer 0.1.0), the wallet app (skein-wallet 0.1.0, as `wallet`) and this app (`amm`, its
-// manifest's `calls` granted in the genesis). The instance's identity is the fixtures' validator
-// identity (gen/vectors: key 0x7f…), so the validator fees of the fixtures' Swaps are ours.
+// The token app end to end on a real kernel (skein-amm 0.50.0, skein kernel 0.8.0): token instances born
+// from an image that installs, at birth and with their approvals, the chain app (skein-chain 0.11.0),
+// the signer app (skein-signer 0.1.1), the wallet app (skein-wallet 0.1.1, as `wallet`) and this app
+// (`amm`, its manifest's `calls` granted in the genesis). The instances' identity is the fixtures'
+// validator identity (gen/vectors: key 0x7f…), so the validator fees of the fixtures' Swaps are ours.
 //
-//   1. the deploy event (amm-setup): the token's topic and lookups registered, the deploy seeded;
-//   2. pool_deploy, swap_bsv_in (a buy), swap_tokens_in (a sell) submitted (POST /submit, the fixtures as
-//      signed by gen/vectors);
-//   3. the recognizer's events, as the KERNEL indexed them (GET /@<h>/events/…): `amm/pool/<poolId>`,
-//      `amm/output/<op>`, `amm/hop` — so a record the kernel refuses to emit (an event's `kind` / `app`)
-//      fails here;
-//   4. the validator fee outputs filed in the wallet app (its reads /wallet/outputs, /wallet/balance):
-//      the buy's under "bsv", the sell's under "tokens";
-//   5. the token fee tally (GET /@<h>/amm/fees/tokens);
-//   6. the store replays to itself exactly.
+//   `tok`: the deploy event (amm-setup: the topic and lookups registered, the deploy seeded); pool_deploy,
+//          swap_bsv_in (a buy), swap_tokens_in (a sell) submitted one by one (POST /submit, the fixtures as
+//          gen/vectors signed them); the recognizer's events as the KERNEL indexed them (`amm/pool/<poolId>`,
+//          `amm/output/<op>`, `amm/hop` — a record the kernel refuses to emit fails here); the validator
+//          fees filed in the wallet app (the buy's under "bsv", the sell's under "tokens"); the token fee
+//          tally (GET /amm/fees/tokens); then the sell REJECTED by the network and later MINED (a proof
+//          overrides): its hop reverted and the tally back to 0, then admitted again, the tally and the
+//          wallet's "tokens" restored;
+//   `tok2`: ONE BEEF carrying the pool's deploy and the buy, both unproven, admitted in ONE step (the
+//          fake Arcade holds the deploy's broadcast back until the buy is seen; the step that takes the
+//          deploy's word admits both — checked by the events' step numbers); the hop recognised, the fees
+//          filed, the tally right; then the sell;
+//   each store replays to itself exactly.
 //
-//   SKEIN_DIR=<skein checkout at 0.7.0 (440e704), node_modules, its kernel built: kernel-zig zig-out/web (the wasm host) and zig-out/bin (the replay)>
-//   CHAIN_DIR=<skein-chain v0.10.0>  SIGNER_DIR=<skein-signer v0.1.0>  WALLET_DIR=<skein-wallet v0.1.0>
+//   SKEIN_DIR=<skein checkout at kernel 0.8.0 (branch events-own-step), node_modules, its kernel built:
+//             kernel-zig zig-out/web (the wasm host) and zig-out/bin (the replay)>
+//   CHAIN_DIR=<skein-chain v0.11.0>  SIGNER_DIR=<skein-signer v0.1.1>  WALLET_DIR=<skein-wallet v0.1.1>
 //   SKEIN_TEST_STORE=sqlite  node --experimental-strip-types --no-warnings scripts/e2e/token-instance.ts
 //
-// (the app trees as their tags carry them: `git archive <tag> | tar x -C <dir>`; this repo's bin/ built: `zig build bin`).
+// (the app trees as their tags carry them: `git archive <tag> | tar x -C <dir>`; this repo's bin/ built:
+// `zig build bin`; DEBUG_E2E=1 prints the facts of a submission not admitted; ONLY_TOK2=1 runs tok2 alone.)
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -94,15 +99,36 @@ const tokenImage = JSON.parse(readFileSync(join(AMM, "image/token/etc/apps.json"
 writeFileSync(join(images, "token-e2e", "etc/apps.json"), JSON.stringify({ install: [CHAIN_DIR, SIGNER_DIR, WALLET_DIR, AMM], routes: tokenImage.routes ?? [] }, null, 2));
 
 // The instance's key: the fixtures' validator identity (gen/vectors key(0x7f)).
-const H = "tok";
 const identityKey = PrivateKey.fromHex("7f".repeat(32));
 const IDENTITY = identityKey.toPublicKey().toString();
-check(IDENTITY === /pub const identity = "([0-9a-f]+)";/.exec(vectors)![1], `the instance's identity is the fixtures' validator identity (${IDENTITY.slice(0, 12)}…)`);
+check(IDENTITY === /pub const identity = "([0-9a-f]+)";/.exec(vectors)![1], `the instances' identity is the fixtures' validator identity (${IDENTITY.slice(0, 12)}…)`);
 mkdirSync(join(work, "home"), { recursive: true });
-const keys = new Map<string, InstanceType<typeof PrivateKey>>([[H, identityKey]]);
+// Two instances, each its own token instance of the same fixtures: `tok` takes the pool, the buy and
+// the sell one submission each (then the sell rejected, then mined); `tok2` takes ONE BEEF carrying
+// the pool's deploy and the buy, admitted in one step, then the sell.
+const keys = new Map<string, InstanceType<typeof PrivateKey>>([["tok", identityKey], ["tok2", identityKey]]);
 const keyOf = (h: string) => { let k = keys.get(h); if (!k) { k = PrivateKey.fromRandom(); keys.set(h, k); } return k; };
 
 const arcade = await FakeArcade.start();
+// The txids whose broadcast the fake Arcade answers 503 (not taken, retried) for now.
+const hold = new Set<string>();
+{
+  const fa = arcade as unknown as { api(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<void>; txs: Map<string, { txStatus: string; token: string }>; posts: Uint8Array[] };
+  const api = fa.api.bind(fa);
+  fa.api = async (req, res) => {
+    if (req.method !== "POST" || hold.size === 0) return api(req, res);
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = new Uint8Array(Buffer.concat(chunks));
+    let txid = "";
+    try { txid = (FakeArcade as unknown as { txOf(b: Uint8Array): Tx }).txOf(body).id("hex"); } catch { /* not a transaction */ }
+    const send = (status: number, v: unknown, hd: Record<string, string> = {}) => { res.writeHead(status, { "content-type": "application/json", ...hd }); res.end(JSON.stringify(v)); };
+    if (hold.has(txid)) return send(503, { status: 503, title: "Service Unavailable", detail: "held by the test" }, { "retry-after": "1" });
+    fa.posts.push(body);
+    if (!fa.txs.has(txid)) fa.txs.set(txid, { txStatus: "RECEIVED", token: String(req.headers["x-callbacktoken"] ?? "") });
+    return send(202, { txid, status: 202, txStatus: fa.txs.get(txid)!.txStatus });
+  };
+}
 const afters: Array<() => unknown> = [];
 const ownerKey = PrivateKey.fromRandom();
 const h = await testHost({ after: (f: () => unknown) => afters.push(f) }, {
@@ -110,12 +136,14 @@ const h = await testHost({ after: (f: () => unknown) => afters.push(f) }, {
   reuse: { home: join(work, "home"), keyOf },
 });
 h.router.o.imagesDir = images;
-let store = "";
-try {
-  await h.router.start();
+const stores: string[] = [];
+
+/** One token instance's flow (see the header); its store's spec kept for the replay. */
+async function instanceFlow(H: string, oneStep: boolean): Promise<void> {
+
   const made = await h.router.createInstance(H, h.ownerId, { image: "token-e2e", owned: true });
   check(made.identity === IDENTITY, `the instance ${H} born from the image, its identity the fixtures' (${made.identity.slice(0, 12)}…)`);
-  store = storeSpec(h.db.get(H)!);
+  stores.push(storeSpec(h.db.get(H)!));
   const k = async () => (await h.router.hydrate(H)).kernel;
   const record = async (name: string) => {
     const kk = await k();
@@ -157,11 +185,39 @@ try {
     const text = await r.text();
     await h.router.settled();
     const admitted = await until(`${name} admitted`, async () => (await events(`amm/topic/tx/${t.id("hex")}`)).some((x) => x.verdict === "admitted") || undefined, 30_000).then(() => true, () => false);
-    check(admitted, `${name} submitted (${r.status} ${text.slice(0, 120)}): amm/topic/tx admitted`);
+    if (!admitted && process.env.DEBUG_E2E) for (const id of [t.id("hex"), ...t.inputs.map((i) => i.sourceTXID ?? "")]) process.stdout.write(`  debug ${id.slice(0, 8)}: chain/tx ${JSON.stringify(await events(`chain/tx/${id}`))} topic/tx ${JSON.stringify(await events(`amm/topic/tx/${id}`))}\n`);
+    check(admitted, `${H}: ${name} submitted (${r.status} ${text.slice(0, 120)}): amm/topic/tx admitted`);
     return t.id("hex");
   };
-  const pd = await submit("pool_deploy");
-  const buy = await submit("swap_bsv_in");
+  // tok: one submission each. tok2: the buy's BEEF carries the pool's deploy, unproven — both
+  // admitted in ONE step (skein 0.8.0: the Swap's hook sees the deploy's hop raised in that step).
+  const pd = oneStep ? txs.get("pool_deploy")!.id("hex") : await submit("pool_deploy");
+  let buy: string;
+  if (oneStep) {
+    // The buy's BEEF carries the pool's deploy, unproven: two items of one submission. The network's
+    // word on the BUY comes first, then on the deploy: the step that takes the deploy's admits both
+    // (an item is admitted only after the ones before it), the buy's hook reading the deploy's hop
+    // raised earlier in that step.
+    const tBuy = txs.get("swap_bsv_in")!;
+    buy = tBuy.id("hex");
+    // The fake Arcade holds the deploy's broadcast back (503, retried) while it takes the buy's.
+    hold.add(pd);
+    const r = await fetch(`${h.base}/@${H}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([topic]) }, body: Uint8Array.from(tBuy.toAtomicBEEF()) });
+    await r.text();
+    await until("the buy seen", async () => { await h.router.settled(); return (await events(`chain/tx/${buy}`)).some((x) => x.status === "seen") || undefined; }, 30_000).catch(() => undefined);
+    check(!(await events(`amm/topic/tx/${buy}`)).some((x) => x.verdict === "admitted"), `${H}: the buy seen first, not admitted before the deploy`);
+    hold.delete(pd);
+    const both = await until("both admitted", async () => { await h.router.settled(); return ((await events(`amm/topic/tx/${buy}`)).some((x) => x.verdict === "admitted") && (await events(`amm/topic/tx/${pd}`)).some((x) => x.verdict === "admitted")) || undefined; }, 30_000).then(() => true, () => false);
+    check(both, `${H}: one BEEF (the deploy and the buy): both admitted (chain/tx buy ${(await events(`chain/tx/${buy}`)).map((x) => String(x.status)).join(",")}; deploy ${(await events(`chain/tx/${pd}`)).map((x) => String(x.status)).join(",")})`);
+  } else buy = await submit("swap_bsv_in");
+  if (oneStep) {
+    check((await events(`amm/topic/tx/${pd}`)).some((x) => x.verdict === "admitted"), `${H}: the pool's deploy admitted with the buy, from the buy's one BEEF`);
+    // The same step: the deploy's hop and the buy's carry one step number (skein 0.8.0 place {s, i, thread}).
+    // The read's `id` is the place `<s>.<i>.<thread>` (skein 0.8.0): `s` the instance's step number.
+    const stepOf = async (name: string) => ((await (await fetch(`${h.base}/@${H}/events/${name}`)).json()) as Array<{ id: string }>).at(-1)?.id.split(".")[0];
+    const sDeploy = await stepOf(`amm/output/${pd}.0`), sBuy = await stepOf(`amm/output/${buy}.0`);
+    check(sDeploy !== undefined && sDeploy === sBuy, `${H}: the deploy's hop and the buy's hop raised in ONE step (step ${sDeploy} / ${sBuy})`);
+  }
   const sell = await submit("swap_tokens_in");
   const poolId = `${pd}_0`;
 
@@ -195,16 +251,45 @@ try {
   // ------------------------------------------------ 5. the token fee tally
   const tally = await getJson("amm/fees/tokens");
   check(tally.status === 200 && tally.body?.tokenId === tokenId && tally.body?.units === Number(sellRow?.feeValidator), `GET /amm/fees/tokens: ${JSON.stringify(tally.body)} (the sell's validator fee ${String(sellRow?.feeValidator)})`);
+
+  if (oneStep) return;
+
+  // ------------------------------------------------ 6. the sell rejected, then mined (a proof overrides)
+  arcade.emit(sell, { txStatus: "REJECTED" });
+  const reverted = await until("the sell reverted", async () => { await h.router.settled(); return (await events(`amm/output/${sell}.0`)).at(-1)?.reverted === true || undefined; }, 30_000).then(() => true, () => false);
+  const t1 = await getJson("amm/fees/tokens");
+  check(reverted && t1.body?.units === 0, `${H}: the sell rejected (chain/tx ${(await events(`chain/tx/${sell}`)).map((r) => String(r.status)).join(",")}): amm/output/<sell>.0 reverted, the tally ${JSON.stringify(t1.body?.units)}`);
+  const height = headers.length + 1;
+  const hd = mine(prev, internal(sell), 1_790_400_000);
+  prev = sha256d(hd);
+  headers.push(hd);
+  await h.router.chainHeaders(H, "chain", [hd]);
+  await h.router.settled();
+  const mp = new MerklePath(height, [[{ offset: 0, hash: sell, txid: true }]]);
+  arcade.emit(sell, { txStatus: "MINED", merklePath: mp.toHex(), blockHash: Buffer.from(sha256d(hd)).reverse().toString("hex"), blockHeight: height });
+  const mined = await until("the sell mined", async () => { await h.router.settled(); return (await events(`chain/tx/${sell}`)).at(-1)?.status === "mined" || undefined; }, 30_000).then(() => true, () => false);
+  check(mined, `${H}: the sell mined after its rejection: chain/tx ${(await events(`chain/tx/${sell}`)).map((r) => String(r.status)).join(",")}`);
+  const back = await until("the sell admitted again", async () => { await h.router.settled(); const r = (await events(`amm/output/${sell}.0`)).at(-1); return (r?.type === "swap" && r?.reverted === undefined) || undefined; }, 30_000).then(() => true, () => false);
+  const t2 = await getJson("amm/fees/tokens");
+  const tok2 = await getJson("wallet/outputs?basket=tokens");
+  check(back && t2.body?.units === Number(sellRow?.feeValidator), `${H}: admitted again — amm/output/<sell>.0 the swap's hop, the tally ${JSON.stringify(t2.body?.units)}, the wallet's tokens ${JSON.stringify((tok2.body?.outputs ?? []).map((o: { outpoint: string }) => o.outpoint.slice(0, 8)))}`);
+  check((tok2.body?.outputs ?? []).length === 1, `${H}: the sell's fee output in the wallet's "tokens" again (${JSON.stringify(tok2.body)})`);
+}
+
+try {
+  await h.router.start();
+  if (!process.env.ONLY_TOK2) await instanceFlow("tok", false);
+  await instanceFlow("tok2", true);
 } catch (e) {
   check(false, `threw: ${(e as Error).stack}`);
 } finally {
   for (const f of afters.reverse()) await f();
   await arcade.close();
-  if (store) {
+  for (const store of stores) {
     const rp = spawnSync("node", ["--experimental-strip-types", "--no-warnings", join(SKEIN, "kernel-zig/equiv/replays.ts"), store], { encoding: "utf8", cwd: SKEIN });
     process.stdout.write(rp.stdout);
     if (rp.status !== 0) process.stdout.write(rp.stderr);
-    check(rp.status === 0 && /identical .*the source store reproduced exactly/.test(rp.stdout), "the instance's store replays to itself exactly");
+    check(rp.status === 0 && /identical .*the source store reproduced exactly/.test(rp.stdout), `${store.split("#").at(-1)}: the store replays to itself exactly`);
   }
 }
 process.stdout.write(failures ? `token instance e2e: ${failures} FAILED\n` : "token instance e2e: all ok\n");

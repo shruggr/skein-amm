@@ -1,14 +1,14 @@
 .{
     .name = .skein_amm,
-    .version = "0.49.0",
+    .version = "0.50.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.26.0.tar.gz",
-            .hash = "skein_overlay-0.26.0-IMuNgURhJADAkq8CF4hJe4zCoftFPwIXJ0d74b4xmkwv",
+            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.27.0.tar.gz",
+            .hash = "skein_overlay-0.27.0-IMuNgXLGJABc_LSANTOxq2KfzvDQqdeC8VVFlM6NbNkI",
         },
         // The 1Color components: the `1color` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
@@ -18,12 +18,12 @@
         // signer app by a kernel-checked name) and the named call (`sk.callAs`). The overlay's own SDK
         // (chain, cbor, …) comes through skein_overlay.
         .skein_sdk_signer = .{
-            .url = "https://github.com/shruggr/skein-sdk/archive/refs/tags/v0.20.0.tar.gz",
-            .hash = "skein_sdk-0.20.0-YroFBGc4HACEuIOmCs1eYaSpsjCKtFwEsaPX9fvH7XnW",
+            .url = "https://github.com/shruggr/skein-sdk/archive/refs/tags/v0.21.2.tar.gz",
+            .hash = "skein_sdk-0.21.2-YroFBMdCHQAqF4yIwzs6dAYjEE8afJi5fGg1NQzMrbBS",
         },
         .skein_1color = .{
-            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.18.0.tar.gz",
-            .hash = "skein_1color-0.18.0-_DlbUgVQIgBMMmu7BVoQwAuRCqdw33UzZy1emaOPsTR7",
+            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.19.0.tar.gz",
+            .hash = "skein_1color-0.19.0-_DlbUmZ8IgB4uNb6_wz_F8BPXYRdKfqybbCYuluCEjPG",
         },
     },
     .paths = .{

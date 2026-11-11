@@ -213,6 +213,21 @@ const Index = struct {
         return .{ .array = out.items };
     }
 
+    var dummy: u8 = 0;
+    /// The kernel as a lookup's hook has it (skein-overlay 0.27.0 `lookup.Kernel`): an emit enters
+    /// the index at once — a step sees its own events (skein 0.8.0) — and is refused as the kernel
+    /// refuses it ("an event's 'kind' and 'app' are the kernel's to set").
+    fn kernel() lookup.Kernel {
+        return .{ .ctx = &dummy, .emitFn = emitK, .eventsFn = eventsK };
+    }
+    fn emitK(_: *anyopaque, _: Allocator, ev: Value) anyerror!void {
+        if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
+        try put(ev.getText("event") orelse return error.BadEvent, ev);
+    }
+    fn eventsK(_: *anyopaque, al: Allocator, q: Value) anyerror!Value {
+        return read(al, q);
+    }
+
     fn count(prefix: []const u8) usize {
         var n: usize = 0;
         for (names.items) |x| n += @intFromBool(std.mem.startsWith(u8, x, prefix));
@@ -276,7 +291,6 @@ const Env = struct {
         Filed.a = a;
         Filed.calls = .empty;
         Filed.refuse = false;
-        idx.reader = Index.read;
         idx.app = "amm";
         idx.self_identity = null;
         idx.filer = Filed.file;
@@ -287,7 +301,10 @@ const Env = struct {
         self.ms.deinit();
     }
     fn svc(self: *Env, a: Allocator) !lookup.Service {
-        return lookup.Service.load(a, self.ms.store(), self.service, idx.spec.maps, null);
+        var s = try lookup.Service.load(a, self.ms.store(), self.service, idx.spec.maps, null);
+        s.kernel = Index.kernel();
+        s.app = "amm";
+        return s;
     }
     fn chain(self: *Env, a: Allocator) !lookup.Chain {
         return lookup.Chain.load(a, self.ms.store(), null, .regtest);
@@ -295,14 +312,8 @@ const Env = struct {
     fn q(self: *Env, a: Allocator, rest: []const Entry) !Value {
         return query(a, self.token, rest);
     }
-    /// The step ends: its emits enter the index.
-    fn commit(_: *Env, s: *lookup.Service) !void {
-        // The kernel's emit rule (skein scheduler.zig: "an event's 'kind' and 'app' are the kernel's
-        // to set"): a record carrying either is refused.
-        for (s.events.items) |ev| if (ev.get("kind") != null or ev.get("app") != null) return error.EmitRefused;
-        for (s.events.items) |ev| try Index.put(ev.getText("event").?, ev);
-        s.events = .empty;
-    }
+    /// The step ends (skein 0.8.0: a step sees its own events, so nothing waits for its end).
+    fn commit(_: *Env, _: *lookup.Service) !void {}
     /// One admission step: `admitted` on fixture `name` (or a variant `t` of it), then `spent` for
     /// each previous coin `prev` it consumed, then the commit.
     fn admit(self: *Env, a: Allocator, s: *lookup.Service, name: []const u8, t: ?bsvz.transaction.Transaction, outs: []const u32, prev: []const lookup.Outpoint) !void {
@@ -331,7 +342,23 @@ const Env = struct {
 };
 
 fn latestRow(a: Allocator, name: []const u8) !?Value {
-    return idx.latestOf(a, name);
+    const ans = try Index.read(a, .{ .map = try a.dupe(Entry, &.{ .{ .key = "name", .value = .{ .text = name } }, .{ .key = "latest", .value = .{ .boolean = true } } }) });
+    return if (ans.array.len == 0) null else ans.array[ans.array.len - 1].get("record");
+}
+
+/// The Swaps a pool's counters hold (0.50.0: the token's counters are gone): its standing swap hops
+/// whose amounts the counters add up to — checked against the counters' satsIn + tokensIn.
+fn tradesOf(a: Allocator, svc: *lookup.Service, tp: []const u8, pid: []const u8) !u64 {
+    var n: u64 = 0;
+    var ins: u64 = 0;
+    for (try idx.standing(a, svc, pid)) |h| if (std.mem.eql(u8, h.getText("type") orelse "", "swap")) {
+        n += 1;
+        ins += h.getUint("amountIn").?;
+    };
+    const op = try idx.parseOutpoint(pid);
+    const c = try idx.poolCounters(a, svc, tp, &w.store.outpointKey(op.txid, op.vout));
+    try testing.expectEqual(ins, c.sats_in + c.tokens_in);
+    return n;
 }
 
 fn poolIdOfEnv(a: Allocator, e: *Env) ![]const u8 {
@@ -408,8 +435,9 @@ test "deploy: an affirmed pool deploy is emitted as its hop under amm/pool/<pool
     try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, other)).freeform.array.len);
     try testing.expectError(error.BadQuery, idx.answer(a, &svc, &ch, .{ .map = &.{} }));
     // Another topic's call: nothing.
+    const before = Index.names.items.len;
     try idx.admitted(a, &svc, "tm_demo", try ltx(a, pd, e.f.tx("pool_deploy")), &.{0}, &.{});
-    try testing.expectEqual(@as(usize, 0), svc.events.items.len);
+    try testing.expectEqual(before, Index.names.items.len);
 }
 
 test "listing: pools that fail the pool checks, and deploys that do not attest themselves, are not emitted" {
@@ -465,10 +493,10 @@ test "swap: a Swap's continuation of a listed pool is its next hop — the pool 
     try testing.expectEqual(row.getUint("amountIn").?, all[0].get("lifetime").?.getUint("satsIn").?);
     try testing.expectEqual(@as(u64, 1000), all[0].get("lifetime").?.getUint("lastTradeAt").?);
     const tp = try idx.tokenPrefix(a, e.token);
-    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
     // A re-admission of the Swap: counted once.
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{});
-    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
 
     // A continuation naming another next key (swap_bad_next): not listed; the deploy closes.
     const e2 = try Env.init(a);
@@ -534,7 +562,7 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     try testing.expectEqualStrings(pid, rv.getText("outpoint").?);
     try testing.expectEqual(@as(u64, 0), rv.getUint("swaps").?);
     try testing.expectEqualStrings("revert", (try latestRow(a, "amm/hop")).?.getText("type").?);
-    try testing.expectEqual(@as(u64, 0), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqual(@as(u64, 0), try tradesOf(a, &svc, tp, pid));
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
     try testing.expectEqualStrings(pid, all[0].getText("outpoint").?);
@@ -545,7 +573,7 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     try testing.expectEqual(before, Index.names.items.len);
     // Re-admitted (a proof after the rejection): listed and counted again.
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
-    try testing.expectEqual(@as(u64, 1), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
     try testing.expectEqualStrings(try opStr(a, sw, 0), (try e.live(a, &svc))[0].getText("outpoint").?);
     // The deploy rejected: the pool is gone, its revert names only the pool.
     try e.reject(a, &svc, "swap_bsv_in", null);
@@ -758,20 +786,20 @@ test "order rule (skein-overlay 0.26.0): a proven B spending the pool output a h
     try idx.spent(a, &svc, e.topic, xp, lb);
     try e.commit(&svc);
     try testing.expectEqual(2 * fee, try idx.tally(a, &svc, tp));
-    try testing.expectEqual(@as(u64, 3), (try idx.tokenCounters(a, &svc, tp)).trades);
+    try testing.expectEqual(@as(u64, 3), try tradesOf(a, &svc, tp, pid));
     // A rejected (double spent, by B): nothing given back — B consumes the pool output.
     svc.given_back = &.{};
     try idx.rejected(a, &svc, e.topic, la);
     try e.commit(&svc);
     try testing.expectEqual(fee, try idx.tally(a, &svc, tp)); // B's fee only
-    try testing.expectEqual(@as(u64, 2), (try idx.tokenCounters(a, &svc, tp)).trades); // buy + B
+    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, tp, pid)); // buy + B
     const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
     try testing.expectEqualStrings("revert", rv.getText("type").?);
     try testing.expectEqualStrings(try opStr(a, tb, 0), rv.getText("outpoint").?); // the pool as it stands: B's
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
     try testing.expectEqualStrings(try opStr(a, tb, 0), all[0].getText("outpoint").?);
-    try testing.expectEqual(@as(usize, 3), (try idx.standing(a, pid)).len); // deploy, buy, B
+    try testing.expectEqual(@as(usize, 3), (try idx.standing(a, &svc, pid)).len); // deploy, buy, B
     try testing.expect((try latestRow(a, try idx.outputName(a, ta, 0))).?.getBool("reverted").?);
     try testing.expect((try latestRow(a, try idx.outputName(a, tb, 0))).?.get("reverted") == null);
 
@@ -815,4 +843,67 @@ test "F3 (David 2026-11-09): a refused filing is an error like any other — the
     Filed.refuse = true;
     try testing.expectError(error.CallRefused, idx.admitted(a, &svc, e.topic, try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in")), &.{ 0, 1 }, &.{}));
     Filed.refuse = false;
+}
+
+test "audit (0.50.0): a BEEF carrying a pool deploy and a Swap on it, admitted in ONE overlay step — the Swap's hop is recognised, its validator fee filed, the tally right (skein 0.8.0: a step sees its own events; on 0.49.0 the hop was lost)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    idx.self_identity = key33(vec.identity);
+    const pid = try poolIdOfEnv(a, e);
+    const tp = try idx.tokenPrefix(a, e.token);
+    // One step: the deploy's hooks, then the buy's, then the sell's.
+    try idx.admitted(a, &svc, e.topic, try ltx(a, e.f.txid("pool_deploy"), e.f.tx("pool_deploy")), &.{ 0, 1, 2 }, &.{});
+    const buy = try ltx(a, e.f.txid("swap_bsv_in"), e.f.tx("swap_bsv_in"));
+    try idx.admitted(a, &svc, e.topic, buy, &.{ 0, 1 }, &.{});
+    try idx.spent(a, &svc, e.topic, e.op("pool_deploy", 0), buy);
+    const sell = try ltx(a, e.f.txid("swap_tokens_in"), e.f.tx("swap_tokens_in"));
+    try idx.admitted(a, &svc, e.topic, sell, &.{ 0, 2, 3, 4 }, &.{});
+    try idx.spent(a, &svc, e.topic, e.op("swap_bsv_in", 0), sell);
+    const hops = try idx.standing(a, &svc, pid);
+    try testing.expectEqual(@as(usize, 3), hops.len);
+    for ([_][]const u8{ "deploy", "swap", "swap" }, hops) |k, h| try testing.expectEqualStrings(k, h.getText("type").?);
+    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(usize, 2), Filed.calls.items.len); // the buy's fee under bsv, the sell's under tokens
+    try testing.expectEqualStrings("bsv", Filed.calls.items[0].basket);
+    try testing.expectEqualStrings("tokens", Filed.calls.items[1].basket);
+    try testing.expectEqual(hops[2].getUint("feeValidator").?, try idx.tally(a, &svc, tp));
+    // No close: each spender continued the pool.
+    try testing.expectEqual(@as(usize, 3), Index.count("amm/pool/"));
+    try testing.expectEqualStrings(try opStr(a, e.f.txid("swap_tokens_in"), 0), (try e.live(a, &svc))[0].getText("outpoint").?);
+}
+
+/// The chain app's fact about an output (skein-chain 0.10.0 `chain/output/<txid>.<vout>`).
+fn chainOutput(a: Allocator, txid: [32]u8, vout: u32, state: []const u8, by: [32]u8) !void {
+    const name = try std.fmt.allocPrint(a, "chain/output/{s}.{d}", .{ &w.header.toHex(txid), vout });
+    try Index.put(name, .{ .map = try a.dupe(Entry, &.{
+        .{ .key = "event", .value = .{ .text = name } },
+        .{ .key = "state", .value = .{ .text = state } },
+        .{ .key = "spentBy", .value = .{ .text = try a.dupe(u8, &w.header.toHex(by)) } },
+    }) });
+}
+
+test "audit (0.50.0): the answers read spent-ness from the chain — a pool output a transaction the topic never admitted spent (no `spent` hook fires) is not live, and is closed in {poolIds}; rolled back, it is live again" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    var ch = try e.chain(a);
+    const pd = e.f.txid("pool_deploy");
+    const pid = try poolIdOfEnv(a, e);
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try testing.expectEqual(@as(usize, 1), (try e.live(a, &svc)).len);
+    const other: [32]u8 = .{0x99} ** 32;
+    try chainOutput(a, pd, 0, "spent", other);
+    try testing.expectEqual(@as(usize, 0), (try e.live(a, &svc)).len);
+    const ids = try e.q(a, &.{.{ .key = "poolIds", .value = .{ .array = try a.dupe(Value, &.{.{ .text = pid }}) } }});
+    try testing.expectEqualStrings("closed", (try idx.answer(a, &svc, &ch, ids)).freeform.array[0].getText("status").?);
+    try chainOutput(a, pd, 0, "rolledBack", other);
+    try testing.expectEqual(@as(usize, 1), (try e.live(a, &svc)).len);
+    try testing.expectEqualStrings("live", (try idx.answer(a, &svc, &ch, ids)).freeform.array[0].getText("status").?);
 }

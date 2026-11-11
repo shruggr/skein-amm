@@ -96,7 +96,18 @@ const ext = struct {
 };
 
 /// The kernel's event index read (skein 0.5.0 `events`): what amm-lookup's answers read (0.49.0, the
-/// pool rows are events).
+/// pool rows are events), as the service's kernel (skein-overlay 0.27.0 `lookup.Kernel`; a read
+/// route only reads: its emit is refused).
+var kernel_dummy: u8 = 0;
+fn readKernel() lookup.Kernel {
+    return .{ .ctx = &kernel_dummy, .emitFn = noEmit, .eventsFn = readEventsK };
+}
+fn noEmit(_: *anyopaque, _: Allocator, _: Value) anyerror!void {
+    return error.ReadOnly;
+}
+fn readEventsK(_: *anyopaque, a: Allocator, q: Value) anyerror!Value {
+    return readEvents(a, q);
+}
 fn readEvents(a: Allocator, q: Value) anyerror!Value {
     const bytes = try cbor.encode(a, q);
     return cbor.decode(a, try vm.result(a, ext.events, .{ bytes.ptr, @as(u32, @intCast(bytes.len)) }));
@@ -113,8 +124,6 @@ var overlay_in: ?Value = null;
 
 fn run(a: Allocator) anyerror!void {
     const in = try vm.input(a);
-    amm_lookup.reader = readEvents;
-    amm_lookup.app = iface.app_name;
     const is_call = eql(u8, in.getText("kind") orelse "", "call");
     overlay_in = ov.engine_vm.configured(a, in, if (is_call) vm.callArg(a, in) catch null else null) catch null;
     if (is_call) return call(a, in);
@@ -204,6 +213,8 @@ fn publicRead(a: Allocator, in: Value, arg: Value, r: Read) !Value {
     const rec = (try headRecord(a, token_head)) orelse return reads.httpError(a, 404, "no token yet: this instance has had no deploy");
     const token = rec.getText("tokenId") orelse return reads.httpError(a, 404, "no token yet: this instance has had no deploy");
     var svc = try reads.loadLookup(a, vm.store(), try vm.head(a, try lookup.headName(a, iface.app_name, amm_lookup.service_name)));
+    svc.kernel = readKernel();
+    svc.app = iface.app_name;
     if (r == .feeTokens) {
         const units = try amm_lookup.tally(a, &svc, try amm_lookup.tokenPrefix(a, token));
         return reads.httpCached(a, 200, "application/json", .state, try reads.tallyJson(a, token, units));

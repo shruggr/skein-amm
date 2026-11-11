@@ -2370,3 +2370,45 @@ test "proven before the lock (D6, 0.46.2): a request naming by txid a transactio
     try testing.expect((try lockedStep(m, a, &locks, &th, try relayBeef(a, m, p), m.pool_op, T2)) == null);
     try testing.expectEqual(@as(usize, 1), locks.entries.items[0].waiters.items.len);
 }
+
+/// A BUMP for a block holding one transaction: its root is the txid.
+fn soloPath(a: std.mem.Allocator, height: u32, txid: [32]u8) ![]const u8 {
+    var path: std.ArrayList(u8) = .empty;
+    try path.appendSlice(a, &.{ 0xfd, 0, 0, 0x01, 0x01, 0x00, 0x02 });
+    std.mem.writeInt(u16, path.items[1..3], @intCast(height), .little);
+    try path.appendSlice(a, &txid);
+    return path.items;
+}
+
+test "a swap rejected, then mined: the taker is told it was mined — the status is the chain state's, a proof overrides the rejection (0.50.0); answered from the engine's earlier `rejected` the same" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const m = try Mined.init(a, &ms);
+    const req = try m.swapRequest(a);
+    const r = try m.respond(a, req);
+    const ev = try m.node.launched(r);
+    _ = try m.node.step(ev);
+    const done = try m.node.status(ev, "REJECTED");
+    try testing.expectEqual(Gated.rejected, done.gate);
+    const rejected_answer = m.node.sent.last();
+    try expectRefused(try m.answer(a, req), .rejected);
+    // Mined after all, alone in block 2: its proof.
+    const txid = r.reply.ok.txid.?;
+    const hd = mine(w.header.hash(&m.blk), txid, 1_700_000_600);
+    try m.node.headers(&.{&hd});
+    const ch = try m.node.chain();
+    try testing.expectEqual(w.state.State.Outcome.proven, try ch.applyStatus(txid, "MINED", try soloPath(a, 2, txid)));
+    m.node.chain_root = try ch.save();
+    try testing.expectEqual(w.state.Status.proven, try (try m.node.chain()).status(txid));
+    const heard = try m.node.answer(txid, .{ .mined = .{} }, .mined);
+    try testing.expect(heard.admitted);
+    const ans = try m.answer(a, req);
+    try testing.expect(ans == .ok);
+    try testing.expectEqualSlices(u8, &txid, &ans.ok.txid.?);
+    // The engine's earlier word was `rejected`; the state as it stands answers.
+    const from_submit = try m.fromSubmit(a, .swap, try spendBody(a, req, m.pool_op), rejected_answer);
+    try testing.expect(from_submit == .ok);
+}

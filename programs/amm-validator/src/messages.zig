@@ -195,7 +195,7 @@ fn finishSpend(a: std.mem.Allocator, reply: Reply, d: Deps, pool: Outpoint) !Ser
     const raw = reply.ok.tx orelse return .{ .reply = reply };
     const txid = reply.ok.txid orelse return .{ .reply = reply };
     if (try d.st.isApplied(sub.topic, txid)) return .{ .reply = reply, .next = .from_state };
-    if ((try settlementOf(d.st, txid)) != null) return .{ .reply = reply, .next = .from_state };
+    if ((try d.st.ch.holds(txid)) and (try d.st.ch.status(txid)) == .rejected) return .{ .reply = reply, .next = .from_state };
     if (try d.st.isPending(txid)) if (!(try d.st.isPaused(txid))) return .{ .reply = reply, .next = .{ .wait_on = txid } };
     // 0.45.0: the request's BEEF, the signed swap its subject, every held transaction (the pool's)
     // by txid; the taker's raw funding with its ancestry.
@@ -284,7 +284,7 @@ fn settlementOf(st: *ov.state.State, txid: [32]u8) !?Value {
 /// held spenders of the pool (whatever their settlement): the one that is
 /// this request with our signature in its slot (validator.zig `signedSpend`).
 ///   admitted (the topic's `applied` record) → `{ok: true, tx, txid}`;
-///   rejected (a settlement record) → `{ok: false, reason: "rejected",
+///   rejected (the chain state's status; 0.50.0) → `{ok: false, reason: "rejected",
 ///     detail, txid, pool?}`, `pool` the pool's newest state if another
 ///     transaction spent it meanwhile;
 ///   still pending (the thread errored before the gate decided) →
@@ -306,13 +306,14 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
     } else return refuse(.submit_failed, "the signed transaction is not held: its submission did not reach the overlay");
     const txid = signed.txid;
 
-    // 0.49.0 (skein-overlay 0.25.0: a rejected item's pending record is kept, a later proof admits
-    // it): the chain state's settlement first.
-    if (try settlementOf(st, txid)) |rec| {
+    // 0.50.0: the transaction's status is the chain state's (skein-sdk 0.21: a proof overrides a
+    // rejection) — rejected only while the chain says so; its settlement record gives the reason.
+    if ((try st.ch.status(txid)) == .rejected) {
+        const rec = try settlementOf(st, txid);
         const spent = (try v.spender(a, topic, req.pool)) != null;
         return .{ .refused = .{
             .reason = .rejected,
-            .detail = rec.getText("reason") orelse "rejected",
+            .detail = if (rec) |r| r.getText("reason") orelse "rejected" else "rejected",
             .txid = txid,
             .newest = if (spent) try validator.newest(a, v, topic, req.pool) else null,
         } };
@@ -344,8 +345,10 @@ pub fn answerFromSubmit(a: std.mem.Allocator, st: *ov.state.State, v: View, op: 
     const txid: ?[32]u8 = if (r.getText("txid")) |h| (w.header.fromHex(h) catch null) else null;
     if (std.mem.eql(u8, state, "rejected")) {
         const why = r.getText("reason") orelse "rejected";
+        // The state as it stands wins over the engine's word then (0.50.0: a rejected swap later
+        // mined is reported mined — admitted — not rejected).
         const held = try answerFromState(a, st, v, op, body);
-        if (held == .refused and held.refused.reason == .rejected) return held;
+        if (held == .ok or held.refused.reason == .rejected) return held;
         const reason: validator.Reason = if (std.mem.startsWith(u8, why, "NotAdmitted"))
             .topic_refused
         else if (std.mem.eql(u8, why, "TransactionRejected"))

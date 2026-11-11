@@ -4,6 +4,31 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.50.0 (branch `release-0.50`; not tagged)
+
+On skein-overlay v0.27.0, skein-1color v0.19.0, skein-sdk v0.21.2 (the signer client); the token image
+on skein-chain v0.11.0, skein-signer v0.1.1, skein-wallet v0.1.1; for skein kernel 0.8.0 (a step sees
+its own events; events placed by the instance-wide step number).
+
+- amm-lookup on the 0.27.0 lookup contract: its events are its own — raised with `svc.emit`, read
+  with `svc.events` / `svc.latest`, its names under `svc.app`; nothing handed back to the engine.
+- A Swap admitted in the SAME overlay step as its pool's deploy (one BEEF carrying both) is
+  recognised: each hook reads the facts it needs by name, and a step sees its own events. On 0.49.0
+  the Swap's hop was lost for good (no hop, no fees filed, the pool gone from `ls_amm`) — reproduced
+  as a test before the change.
+- The Close is read, not re-derived: `spent` finds the spender's next hop (`amm/output/<spender>.0`,
+  raised by `admitted` earlier in the step).
+- The answers read spent-ness from the chain (`chain/output/<txid>.<vout>` latest `spent`): a pool
+  output a transaction the topic never admitted spent is not live (`{tokenId}`), and is `closed` in
+  `{poolIds}`; rolled back, it is live again.
+- The pool lookup's token and validator counters are gone (nothing read them since 0.49.0); the
+  pool's counters and the token fee tally stay.
+- amm-validator: a transaction's status is the chain state's (a proof overrides a rejection): a swap
+  rejected then mined is answered mined; the engine's earlier `rejected` answer no longer wins over the
+  state as it stands.
+- Clients: no change from three-part event ids (`<s>.<i>.<thread>`): no client code parses an event's
+  place or id; `next` / `after` cursors are opaque.
+
 ## 0.49.0 (release candidate, branch `release-0.49`; not tagged)
 
 The pool lookup as a RECOGNIZER (agent-env plans/research/plan-pass-recognizers-2026-11-09.md; David

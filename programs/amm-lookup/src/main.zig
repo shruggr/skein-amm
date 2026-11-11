@@ -8,9 +8,7 @@ const lookup = @import("lookup");
 const vm = @import("overlay_sk");
 const cbor = @import("chain").cbor;
 
-/// The kernel's event index read (skein 0.5.0 `events`), which skein-overlay's `sk` module does not declare.
 const ext = struct {
-    extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
     /// The kernel's name-carrying in-VM call (shruggr/skein `call-permissions`, the contract's §1).
     extern "skein" fn callAs(prog: [*]const u8, prog_len: u32, func: [*]const u8, func_len: u32, name: [*]const u8, name_len: u32, arg: [*]const u8, arg_len: u32, out: [*]u8, cap: u32) i32;
 };
@@ -27,13 +25,7 @@ fn fileByCall(a: std.mem.Allocator, basket: []const u8, arg: cbor.Value) anyerro
     _ = try vm.result(a, ext.callAs, .{ prog.ptr, @as(u32, @intCast(prog.len)), func.ptr, @as(u32, @intCast(func.len)), basket.ptr, @as(u32, @intCast(basket.len)), bytes.ptr, @as(u32, @intCast(bytes.len)) });
 }
 
-/// `idx.reader` in the VM: the query as dag-cbor in, the answer decoded.
-pub fn readEvents(a: std.mem.Allocator, q: cbor.Value) anyerror!cbor.Value {
-    const bytes = try cbor.encode(a, q);
-    return cbor.decode(a, try vm.result(a, ext.events, .{ bytes.ptr, @as(u32, @intCast(bytes.len)) }));
-}
-
-pub const version = "0.49.0";
+pub const version = "0.50.0";
 
 pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
     return .{
@@ -76,19 +68,15 @@ pub fn main() u8 {
 }
 
 /// The step's context for the hooks: the in-VM call input's `now` (a row's `at`; skein docs/VM.md,
-/// "call"; replay-exact), the app the engine runs in (the hook's `app`: every event name's first
-/// segment), this instance's identity (`self.identity`: which fees are ours), and the event index
-/// read (skein-sdk `sk.events`). The input is read again by `lookup.main`; what is kept here lives
-/// in the page allocator for the call.
+/// "call"; replay-exact), this instance's identity (`self.identity`: which fees are ours) and the
+/// wallet's `file` by the named call. The events are the service's own (skein-overlay 0.27.0:
+/// `svc.emit`, `svc.events`, `svc.app`). The input is read again by `lookup.main`.
 fn stepTime() void {
     const a = std.heap.page_allocator;
     const in = vm.input(a) catch return;
     idx.now_ms = in.getUint("now") orelse 0;
-    idx.reader = readEvents;
     idx.filer = fileByCall;
     if (in.get("self")) |me| if (me.getBytes("identity")) |k| if (k.len == 33) {
         idx.self_identity = k[0..33].*;
     };
-    const arg = vm.callArg(a, in) catch return;
-    idx.app = lookup.appOf(arg);
 }
