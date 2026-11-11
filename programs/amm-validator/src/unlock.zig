@@ -1,7 +1,7 @@
 //! The pool input's unlocking script as Rúnar writes a call (see
 //! pool/pool_test.go `run` and gen/vectors `unlockPool`), the
-//! BIP-143 preimage the pool's signatures are over, and the checks of other
-//! inputs' P2PKH signatures. Pure: bsvz only.
+//! BIP-143 preimage the pool's signatures are over, and the signature check
+//! over it. Pure: bsvz only.
 //!
 //! A call is pushes only:
 //!
@@ -156,37 +156,4 @@ pub fn verify(checksig: []const u8, key: []const u8, digest: [32]u8, scope: u32)
 pub fn p2pkhHash(lock: []const u8) ?[20]u8 {
     if (lock.len != 25 or lock[0] != 0x76 or lock[1] != 0xa9 or lock[2] != 0x14 or lock[23] != 0x88 or lock[24] != 0xac) return null;
     return lock[3..23].*;
-}
-
-pub const InputCheck = enum {
-    /// A P2PKH input (plain, or a BRC-162 token under P2PKH) whose signature verifies.
-    verified,
-    /// Signed (a non-empty unlocking script), but not a lock checked here, or its source is unknown.
-    present,
-    missing,
-    bad,
-};
-
-/// Check input `index`'s signature against the output it spends, when known.
-/// A P2PKH lock (under a token prefix or not) is verified in full: two
-/// pushes, the key hashing to the lock's, and an ECDSA signature over the
-/// input's BIP-143 digest (FORKID, whatever base type it names), the
-/// scriptCode being the whole locking script (it has no separator). Other
-/// locks are only required to carry an unlocking script: bsvz's interpreter
-/// is not run here.
-pub fn checkInput(a: std.mem.Allocator, tx: *const Transaction, index: usize, source_script: ?[]const u8, satoshis: u64) !InputCheck {
-    const u = tx.inputs[index].unlocking_script.bytes;
-    if (u.len == 0) return .missing;
-    const src = source_script orelse return .present;
-    const lock = if (brc162.decode(src)) |tok| tok.lock else src;
-    const pkh = p2pkhHash(lock) orelse return .present;
-
-    const sig = brc162.readPush(u, 0) orelse return .bad;
-    const key = brc162.readPush(u, sig.next) orelse return .bad;
-    if (key.next != u.len or key.data.len != 33 or sig.data.len < 9) return .bad;
-    if (!std.mem.eql(u8, &bsvz.crypto.hash.hash160(key.data).bytes, &pkh)) return .bad;
-    const scope: u32 = sig.data[sig.data.len - 1];
-    if (scope & 0x40 == 0) return .bad; // FORKID
-    const pre = try preimage(a, tx, index, src, satoshis, scope);
-    return if (verify(sig.data, key.data, sha256d(pre), scope)) .verified else .bad;
 }

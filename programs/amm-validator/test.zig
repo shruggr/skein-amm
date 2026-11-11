@@ -1025,18 +1025,8 @@ test "sign: a request as a BEEF: an unheld parent's source verifies the taker's 
     try testing.expectEqual(@as(usize, 1), rb.entries.len);
     // It goes to the submissions box `<app>/submit` (skein-overlay 0.7.5, shruggr/skein#128).
     try testing.expectEqualStrings("amm/submit", try submit.box(a, "amm"));
-
-    // The taker's funding input's signature is verified in full from the
-    // BEEF's parent: a bad one is refused (it is only "present" without it).
-    const tx = try Transaction.parse(a, req);
-    const u = try a.dupe(u8, tx.inputs[1].unlocking_script.bytes);
-    u[u[0] - 1] ^= 0x01;
-    const bad = try withUnlocking(a, req, 1, u);
-    const bb = try w.beef.serialize(a, .{ .version = w.beef.V1, .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{
-        .{ .txid = txidOf(parent), .format = .raw, .raw = parent },
-        .{ .txid = txidOf(bad), .format = .raw, .raw = bad },
-    }) });
-    try expectRefused(try want.spend(.swap, bb, .{ .txid = txidOf(want.raw("pool_deploy")), .vout = 0 }), .bad_signature);
+    // (A bad signature on the taker's funding input is the request's check, D6: "refused: signatures
+    // missing or bad" below, through `messages.respond`.)
 }
 
 // --- refusals ---
@@ -1195,21 +1185,31 @@ test "refused: the wrong next validator key, in the call or in the continuation"
     try testing.expectEqual(@as(usize, 0), f.oracle.calls);
 }
 
-test "refused: signatures missing or bad; a preimage that is not this input's" {
+test "refused: signatures missing or bad (bad_transaction, ScriptFailed: the request's check before spend, D6); a preimage that is not this input's" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const m = try Mined.init(a, &ms);
+    // The taker's funding input (input 1, spending fund, which the BEEF carries proven).
+    try m.f.oracle.record(a, m.f.raw("swap_bsv_in"), 0);
+    const sreq = try request(a, m.f.raw("swap_bsv_in"), 0);
+    const stx = try Transaction.parse(a, sreq);
+    const su = try a.dupe(u8, stx.inputs[1].unlocking_script.bytes);
+    su[su[0] - 1] ^= 0x01; // a signature byte flipped (still DER-shaped: the byte before the sighash flag)
+    for ([_][]const u8{ &.{}, su }) |unl| {
+        const r = try m.respond(a, try m.beef(a, &.{"fund"}, try withUnlocking(a, sreq, 1, unl)));
+        try expectRefused(r.reply, .bad_transaction);
+        try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "ScriptFailed: "));
+        try testing.expect(std.mem.endsWith(u8, r.reply.refused.detail.?, "(the swap's input 1)"));
+        try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
+    }
+
     const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in" });
     const req = try request(a, f.raw("swap_tokens_in"), 0);
     const op: Outpoint = .{ .txid = txidOf(f.raw("swap_bsv_in")), .vout = 0 };
-
-    // The taker's token input unsigned.
-    try expectRefused(try f.spend(.swap, try withUnlocking(a, req, 1, &.{}), op), .missing_signature);
-    // A signature byte flipped (still DER-shaped: flip the last byte of s).
     const tx = try Transaction.parse(a, req);
-    const u = try a.dupe(u8, tx.inputs[1].unlocking_script.bytes);
-    u[u[0] - 1] ^= 0x01; // the byte before the sighash flag
-    try expectRefused(try f.spend(.swap, try withUnlocking(a, req, 1, u), op), .bad_signature);
     // The call's preimage from another transaction.
     const other = (try unlock.parseCall(a, (try Transaction.parse(a, f.raw("swap_bsv_in"))).inputs[0].unlocking_script.bytes, .swap)).?;
     const call = (try unlock.parseCall(a, tx.inputs[0].unlocking_script.bytes, .swap)).?;
@@ -1635,7 +1635,7 @@ test "relay request: a swap with its funding transaction as an unproven parent, 
     try testing.expectEqualSlices(u8, p.swap, try request(a, signed, 0));
     const st = try Transaction.parse(a, signed);
     const ft = try Transaction.parse(a, p.funding);
-    try testing.expectEqual(unlock.InputCheck.verified, try unlock.checkInput(a, &st, 1, ft.outputs[0].locking_script.bytes, @intCast(ft.outputs[0].satoshis)));
+    try testing.expect(try bsvz.script.interpreter.verifyPrevout(.{ .allocator = a, .tx = &st, .input_index = 1, .previous_output = ft.outputs[0], .unlocking_script = st.inputs[1].unlocking_script }));
     const spent = (try pool.parse(brc162.decode((try Transaction.parse(a, m.f.raw("pool_deploy"))).outputs[0].locking_script.bytes).?.lock)).?;
     const sc = (try unlock.parseCall(a, st.inputs[0].unlocking_script.bytes, .swap)).?;
     try testing.expect(unlock.verify(sc.arg(0).data, &spent.validator, unlock.sha256d(sc.preimage()), unlock.sighash_all_forkid));

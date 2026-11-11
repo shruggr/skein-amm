@@ -44,13 +44,12 @@
 //!      on a sell — is at least the terms' `minLegSats` (reason `below_minimum`);
 //!   7. the preimage the call pushes is the one we compute (BIP-143,
 //!      ALL|FORKID, the pool's scriptCode);
-//!   8. every other input carries a signature, verified when it spends a
-//!      P2PKH output (token or plain) whose source we have; for
-//!      AddLiquidity the LP's signature in the call verifies against the
-//!      pool's LpPubKey; and every unproven parent the request's BEEF
-//!      carries that we do not hold (the taker's nosend funding
-//!      transaction, docs/notes.md 2026-10-02 "Swap funding and signing")
-//!      is complete: each of its inputs signed, verified likewise;
+//!   8. the unproven parents the request's BEEF carries that we do not
+//!      hold (the taker's nosend funding transaction, docs/notes.md
+//!      2026-10-02 "Swap funding and signing") are read for the submission;
+//!      every other input's and every such parent's scripts are not checked
+//!      here: that is the request's check before the lock (D6,
+//!      `requestProblem`), run before `spend` on every path;
 //!  10. we can name our current key (`currentKeyId`, 0.13.0): a Swap's
 //!      continuation's key is keyed by the pool outpoint that Swap spent; a
 //!      deploy's, an affirmed pool's (`pool.affirmedPool`), by its Nonce;
@@ -156,8 +155,6 @@ pub const Reason = enum {
     bad_pool,
     pool_not_first_token_input,
     preimage_mismatch,
-    missing_signature,
-    bad_signature,
     current_key_unknown,
     oracle_failed,
     /// The direct call's frame is not a signed-message package for this
@@ -532,12 +529,9 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     if (!std.mem.eql(u8, pre, call.preimage())) return refuse(.preimage_mismatch, null);
     const digest = unlock.sha256d(pre);
 
-    // 8. Everyone else's signatures, and the unproven parents we do not hold (the taker's funding): complete.
-    if (try inputsSigned(a, v, sub, tx, pi)) |r| return r;
-    const parents = switch (try completeParents(a, v, sub)) {
-        .refused => |r| return r,
-        .ok => |ps| ps,
-    };
+    // 8. The unproven parents we do not hold (the taker's funding); their scripts and everyone else's
+    // signatures are the request's check (D6, `requestProblem`), before `spend`.
+    const parents = try unprovenParents(a, v, sub);
 
     // 10. Our current key, then the signature.
     const key_id = (try currentKeyId(a, v, cur.pool, src.satoshis, req.pool)) orelse return refuse(.current_key_unknown, null);
@@ -556,41 +550,6 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
         .ancestry = sub.ancestry,
         .parents = parents,
     } } };
-}
-
-/// Every input of `tx` but `skip` carries a signature, verified in full where
-/// it spends a P2PKH output (plain or under a token prefix) whose source we
-/// have (held, or in the request's BEEF): null, or the refusal naming the input.
-fn inputsSigned(a: std.mem.Allocator, v: View, sub: Subject, tx: Transaction, skip: ?usize) !?Reply {
-    for (tx.inputs, 0..) |in, i| {
-        if (skip) |k| if (i == k) continue;
-        const s = try sourceOf(a, v, sub, in);
-        switch (try unlock.checkInput(a, &tx, i, if (s) |o| o.script else null, if (s) |o| o.satoshis else 0)) {
-            .verified, .present => {},
-            .missing => return refuse(.missing_signature, try std.fmt.allocPrint(a, "input {d}", .{i})),
-            .bad => return refuse(.bad_signature, try std.fmt.allocPrint(a, "input {d}", .{i})),
-        }
-    }
-    return null;
-}
-
-/// The request's unproven parents we do not hold (`unprovenParents`: the
-/// taker's or the LP's nosend funding transaction), each complete: every
-/// input signed, verified likewise. The parents, or the refusal.
-fn completeParents(a: std.mem.Allocator, v: View, sub: Subject) !union(enum) { ok: []const Parent, refused: Reply } {
-    const parents = try unprovenParents(a, v, sub);
-    for (parents) |par| {
-        const pt = Transaction.parse(a, par.raw) catch return .{ .refused = refuse(.bad_transaction, "an unproven parent") };
-        for (pt.inputs, 0..) |in, i| {
-            const s = try sourceOf(a, v, sub, in);
-            switch (try unlock.checkInput(a, &pt, i, if (s) |o| o.script else null, if (s) |o| o.satoshis else 0)) {
-                .verified, .present => {},
-                .missing => return .{ .refused = refuse(.missing_signature, try std.fmt.allocPrint(a, "parent {s} input {d}", .{ &w.header.toHex(par.txid), i })) },
-                .bad => return .{ .refused = refuse(.bad_signature, try std.fmt.allocPrint(a, "parent {s} input {d}", .{ &w.header.toHex(par.txid), i })) },
-            }
-        }
-    }
-    return .{ .ok = parents };
 }
 
 /// A Swap call's args (pool/Pool.runar.go `Swap`): amountIn, bsvIn,
