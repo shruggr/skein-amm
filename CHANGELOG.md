@@ -4,12 +4,11 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
-## 0.52.1 (branch `held-as-txid-only`; not tagged)
+## 0.52.1 (2026-11-11)
 
 Re-pins (David 2026-11-11: a held transaction a BEEF carries raw is read as its txid-only entry):
-skein-overlay 0.28.1, skein-1color 0.20.1, skein-sdk 0.22.1 (`skein_sdk_signer`), each by its branch
-commit (to its tag at release); the token image on skein-chain 0.12.1 (its branch commit's archive;
-the tree hash is the commit's tree). No logic change here; no state shape change.
+skein-overlay v0.28.1, skein-1color v0.20.1, skein-sdk v0.22.1 (`skein_sdk_signer`); the token image
+on skein-chain v0.12.1, each by tag. No logic change here; no state shape change.
 
 - 0.52.1 in etc/app.json, build.zig.zon, the amm-lookup metadata, @dcasegr/amm-engine and amm-client;
   bin/ rebuilt (overlay.wasm the overlay's, color-topic/color-lookup the 1Color's).
