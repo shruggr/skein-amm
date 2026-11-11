@@ -1,14 +1,14 @@
 .{
     .name = .skein_amm,
-    .version = "0.52.0",
+    .version = "0.52.1",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.28.0.tar.gz",
-            .hash = "skein_overlay-0.28.0-IMuNgazuJADJJTB9NOuhw3zQIbzkRIQhSDW7z18rXgdk",
+            .url = "https://github.com/shruggr/skein-overlay/archive/f1e151b198848093cb459f92b281f5d51a58b739.tar.gz",
+            .hash = "skein_overlay-0.28.1-IMuNgUwkJQBEHuqqF7F2PnI5jgL84Y_4lmxDlEhxi1-e",
         },
         // The 1Color components: the `1color` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
@@ -18,12 +18,12 @@
         // signer app by a kernel-checked name) and the named call (`sk.callAs`). The overlay's own SDK
         // (chain, cbor, …) comes through skein_overlay.
         .skein_sdk_signer = .{
-            .url = "https://github.com/shruggr/skein-sdk/archive/refs/tags/v0.22.0.tar.gz",
-            .hash = "skein_sdk-0.22.0-YroFBOtRHQDsUCK_sT7ueDaht1ID7aFRQoSzp-Fb7edh",
+            .url = "https://github.com/shruggr/skein-sdk/archive/b4147cc655c6c8b264706f4102d8c6970a0d23c3.tar.gz",
+            .hash = "skein_sdk-0.22.1-YroFBI6NHQB14m4Nxvl8a4KbRUCZCDxyQqjAj7coAtD9",
         },
         .skein_1color = .{
-            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.20.0.tar.gz",
-            .hash = "skein_1color-0.20.0-_DlbUr6bIgBDddC2XXrzFloIJ0ts_KVOK3_X97teiiVr",
+            .url = "https://github.com/shruggr/skein-1color/archive/a96b3f7592a285c0ce8708d3f89dabcbe4f31877.tar.gz",
+            .hash = "skein_1color-0.20.1-_DlbUrioIgB6utqytKi6sp02jIO5OqIvWFI78G1ocfxs",
         },
     },
     .paths = .{

@@ -26,7 +26,7 @@ fn fileByCall(a: std.mem.Allocator, basket: []const u8, arg: cbor.Value) anyerro
     _ = try vm.result(a, ext.callAs, .{ prog.ptr, @as(u32, @intCast(prog.len)), func.ptr, @as(u32, @intCast(func.len)), basket.ptr, @as(u32, @intCast(basket.len)), bytes.ptr, @as(u32, @intCast(bytes.len)) });
 }
 
-pub const version = "0.52.0";
+pub const version = "0.52.1";
 
 pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
     return .{

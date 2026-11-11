@@ -1,8 +1,8 @@
 {
   "install": [
     {
-      "url": "https://github.com/shruggr/skein-chain/archive/refs/tags/v0.12.0.tar.gz",
-      "hash": "6457050771b96567bc57fb1d1d36501f259495a5"
+      "url": "https://github.com/shruggr/skein-chain/archive/c8a4043f8fe017050393e7904d5a2906955ca0d6.tar.gz",
+      "hash": "28287887b17b9ff5551aafd0067c02e6f234874b"
     },
     {
       "url": "https://github.com/shruggr/skein-signer/archive/refs/tags/v0.1.1.tar.gz",
