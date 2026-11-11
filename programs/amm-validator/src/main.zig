@@ -15,34 +15,18 @@
 //! The frame's body is a signed-message package `{message, body}` (MESSAGES
 //! "Signed messages (#70)"): the taker (or LP) authenticates by its wallet
 //! identity, the package checked with the SDK's verifier (messages.zig
-//! `open`). Then the checks and the oracle's signature (validator.zig), and
-//! the signed BEEF submitted to this instance's own overlay by message
-//! (submit.zig; skein-overlay 0.7.2+: a submission is a message, answered to
-//! the sender's box). The handler answers:
-//!
-//! - `{verdict: "accept", body: <reply>}` at once: a refusal; a transaction
-//!   judged or rejected before (from the state);
-//! - `{verdict: "accept", body: <the affirmation>}` at once for an `affirm` (0.11.0);
-//! - `{wait: true}` for a signed spend, after sending
-//!   `{fn: "submit", args: {beef, topics: [tm_color_<txid>_0]}}` to this instance,
-//!   box `<app>/submit`, and `await`ing that message — or, for a resubmission while
-//!   the first one is with the chain app, after `await`ing that submission's
-//!   thread (the overlay's `pending` record names it: the engine answers a
-//!   resubmission with nothing);
-//! - called again with `reply`, the engine's first answer to the message
-//!   (`admitted`, `proven` or `rejected`, or an error): `{verdict: "accept",
-//!   body: <reply>}` (messages.zig `answerFromSubmit`); or with `resolved`,
-//!   the awaited thread at rest: read from the state (`answerFromState`). The
-//!   front door writes that body back on the stream as the frame's answer
-//!   ("Streams": "the frame's answer is written back when the request's
-//!   thread comes to rest"). Later answers (each proof) find nothing
-//!   awaiting them.
-//!
-//! **Local** (0.4.0): when a taker names this node as the validator to its own relay, amm-p2p
-//! cannot dial itself; its relay thread calls this program's fn in-VM, from its step, with the
-//! argument the front door gives a frame's handler (`transport: "local"`, `protocol`, `body`: the
-//! same package, `match`, and `reply` / `resolved` when called again). Everything else is as above:
-//! the `{wait: true}` and its `await` are the relay thread's.
+//! `open`). Then, in this ONE step (0.51.0, David 2026-11-11): the checks and
+//! the oracle's signature (validator.zig; every input unspent in our own view
+//! before signing, the pool input's script run on the finished transaction),
+//! and the signed BEEF handed to this instance's own overlay engine by its
+//! in-VM `intake` (skein-overlay 0.28.0: the chain app's ingest and broadcast,
+//! the admission, in this step). The handler answers `{verdict: "accept",
+//! body: <reply>}` at once — a refusal, an affirmation, or the signed
+//! transaction with the overlay's verdict (messages.zig `answerFromSubmit`).
+//! Requests for one pool are taken one step at a time in arrival order: the
+//! first is signed and admitted; each later one finds the pool spent
+//! (`pool_spent`, the newest state and its BEEF). Nothing waits: no lock, no
+//! `{wait: true}`, no `pending`.
 //!
 //! The validator role (0.6.0, shruggr/skein#120, David 2026-10-06 evening; 0.8.1, skein-overlay
 //! 0.12.0, David 2026-10-09: "every skein is marketplace AND validator from install, always" — the
@@ -64,7 +48,7 @@
 //! Config: the overlay's own configuration as the engine reads it
 //! from the app record (skein-overlay `engine_vm.configured`: the served
 //! topics, the ones registered with the engine (`<app>/topics`) among them, the app's roles,
-//! `app`; the submission goes to the box `<app>/submit`).
+//! `app`; the overlay engine is the app's role `overlay`, called in-VM).
 const std = @import("std");
 const w = @import("chain");
 const ov = @import("skein_overlay");
@@ -72,9 +56,7 @@ const vm = @import("overlay_sk");
 const wire = @import("wallet").wire;
 const validator = @import("validator.zig");
 const messages = @import("messages.zig");
-const submit = @import("submit.zig");
 const view_mod = @import("view.zig");
-const lock = @import("lock.zig");
 const Oracle = @import("oracle.zig").Oracle;
 const terms = @import("terms");
 
@@ -149,10 +131,9 @@ fn run(a: std.mem.Allocator) anyerror!void {
     // The configuration as the engine reads it: the app this program was installed in (the
     // matched row's program record names it), its `config.overlay`, its roles.
     const in = try ov.engine_vm.configured(a, raw_in, arg);
-    // 0.43.0: the thread this call's step is (the front door's request thread, or the local relay's):
-    // what a request waiting on a pool's lock awaits (lock.zig).
-    const me = (raw_in.get("step") orelse return error.BadInput).getCid("thread") orelse return error.BadInput;
-    return directCall(a, in, arg, op, me);
+    // 0.51.0: the request's one step (its writes are the overlay's and the chain app's, by call).
+    if (raw_in.get("step") == null) return error.BadInput;
+    return directCall(a, in, arg, op);
 }
 
 fn answerBody(a: std.mem.Allocator, r: validator.Reply) !void {
@@ -162,34 +143,24 @@ fn answerBody(a: std.mem.Allocator, r: validator.Reply) !void {
     }) });
 }
 
-fn answerWait(a: std.mem.Allocator) !void {
-    try vm.answer(a, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "wait", .value = .{ .boolean = true } }}) });
+// ---------------------------------------------------------------- the overlay, in-VM (0.51.0)
+
+var overlay_in: Value = .null;
+
+/// The app's overlay engine (its role `overlay` in the app record's `programs`), its fn `intake`.
+fn intakeCall(_: *anyopaque, a: std.mem.Allocator, args: Value) anyerror!Value {
+    const programs = overlay_in.get("programs") orelse return error.NoOverlayEngine;
+    const engine = programs.getCid(ov.config.engine_role) orelse return error.NoOverlayEngine;
+    return vm.call(a, engine, "intake", args);
 }
 
-// ---------------------------------------------------------------- the pool locks (0.43.0)
-
-fn awaitThread(_: *anyopaque, thread: []const u8) bool {
-    vm.awaitRecord(thread) catch return false; // at rest: its state is there to read
-    return true;
+/// The app's overlay state again (the intake's head moves read back in this step).
+fn stateAfter(_: *anyopaque, a: std.mem.Allocator) anyerror!*ov.state.State {
+    return overlayState(a, overlay_in);
 }
 
-const threads: lock.Threads = .{ .ptr = &oracle_dummy, .awaitFn = awaitThread };
-
-fn loadLocks(a: std.mem.Allocator, app: []const u8) !lock.Locks {
-    const s = vm.store();
-    const rec: ?Value = if (try vm.head(a, try lock.headName(a, app))) |rc| try s.getValue(a, rc) else null;
-    return lock.Locks.parse(a, rec);
-}
-
-fn saveLocks(a: std.mem.Allocator, app: []const u8, locks: lock.Locks) !void {
-    const rc = try vm.store().putValue(a, try locks.value(a));
-    try vm.advance(try lock.headName(a, app), rc);
-}
-
-/// fn `swap`, `affirm`: a frame of a direct call, or amm-p2p's local call (above). `me`: this step's thread.
-fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op, me: []const u8) !void {
-    // A frame on a direct call (the front door's), or (0.4.0) the same package handed in-VM by this
-    // instance's own relay when the validator the caller named is this node (amm-p2p `callValidator`).
+/// fn `swap`, `affirm`: a frame of a direct call (above), answered in this step.
+fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op) !void {
     const transport = arg.getText("transport") orelse "";
     if (!std.mem.eql(u8, transport, "libp2p") and !std.mem.eql(u8, transport, "local")) return error.NotADirectCall;
     const oracle: Oracle = .{ .ptr = &oracle_dummy, .callFn = oracleCall };
@@ -202,59 +173,16 @@ fn directCall(a: std.mem.Allocator, in: Value, arg: Value, op: validator.Op, me:
     const st = try overlayState(a, in);
     const ovv = try a.create(view_mod.OverlayView);
     ovv.* = .{ .st = st };
-
-    const app = ov.calls.appOf(in);
-    // Called again (#66): the engine's answer to the submission this frame awaited. 0.43.0: the
-    // pool's lock this thread holds is released (its queue is stepped when this thread comes to rest).
-    if (arg.get("reply")) |r| if (r == .map) {
-        const ans = try vm.store().getValue(a, r.getCid("body") orelse return error.BadInput);
-        var locks = try loadLocks(a, app);
-        if (locks.release(me)) try saveLocks(a, app, locks);
-        return answerBody(a, try messages.answerFromSubmit(a, st, ovv.view(), op, body, ans));
-    };
-    // 0.43.0: a swap waits while its pool is locked (lock.zig): a fresh request, or one waiting in a
-    // lock's queue stepped again.
-    var locks = try loadLocks(a, app);
-    const before = try cbor.encode(a, try locks.value(a));
-    const resolved = arg.get("resolved") != null;
-    const queued = op == .swap and locks.waitingIn(me) != null;
-    // Called again (#66): the submission's thread this frame waited on (a resubmission's) has come
-    // to rest.
-    if (resolved and !queued) return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
+    overlay_in = in;
     const now: i64 = if (in.getUint("now")) |n| @intCast(n) else 0;
-    const served = (try messages.respondLocked(a, op, body, .{
+    const served = try messages.respond(a, op, body, .{
         .config = .{ .identity = identity, .terms = try termsNow(a, in), .now_ms = now, .validated = try validatedSet(a, in) },
         .view = ovv.view(),
         .oracle = oracle,
         .st = st,
-    }, &locks, me, threads)) orelse {
-        try saveLocks(a, app, locks);
-        return answerWait(a);
-    };
-    if (!std.mem.eql(u8, before, try cbor.encode(a, try locks.value(a)))) try saveLocks(a, app, locks);
-    switch (served.next) {
-        .answer => return answerBody(a, served.reply),
-        .from_state => return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body)),
-        .submit => |sub| {
-            // A submission is a message (skein-overlay 0.7.2+): to this instance, in the submissions
-            // box `<app>/submit`, which the row `submit` from `*` takes to the engine (0.7.5, #128). The engine hands the BEEF to the chain
-            // app, which registers and broadcasts every unproven transaction in it, the taker's nosend
-            // funding parent with the swap (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF";
-            // `served.broadcast` names them), and answers this message when it is admitted or rejected.
-            // D7 (not built): a door refusal of this message never reaches the awaited record, so the
-            // frame thread would rest unanswered and the lock held — where its resolution would go;
-            // D6's pre-check (messages.zig `proveRequest`) refuses such a request before it gets here.
-            const m = try vm.send(a, &identity, try submit.box(a, ov.calls.appOf(in)), try submit.body(a, sub.beef, sub.topic));
-            try vm.awaitRecord(m);
-            return answerWait(a);
-        },
-        .wait_on => {
-            // Resubmitted while the first submission is with the chain app. 0.49.0 (skein-overlay
-            // 0.25.0: a pending record names no thread to wait on): answered from the state at once
-            // — "not yet accepted by the network … send the same request again" (messages.zig).
-            return answerBody(a, try messages.answerFromState(a, st, ovv.view(), op, body));
-        },
-    }
+        .overlay = .{ .ptr = &oracle_dummy, .intakeFn = intakeCall, .stateFn = stateAfter },
+    });
+    return answerBody(a, served.reply);
 }
 
 // ---------------------------------------------------------------- the terms (0.15.0)

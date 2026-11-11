@@ -1,25 +1,17 @@
 //! Getting a signed transaction into this instance's own overlay: the
-//! validator only adds its signature; the submission is the overlay engine's
-//! (skein-overlay 0.7.5 docs/OVERLAY.md "Submitting", shruggr/skein#112). A
-//! submission is a message: the validator sends `{fn: "submit", args: {beef,
-//! topics: [tm_color_<txid>_0]}}` from this instance to itself, in the submissions
-//! box `<app>/submit` (the manifest's row `submit` from `*` takes it to the
-//! engine; shruggr/skein#128: one box per function class), with the
-//! signed BEEF — the request's BEEF (the taker's ancestry and BUMPs) with its
-//! subject replaced by the signed transaction, every transaction this instance
-//! the token's topic admitted (the pool's among them) named by txid alone
-//! (`submissionBeef`, 0.45.0:
-//! skein 0.3.3's door admits a txid-only entry for a held transaction). The engine
-//! routes it in its step on the message (decoded, checked against the chain
-//! app's headers and SPV, judged by the topic's program; lacking a parent,
-//! paused until one comes) and answers the sender, in the box it wrote to,
-//! by message: `{fn: "submit", request, replyTo, result}` — `admitted`
-//! (status `pending`, the STEAK) once the chain app accepts it, then each
-//! `proven`, or `rejected` — or `error` for a body not that shape.
-//!
-//! main.zig awaits the message and answers the direct call `{wait: true}`;
-//! called again with the engine's first answer (`reply`), it answers from
-//! that (messages.zig `answerFromSubmit`).
+//! validator only adds its signature; the admission is the overlay engine's.
+//! 0.51.0 (David 2026-11-11: one step per swap): the validator calls the
+//! engine's in-VM `intake` (skein-overlay 0.28.0) from its own step, args
+//! `{beef, topics: [tm_color_<txid>_0]}`, with the signed BEEF — the request's
+//! BEEF (the taker's ancestry and BUMPs) with its subject replaced by the signed
+//! transaction, every transaction the token's topic admitted (the pool's among
+//! them) named by txid alone (`submissionBeef`, 0.45.0: skein 0.3.3's door admits
+//! a txid-only entry for a held transaction). The engine routes it (decoded,
+//! checked against the chain app's headers and SPV, judged by the topic's
+//! program), hands it to the chain app (recorded, its broadcast emitted) and
+//! admits it, all in the validator's step, and returns its verdict
+//! (messages.zig `answerFromSubmit` maps it). The message form (`{fn: "submit"}`
+//! into `<app>/submit`, awaited) is gone from the signing path.
 const std = @import("std");
 const w = @import("chain");
 
@@ -27,19 +19,11 @@ const cbor = w.cbor;
 const Value = cbor.Value;
 const beef = w.beef;
 
-/// The box a submission goes to: `<app>/submit` (the manifest's mailbox address `submit`).
-pub fn box(a: std.mem.Allocator, app: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "{s}/submit", .{app});
-}
-
-/// The submission message's body: `{fn: "submit", args: {beef: <bytes>, topics: [topic]}}`.
-pub fn body(a: std.mem.Allocator, signed_beef: []const u8, topic: []const u8) !Value {
+/// The engine's in-VM `intake` argument (skein-overlay 0.28.0): `{beef: <bytes>, topics: [topic]}`.
+pub fn intakeArgs(a: std.mem.Allocator, signed_beef: []const u8, topic: []const u8) !Value {
     return .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "fn", .value = .{ .text = "submit" } },
-        .{ .key = "args", .value = .{ .map = try a.dupe(cbor.Entry, &.{
-            .{ .key = "beef", .value = .{ .bytes = signed_beef } },
-            .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = topic }}) } },
-        }) } },
+        .{ .key = "beef", .value = .{ .bytes = signed_beef } },
+        .{ .key = "topics", .value = .{ .array = try a.dupe(Value, &.{.{ .text = topic }}) } },
     }) };
 }
 
@@ -245,7 +229,7 @@ fn addBump(a: std.mem.Allocator, bumps: *std.ArrayList(w.bsvz.spv.MerklePath), p
 }
 
 /// D6 (David 2026-11-07): the request's BEEF proven as this instance's door will prove the submission,
-/// before the pool's lock and the signature — skein-sdk's verifier (chain `spv.verify`, what skein
+/// before the signature — skein-sdk's verifier (chain `spv.verify`, what skein
 /// 0.3.3's `kernel.beef` runs) with `rootAt` the chain state's headers and `knownRaw` the held set
 /// (`holds`: in the chain state's `txs`, not rejected), over every transaction of the request but the
 /// subject; then the subject's own inputs as the verifier reads an unproven transaction's: each

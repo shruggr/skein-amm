@@ -12,9 +12,8 @@
 //          tally (GET /amm/fees/tokens); then the sell REJECTED by the network and later MINED (a proof
 //          overrides): its hop reverted and the tally back to 0, then admitted again, the tally and the
 //          wallet's "tokens" restored;
-//   `tok2`: ONE BEEF carrying the pool's deploy and the buy, both unproven, admitted in ONE step (the
-//          fake Arcade holds the deploy's broadcast back until the buy is seen; the step that takes the
-//          deploy's word admits both — checked by the events' step numbers); the hop recognised, the fees
+//   `tok2`: ONE BEEF carrying the pool's deploy and the buy, both unproven, admitted in ONE step (0.51.0:
+//          the intake step, no status waited for — checked by the events' step numbers); the hop recognised, the fees
 //          filed, the tally right; then the sell;
 //   each store replays to itself exactly.
 //
@@ -110,25 +109,6 @@ const keys = new Map<string, InstanceType<typeof PrivateKey>>([["tok", identityK
 const keyOf = (h: string) => { let k = keys.get(h); if (!k) { k = PrivateKey.fromRandom(); keys.set(h, k); } return k; };
 
 const arcade = await FakeArcade.start();
-// The txids whose broadcast the fake Arcade answers 503 (not taken, retried) for now.
-const hold = new Set<string>();
-{
-  const fa = arcade as unknown as { api(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<void>; txs: Map<string, { txStatus: string; token: string }>; posts: Uint8Array[] };
-  const api = fa.api.bind(fa);
-  fa.api = async (req, res) => {
-    if (req.method !== "POST" || hold.size === 0) return api(req, res);
-    const chunks: Buffer[] = [];
-    for await (const c of req) chunks.push(c as Buffer);
-    const body = new Uint8Array(Buffer.concat(chunks));
-    let txid = "";
-    try { txid = (FakeArcade as unknown as { txOf(b: Uint8Array): Tx }).txOf(body).id("hex"); } catch { /* not a transaction */ }
-    const send = (status: number, v: unknown, hd: Record<string, string> = {}) => { res.writeHead(status, { "content-type": "application/json", ...hd }); res.end(JSON.stringify(v)); };
-    if (hold.has(txid)) return send(503, { status: 503, title: "Service Unavailable", detail: "held by the test" }, { "retry-after": "1" });
-    fa.posts.push(body);
-    if (!fa.txs.has(txid)) fa.txs.set(txid, { txStatus: "RECEIVED", token: String(req.headers["x-callbacktoken"] ?? "") });
-    return send(202, { txid, status: 202, txStatus: fa.txs.get(txid)!.txStatus });
-  };
-}
 const afters: Array<() => unknown> = [];
 const ownerKey = PrivateKey.fromRandom();
 const h = await testHost({ after: (f: () => unknown) => afters.push(f) }, {
@@ -194,19 +174,13 @@ async function instanceFlow(H: string, oneStep: boolean): Promise<void> {
   const pd = oneStep ? txs.get("pool_deploy")!.id("hex") : await submit("pool_deploy");
   let buy: string;
   if (oneStep) {
-    // The buy's BEEF carries the pool's deploy, unproven: two items of one submission. The network's
-    // word on the BUY comes first, then on the deploy: the step that takes the deploy's admits both
-    // (an item is admitted only after the ones before it), the buy's hook reading the deploy's hop
-    // raised earlier in that step.
+    // The buy's BEEF carries the pool's deploy, unproven: two items of one submission. 0.51.0
+    // (skein-overlay 0.28.0): both are ingested and admitted in the intake step, oldest first, the
+    // buy's hook reading the deploy's hop raised earlier in that step; no status is waited for.
     const tBuy = txs.get("swap_bsv_in")!;
     buy = tBuy.id("hex");
-    // The fake Arcade holds the deploy's broadcast back (503, retried) while it takes the buy's.
-    hold.add(pd);
     const r = await fetch(`${h.base}/@${H}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([topic]) }, body: Uint8Array.from(tBuy.toAtomicBEEF()) });
     await r.text();
-    await until("the buy seen", async () => { await h.router.settled(); return (await events(`chain/tx/${buy}`)).some((x) => x.status === "seen") || undefined; }, 30_000).catch(() => undefined);
-    check(!(await events(`amm/topic/tx/${buy}`)).some((x) => x.verdict === "admitted"), `${H}: the buy seen first, not admitted before the deploy`);
-    hold.delete(pd);
     const both = await until("both admitted", async () => { await h.router.settled(); return ((await events(`amm/topic/tx/${buy}`)).some((x) => x.verdict === "admitted") && (await events(`amm/topic/tx/${pd}`)).some((x) => x.verdict === "admitted")) || undefined; }, 30_000).then(() => true, () => false);
     check(both, `${H}: one BEEF (the deploy and the buy): both admitted (chain/tx buy ${(await events(`chain/tx/${buy}`)).map((x) => String(x.status)).join(",")}; deploy ${(await events(`chain/tx/${pd}`)).map((x) => String(x.status)).join(",")})`);
   } else buy = await submit("swap_bsv_in");

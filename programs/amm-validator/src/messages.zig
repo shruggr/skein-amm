@@ -1,9 +1,10 @@
 //! The validator's protocol: the direct call's package and the dag-cbor
-//! request and reply bodies (README.md, "Protocol"), and what the handler
-//! does next — answer now, submit to the overlay by message and wait on its
-//! answer, or wait on the submission already under way — and the answer:
-//! from the engine's answer to the submission (`answerFromSubmit`), or read
-//! from the state once the thread the call waited on has come to rest.
+//! request and reply bodies (README.md, "Protocol"), and the one step of a
+//! request (0.51.0, David 2026-11-11: "the validator must always be speaking
+//! against the same chain state as the overlay has recorded"): checked, signed,
+//! handed to this instance's overlay by its in-VM `intake` in the same step, and
+//! answered with the signed transaction and the overlay's verdict
+//! (`answerFromSubmit`), or read from the state (`answerFromState`).
 const std = @import("std");
 const w = @import("chain");
 const message = @import("message");
@@ -12,7 +13,6 @@ const validator = @import("validator.zig");
 const submit = @import("submit.zig");
 const ov = @import("skein_overlay");
 const View = @import("view.zig").View;
-const lock = @import("lock.zig");
 
 const cbor = w.cbor;
 const Value = cbor.Value;
@@ -144,8 +144,22 @@ pub const Deps = struct {
     config: validator.Config,
     view: View,
     oracle: @import("oracle.zig").Oracle,
-    /// The app's overlay state as the step sees it (a submission under way, judged before, rejected).
+    /// The app's overlay state as the step sees it (judged before, rejected).
     st: *ov.state.State,
+    /// This instance's overlay, in this step (0.51.0).
+    overlay: Overlay,
+};
+
+/// The overlay engine of this app, called in-VM from the request's own step (0.51.0, skein-overlay
+/// 0.28.0 fn `intake`): main.zig's `call` import; the tests', the engine's own `submit.intake`.
+pub const Overlay = struct {
+    ptr: *anyopaque,
+    /// `intake {beef, topics}` → the overlay's verdict `{txid?, state: admitted | rejected |
+    /// undecided, status?, steak?, reason?, waiting?}`: the chain app's ingest (its broadcast) and
+    /// the admission, in this step.
+    intakeFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator, args: Value) anyerror!Value,
+    /// The app's overlay state as the step sees it after the intake (its head moves read back).
+    stateFn: *const fn (ptr: *anyopaque, a: std.mem.Allocator) anyerror!*ov.state.State,
 };
 
 /// What the token's topic admitted (0.45.0): the overlay's applied record of (topic, txid). Those
@@ -158,49 +172,35 @@ pub const InTopic = struct {
     }
 };
 
-/// What the handler does after the checks (main.zig):
-pub const Next = union(enum) {
-    /// `reply` is the answer, now (a refusal).
-    answer,
-    /// Submit by message (submit.zig): `{fn: "submit", args: {beef, topics: [topic]}}` from this
-    /// instance to itself, box `<app>`; await it and answer `{wait: true}`. The engine's answer
-    /// to it calls the handler again (`answerFromSubmit`).
-    submit: struct { beef: []const u8, topic: []const u8 },
-    /// A resubmission while the first submission awaits the network: await
-    /// that thread (the overlay's `pending` record names it) and answer `{wait: true}`.
-    wait_on: [32]u8,
-    /// Judged before, or rejected before: the answer is the state's, now (`answerFromState`).
-    from_state,
-};
-
+/// A request served (0.51.0: in its one step): the reply, and (a signed spend) the unproven parents
+/// its BEEF carries, parents first, which the chain app registered and broadcast with it when the
+/// overlay's intake ingested it (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF").
 pub const Served = struct {
     reply: Reply,
-    next: Next = .answer,
-    /// With `submit` only: the unproven parents its BEEF carries, parents first, which the chain
-    /// app registers and broadcasts when the engine ingests the submission
-    /// (shruggr/skein-chain docs/CHAIN.md "Ingest a BEEF"). Nothing on a refusal.
     broadcast: []const validator.Parent = &.{},
 };
 
-/// After `validator.spend` signs: what the state says of the
-/// transaction already — admitted under the topic, or rejected (answered from
-/// the state), or with the chain app in a submission of its own (wait on that
-/// thread: the engine answers a resubmission while the first is pending with
-/// nothing) — else the signed BEEF submitted by message for the topic the
-/// checks judged it for. A refusal by the engine comes back as its answer
-/// (`answerFromSubmit`).
-fn finishSpend(a: std.mem.Allocator, reply: Reply, d: Deps, pool: Outpoint) !Served {
+/// After `validator.spend` signs (0.51.0: in the same step): judged before under the topic, or
+/// rejected — answered from the state (a resend of a signed request: the same transaction, not
+/// signed again); else the signed BEEF handed to the overlay's in-VM `intake` for the topic the
+/// checks judged it for, and answered with its verdict (`answerFromSubmit`, over the state the
+/// intake left). A refusal carries the pool's newest state when it is `pool_spent`.
+fn finishSpend(a: std.mem.Allocator, op: validator.Op, body: Value, reply: Reply, d: Deps, pool: Outpoint) !Served {
     if (reply != .ok) return .{ .reply = try withNewestBeef(a, d, reply, pool) };
     const sub = reply.ok.submission orelse return .{ .reply = reply };
     const raw = reply.ok.tx orelse return .{ .reply = reply };
     const txid = reply.ok.txid orelse return .{ .reply = reply };
-    if (try d.st.isApplied(sub.topic, txid)) return .{ .reply = reply, .next = .from_state };
-    if ((try d.st.ch.holds(txid)) and (try d.st.ch.status(txid)) == .rejected) return .{ .reply = reply, .next = .from_state };
-    if (try d.st.isPending(txid)) if (!(try d.st.isPaused(txid))) return .{ .reply = reply, .next = .{ .wait_on = txid } };
+    if ((try d.st.isApplied(sub.topic, txid)) or ((try d.st.ch.holds(txid)) and (try d.st.ch.status(txid)) == .rejected))
+        return .{ .reply = try answerFromState(a, d.st, d.view, op, body) };
     // 0.45.0: the request's BEEF, the signed swap its subject, every held transaction (the pool's)
     // by txid; the taker's raw funding with its ancestry.
     const beef = try submit.submissionBeef(a, raw, sub.ancestry, sub.pool.txid, InTopic{ .st = d.st, .topic = sub.topic });
-    return .{ .reply = reply, .next = .{ .submit = .{ .beef = beef, .topic = sub.topic } }, .broadcast = sub.parents };
+    const verdict = try d.overlay.intakeFn(d.overlay.ptr, a, try submit.intakeArgs(a, beef, sub.topic));
+    const after = try d.overlay.stateFn(d.overlay.ptr, a);
+    const ovv = try a.create(@import("view.zig").OverlayView);
+    ovv.* = .{ .st = after };
+    const ans: Value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "result", .value = verdict }}) };
+    return .{ .reply = try answerFromSubmit(a, after, ovv.view(), op, body, ans), .broadcast = sub.parents };
 }
 
 /// A `pool_spent` refusal (0.41.0; 0.45.0 `submit.newestBeef`): its `beef`, the transaction of the
@@ -220,13 +220,15 @@ fn withNewestBeef(a: std.mem.Allocator, d: Deps, reply: Reply, pool: Outpoint) !
     return r;
 }
 
-/// A direct call's request body → the reply, and what the handler does next.
+/// A direct call's request body → the reply, in this one step (0.51.0: no lock, no wait — requests
+/// for one pool are taken one step at a time in arrival order: the first is signed and admitted,
+/// each later one finds the pool spent, `pool_spent`).
 pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Served {
     switch (op) {
         .swap => {
             const req = parseSpend(body) orelse return .{ .reply = refuse(.bad_request, "want {tx: bytes, pool: \"<txid>_<vout>\"}") };
             if (try proveRequest(a, req, d)) |r| return .{ .reply = r };
-            return finishSpend(a, try validator.spend(a, op, req, d.config, d.view, d.oracle), d, req.pool);
+            return finishSpend(a, op, body, try validator.spend(a, op, req, d.config, d.view, d.oracle), d, req.pool);
         },
         .affirm => {
             // Answered now: nothing is signed into a transaction, nothing submitted.
@@ -236,32 +238,9 @@ pub fn respond(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps) !Se
     }
 }
 
-/// A swap request through the pool's lock (0.43.0, lock.zig), then `respond`: the request waits
-/// (`null`: this step awaited the lock's holder, or the waiter ahead of it, and the queue lists
-/// `me`), or is served — and when it was signed and goes to the overlay (`Next.submit`), its pool is
-/// locked by `me` in this step. An affirm is never locked. `locks` is the step's record: main.zig
-/// saves it.
-pub fn respondLocked(a: std.mem.Allocator, op: validator.Op, body: Value, d: Deps, locks: *lock.Locks, me: []const u8, th: lock.Threads) !?Served {
-    if (op != .swap) return try respond(a, op, body, d);
-    const req = parseSpend(body) orelse return try respond(a, op, body, d);
-    const sub = validator.subjectOf(a, req.tx) orelse return try respond(a, op, body, d);
-    // D6: proven before the lock — a request the door would refuse waits for nothing, and leaves a
-    // queue it waited in (its thread finishes with this answer).
-    if (try proveRequest(a, req, d)) |r| {
-        locks.leave(me);
-        return .{ .reply = r };
-    }
-    const h = lock.requestHash(sub.raw);
-    if ((try locks.gate(a, d.view, req.pool, h, me, th)) == .wait) return null;
-    // Proven above: `spend` and the submission, as `respond` makes them.
-    const served = try finishSpend(a, try validator.spend(a, op, req, d.config, d.view, d.oracle), d, req.pool);
-    if (served.next == .submit) try locks.take(a, req.pool, served.reply.ok.txid.?, h, me);
-    return served;
-}
-
 /// D6 (David 2026-11-07): the request's BEEF proven with the door's verifier and the held set
 /// (submit.zig `requestProblem`) before anything else of a swap — refused `bad_transaction` with the
-/// verifier's error text, nothing signed, no lock. A body that is no transaction is `spend`'s to refuse.
+/// verifier's error text, nothing signed. A body that is no transaction is `spend`'s to refuse.
 fn proveRequest(a: std.mem.Allocator, req: validator.SpendRequest, d: Deps) !?Reply {
     const sub = validator.subjectOf(a, req.tx) orelse return null;
     const why = (try submit.requestProblem(a, sub.ancestry, sub.tx, .{ .txid = req.pool.txid, .vout = req.pool.vout }, d.st.ch)) orelse return null;
@@ -276,20 +255,16 @@ fn settlementOf(st: *ov.state.State, txid: [32]u8) !?Value {
     return try st.record(c);
 }
 
-/// The answer to a spend's direct call, read from the state: when the
-/// thread the call waited on (the submission's) has come to rest, the
-/// handler is called again with the same request plus `resolved`
-/// (docs/MESSAGES.md, "Route handlers", "Waiting"), and answers from the
-/// state as it stands. The signed transaction is found again among the
+/// The answer to a spend's direct call, read from the state as it stands (0.51.0: after the
+/// overlay's intake in the same step, or for a resend of a request signed before). The signed
+/// transaction is found again among the
 /// held spenders of the pool (whatever their settlement): the one that is
 /// this request with our signature in its slot (validator.zig `signedSpend`).
 ///   admitted (the topic's `applied` record) → `{ok: true, tx, txid}`;
 ///   rejected (the chain state's status; 0.50.0) → `{ok: false, reason: "rejected",
 ///     detail, txid, pool?}`, `pool` the pool's newest state if another
 ///     transaction spent it meanwhile;
-///   still pending (the thread errored before the gate decided) →
-///     `{ok: false, reason: "pending", txid}`: send the same request again;
-///   not held, or none of these → `{ok: false, reason: "submit_failed"}`.
+///   not held, or neither admitted nor rejected → `{ok: false, reason: "submit_failed"}`.
 pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: validator.Op, body: Value) !Reply {
     const method = op.method() orelse return refuse(.bad_request, "an affirm is answered at once: nothing to read from the state");
     const req = parseSpend(body) orelse return refuse(.bad_request, "want {tx: bytes, pool: \"<txid>_<vout>\"}");
@@ -318,21 +293,17 @@ pub fn answerFromState(a: std.mem.Allocator, st: *ov.state.State, v: View, op: v
             .newest = if (spent) try validator.newest(a, v, topic, req.pool) else null,
         } };
     }
-    if (try st.isPending(txid)) return .{ .refused = .{
-        .reason = .pending,
-        .detail = "not yet accepted by the network: nothing is admitted until it is; send the same request again",
-        .txid = txid,
-    } };
     // 0.41.0: the BEEF it submitted to its own overlay (`submissionBeef`; 0.45.0: the held ones,
     // the pool's among them, by txid), so the relaying host admits it too.
     if (try st.isApplied(topic, txid)) return .{ .ok = .{ .tx = signed.raw, .txid = txid, .beef = try submit.submissionBeef(a, signed.raw, sub.ancestry, req.pool.txid, InTopic{ .st = st, .topic = topic }) } };
-    return .{ .refused = .{ .reason = .submit_failed, .detail = "not admitted, pending or rejected: the submission came to nothing", .txid = txid } };
+    return .{ .refused = .{ .reason = .submit_failed, .detail = "neither admitted nor rejected: the submission came to nothing", .txid = txid } };
 }
 
-/// The direct call's answer on the engine's answer to its submission (the handler called again
-/// with `reply`; skein-overlay docs/OVERLAY.md "Submitting", "The answers"): `{fn: "submit",
-/// request, replyTo, result | error}`.
-///   `admitted` or `proven` → the answer from the state (`{ok: true, tx, txid}`);
+/// The direct call's answer on the overlay's verdict (0.51.0: its in-VM `intake`'s, in the same step,
+/// as `{result: <verdict>}`; the message form's `{fn: "submit", request, replyTo, result | error}`
+/// reads the same).
+///   `admitted` → the answer from the state (`{ok: true, tx, txid, beef}`);
+///   `undecided` (it would pause: nothing recorded) → from the state: `submit_failed`, not held;
 ///   `rejected` → from the state when the chain app holds it (its settlement: `rejected`, with the
 ///     pool's newest state if another transaction spent it); else by the engine's reason —
 ///     `NotAdmitted…` → `topic_refused`, `TransactionRejected` → `rejected`, any other (the BEEF

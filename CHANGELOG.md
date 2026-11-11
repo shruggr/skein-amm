@@ -4,6 +4,23 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.51.0 (branch `one-step-0.51`; not tagged)
+
+On skein-overlay 0.28.0 (fef3dd4, branch `one-step-0.28`), skein-1color 0.20.0 (2279536, branch `one-step-0.20`), skein-sdk 0.22.0 (1a6b875, the
+signer client); the token image on skein-chain 0.12.0 (2f276b6), each by commit until tagged.
+
+- amm-validator: a swap is ONE step (David 2026-11-11, plans/one-step-swap-settled-2026-11-11.md rules 5-7):
+  `proveRequest`, then every input checked unspent in this instance's view before signing (the pool's:
+  `pool_spent` with the newest state; any other: `submit_refused`, the overlay's `InputSpent: …` text), the
+  signature, the pool input's script run on the finished transaction (failing: `bad_transaction`, nothing
+  recorded), the signed BEEF handed to the overlay's in-VM `intake` in the same step (ingested, broadcast,
+  admitted), and the frame answered with the signed transaction and the overlay's verdict. Requests for one
+  pool are processed one at a time in arrival order; a later one finds the pool spent.
+- Gone: the pool locks (src/lock.zig, the head `amm/locks` — a record an earlier version wrote is not read),
+  `Reason.pending`, `{wait: true}`, the handler called again (`reply` / `resolved`), the submission by message
+  (`submit.box`, `submit.body`) from the signing path, `Next`.
+- 0.51.0 everywhere (etc/app.json, build.zig.zon, amm-lookup metadata, @dcasegr/amm-engine, amm-client).
+
 ## 0.50.1 (2026-11-11)
 
 On skein-overlay v0.27.1, skein-1color v0.19.1, skein-sdk v0.21.3 (the signer client); the token image

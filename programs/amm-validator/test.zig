@@ -25,7 +25,6 @@ const scbor = @import("sdk_cbor");
 const ov = @import("skein_overlay");
 const sktopic = @import("topic");
 const Oracle = @import("src/oracle.zig").Oracle;
-const pool_lock = @import("src/lock.zig");
 
 const bsvz = w.bsvz;
 const cbor = w.cbor;
@@ -413,19 +412,20 @@ const Sent = struct {
 /// This instance's identity, the validator's submission's sender (the fixtures' validator identity is not needed: any key).
 const self_key: [33]u8 = .{0x02} ++ .{0x5a} ** 32;
 
-/// Where a submission's thread came to (the chain app's answers to its ingest, as the engine acted on them).
-const Gated = enum { pending, mined, accepted, rejected };
+/// Where a submission came to (the chain state's status, as the engine acted on it).
+const Gated = enum { pending, mined, rejected };
 const Stepped = struct { gate: Gated, admitted: bool, applied: []const ov.state.Applied };
 
 /// One instance's overlay state (`<app>/state`) over its chain state
 /// (`chain/state`), in an in-memory store, with the overlay engine's own
-/// submit (skein-overlay 0.6.0 src/submit.zig): the route's half (decode,
-/// verify, judge through the topic's program) and the submission thread's
-/// steps (`begin`: the BEEF to the chain app; `answered`: admitted on the
-/// chain app's first `accepted` or `proven`). The chain app is stood in for
-/// by the chain state itself (`ingest`, `applyStatus`): what it records,
-/// registers and broadcasts. The validator's view of it is
-/// `view.OverlayView`, as in main.zig.
+/// submit (skein-overlay 0.28.0 src/submit.zig): the route's half (decode,
+/// verify, judge through the topic's program) and the intake (`begin`: the BEEF
+/// to the chain app and the admission, in one step; each item subscribed to its
+/// `chain/tx/<txid>`). The validator's in-VM `intake` call is the engine's own
+/// `submit.intake` (`overlay`). The chain app is stood in for by the chain state
+/// itself (`ingest`, `applyStatus`); a later status is the chain app's fact
+/// delivered to the item's subscription (`fact`: the engine's `heard`). The
+/// validator's view of it is `view.OverlayView`, as in main.zig.
 const Node = struct {
     a: std.mem.Allocator,
     ms: *w.store.MemStore,
@@ -435,7 +435,12 @@ const Node = struct {
     sent: Sent = .{},
     /// Transactions the chain app registered and broadcast (`Ingested.registered`).
     posts: usize = 0,
-    threads: std.AutoHashMapUnmanaged([32]u8, struct { ev: Value }) = .empty,
+    /// The names the engine's app subscribed (skein-overlay 0.28.0: `chain/tx/<txid>`, fn `chainTx`).
+    subs: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// The names a thread rested on (none since skein-overlay 0.28.0 but a pause's).
+    rests: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// The validator's in-VM `intake` calls (0.51.0): each one's args and the overlay's verdict.
+    intakes: std.ArrayListUnmanaged(struct { args: Value, verdict: Value }) = .empty,
 
     fn init(a: std.mem.Allocator, ms: *w.store.MemStore, topic: []const u8) !Node {
         const in: Value = .{ .map = try a.dupe(cbor.Entry, &.{
@@ -472,7 +477,7 @@ const Node = struct {
         return error.UnexpectedCall;
     }
     fn cx(n: *Node, st: *ov.state.State) ov.submit.Ctx {
-        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = n, .sendFn = wsend, .answerFn = wanswer, .ingestFn = wingest, .chainHeadFn = whead }, .st = st, .in = n.in };
+        return .{ .a = n.a, .caller = n.caller(), .wire = .{ .ctx = n, .sendFn = wsend, .answerFn = wanswer, .restFn = wrest, .subscribeFn = wsub, .ingestFn = wingest, .chainHeadFn = whead }, .st = st, .in = n.in };
     }
     fn wsend(ctx: *anyopaque, a: std.mem.Allocator, box: []const u8, body: Value) anyerror![]const u8 {
         const n: *Node = @ptrCast(@alignCast(ctx));
@@ -481,6 +486,14 @@ const Node = struct {
     fn wanswer(ctx: *anyopaque, a: std.mem.Allocator, to: []const u8, box: []const u8, body: Value) anyerror!void {
         const n: *Node = @ptrCast(@alignCast(ctx));
         return Sent.answer(&n.sent, a, to, box, body);
+    }
+    fn wrest(ctx: *anyopaque, _: std.mem.Allocator, name: []const u8) anyerror!void {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        try n.rests.append(n.a, try n.a.dupe(u8, name));
+    }
+    fn wsub(ctx: *anyopaque, _: std.mem.Allocator, name: []const u8) anyerror!void {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        try n.subs.append(n.a, try n.a.dupe(u8, name));
     }
     /// The chain app's `ingest`, an in-VM call in the step (skein-overlay 0.26.0, skein-chain 0.10.0):
     /// stood in for by the chain state's own.
@@ -502,73 +515,66 @@ const Node = struct {
         _ = try ch.addHeaders(raws);
         n.chain_root = try ch.save();
     }
-    /// The submission thread's first step on the submit event (the thread main.zig launches): the
-    /// BEEF to the chain app, which ingests it (registering and broadcasting what is unproven); a
-    /// subject that arrives proven is answered `proven` at once and admitted.
+    /// The intake on a submit event (skein-overlay 0.28.0 `begin`): the BEEF to the chain app, which
+    /// ingests it (registering and broadcasting what is unproven), and the admission, in one step.
     fn step(n: *Node, event: Value) !Stepped {
         const ev = readBack(n.a, event);
         const txid = try ov.submit.txidOf(ev);
         const st = try n.state();
         const m = try ov.submit.begin(n.cx(st), ev);
         n.ov_root = try st.save();
-        try n.threads.put(n.a, txid, .{ .ev = ev });
         const done = m.stepped orelse return .{ .gate = .pending, .admitted = false, .applied = &.{} };
         const ch = try n.chain();
         const gate: Gated = if ((try ch.holds(txid)) and (try ch.status(txid)) == .proven) .mined else .pending;
         return .{ .gate = gate, .admitted = done.admitted, .applied = done.applied };
     }
-    fn answer(n: *Node, txid: [32]u8, ans: ov.submit.Answer, gate: Gated) !Stepped {
-        return n.answerOf(txid, txid, ans, gate);
-    }
-    fn answerOf(n: *Node, subject: [32]u8, txid: [32]u8, ans: ov.submit.Answer, gate: Gated) !Stepped {
-        const t = n.threads.get(subject).?;
+    /// A status reaching the chain app (a rejection, or a proof: `path`), then the chain app's fact
+    /// `chain/tx/<txid>` delivered to the item's subscription: the engine's step on it reads the
+    /// submit event from the item's `pending` record (skein-overlay 0.28.0 engine.zig `chainTxStep`).
+    fn fact(n: *Node, txid: [32]u8, tx_status: []const u8, path: ?[]const u8) !Stepped {
+        const ch = try n.chain();
+        const o = try ch.applyStatus(txid, tx_status, path);
+        if (path != null) for (ch.linked.items) |l| try ch.settleProven(l.txid);
+        n.chain_root = try ch.save();
         const st = try n.state();
-        const done = try ov.submit.heard(n.cx(st), t.ev, txid, ans);
+        const rec = (try st.pendingRecord(txid)) orelse return error.NoSubscriptionContext;
+        const ev = try n.ms.store().getValue(n.a, rec.getCid("event").?);
+        const ans: ov.submit.Answer = switch (o) {
+            .proven => .{ .mined = .{} },
+            .rejected => .{ .rejected = tx_status },
+            .pending => .pending,
+        };
+        const done = try ov.submit.heard(n.cx(st), ev, txid, ans);
         n.ov_root = try st.save();
+        const gate: Gated = switch (o) {
+            .proven => .mined,
+            .rejected => .rejected,
+            .pending => .pending,
+        };
         return .{ .gate = gate, .admitted = done.admitted, .applied = done.applied };
     }
-    /// A status provider's message about the transaction reaching the chain app, and the chain
-    /// app's answer to the submission's thread.
-    fn status(n: *Node, event: Value, tx_status: []const u8) !Stepped {
-        return n.statusOf(event, try ov.submit.txidOf(readBack(n.a, event)), tx_status);
+    /// The validator's in-VM call of the engine (messages.zig `Overlay`): the engine's own `intake`.
+    fn overlay(n: *Node) messages.Overlay {
+        return .{ .ptr = n, .intakeFn = intakeImpl, .stateFn = stateImpl };
     }
-    /// The same for an item `txid` of the submission (0.26.0: an item is admitted only after the
-    /// ones before it in the BEEF are).
-    fn statusOf(n: *Node, event: Value, txid: [32]u8, tx_status: []const u8) !Stepped {
-        const subject = try ov.submit.txidOf(readBack(n.a, event));
-        const ch = try n.chain();
-        const o = try ch.applyStatus(txid, tx_status, null);
-        n.chain_root = try ch.save();
-        return switch (o) {
-            .accepted => n.answerOf(subject, txid, .seen, .accepted),
-            .proven => n.answerOf(subject, txid, .{ .mined = .{} }, .mined),
-            .rejected => n.answerOf(subject, txid, .{ .rejected = tx_status }, .rejected),
-            .pending => .{ .gate = .pending, .admitted = false, .applied = &.{} },
-        };
-    }
-    /// The validator's submission message (messages.zig `Next.submit`), as the engine's step on it
-    /// takes it (skein-overlay `submit.received`): from this instance, in box `amm`.
-    fn received(n: *Node, sub: anytype) !ov.submit.Resumed {
-        const msg = try submit_mod.body(n.a, sub.beef, sub.topic);
-        const source: Value = .{ .map = try n.a.dupe(cbor.Entry, &.{
-            .{ .key = "transport", .value = .{ .text = "mailbox" } },
-            .{ .key = "box", .value = .{ .text = "amm" } },
-            .{ .key = "sender", .value = .{ .bytes = &self_key } },
-            .{ .key = "request", .value = .{ .cid = try n.a.dupe(u8, &cbor.cidOf(try std.fmt.allocPrint(n.a, "submission {d}", .{n.sent.answers.items.len + n.sent.n}))) } },
-        }) };
+    fn intakeImpl(ctx: *anyopaque, a: std.mem.Allocator, args: Value) anyerror!Value {
+        const n: *Node = @ptrCast(@alignCast(ctx));
         const st = try n.state();
-        const r = try ov.submit.received(n.cx(st), msg.get("args").?, source);
+        const got = try ov.submit.intake(n.cx(st), readBack(a, args));
         n.ov_root = try st.save();
-        return r;
+        const verdict = readBack(a, got.result);
+        try n.intakes.append(n.a, .{ .args = readBack(a, args), .verdict = verdict });
+        return verdict;
     }
-    /// The submission message routed whole: the submit event the engine launches its thread on.
-    fn launched(n: *Node, served: messages.Served) !Value {
-        return switch (try n.received(served.next.submit)) {
-            .launch => |ev| ev,
-            else => error.NotLaunched,
-        };
+    fn stateImpl(ctx: *anyopaque, _: std.mem.Allocator) anyerror!*ov.state.State {
+        const n: *Node = @ptrCast(@alignCast(ctx));
+        return n.state();
     }
-    /// A BEEF through the overlay's submit: the route, then the thread's first step on its event.
+    /// The last intake's BEEF (what the validator handed its overlay).
+    fn lastBeef(n: *Node) []const u8 {
+        return n.intakes.items[n.intakes.items.len - 1].args.getBytes("beef").?;
+    }
+    /// A BEEF through the overlay's submit: the route, then the intake on its event.
     fn submit(n: *Node, topic: []const u8, b: []const u8) !Stepped {
         const routed = try ov.submit.route(n.a, n.caller(), try n.state(), n.in, .{ .bytes = b }, &.{topic}, null, null);
         return n.step(routed.admit.event);
@@ -684,6 +690,7 @@ const Mined = struct {
             .view = ovv.view(),
             .oracle = m.f.oracle.oracle(),
             .st = st,
+            .overlay = m.node.overlay(),
         };
     }
 
@@ -700,15 +707,7 @@ const Mined = struct {
         return messages.respond(a, .swap, try spendBody(a, req, m.pool_op), try m.deps());
     }
 
-    /// The direct call's answer on the engine's answer to its submission (called again with `reply`).
-    fn fromSubmit(m: *Mined, a: std.mem.Allocator, op: validator.Op, body: Value, ans: Value) !validator.Reply {
-        const st = try m.node.state();
-        const ovv = try a.create(view_mod.OverlayView);
-        ovv.* = .{ .st = st };
-        return messages.answerFromSubmit(a, st, ovv.view(), op, body, ans);
-    }
-
-    /// The direct call's answer once the thread it waited on has come to rest (called again with `resolved`).
+    /// The direct call's answer read from the state as it stands.
     fn answer(m: *Mined, a: std.mem.Allocator, req: []const u8) !validator.Reply {
         return m.fromState(a, .swap, try spendBody(a, req, m.pool_op));
     }
@@ -716,7 +715,7 @@ const Mined = struct {
 
 // --- signing ---
 
-test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitted by message to the engine, launched as its submission, admitted on the network's word, and the direct call's answer from the engine's answer is the signed transaction" {
+test "sign: a sats-in swap comes back as the Go fixture, byte for byte; in one step (0.51.0) handed to the overlay's in-VM intake — ingested, broadcast and admitted in that step, no status delivered, no thread resting on it — and the direct call's answer is the signed transaction with its BEEF" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -745,72 +744,61 @@ test "sign: a sats-in swap comes back as the Go fixture, byte for byte; submitte
     try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_color_{s}_0", .{&w.header.toHex(f.id)}), r.ok.submission.?.topic);
     try testing.expect(r.ok.submission.?.pool.eql(op));
 
-    // The same request as the direct call's step makes it, on a real node
-    // (the mined chain): checked, signed, and the signed BEEF submitted by
-    // message ({fn: "submit", args: {beef, topics}} to the instance itself);
-    // the engine's step on it asks the topic's judgement and makes the submit
-    // record — to launch its submission thread on.
+    // The same request as the direct call's step makes it, on a real node (the mined chain): checked,
+    // signed, and the signed BEEF handed to the overlay's in-VM intake in the same step.
     var ms = w.store.MemStore.init(testing.allocator);
     defer ms.deinit();
     const m = try Mined.init(a, &ms);
     const sreq = try m.swapRequest(a);
+    const posts_before = m.node.posts;
     const served = try m.respond(a, sreq);
     try testing.expect(served.reply == .ok);
     try testing.expectEqualSlices(u8, want, served.reply.ok.tx.?);
-    try testing.expectEqualStrings(m.topic, served.next.submit.topic);
-    const ev = readBack(a, try m.node.launched(served));
-    try testing.expectEqualStrings("submit", ev.getText("kind").?);
-    try testing.expectEqualStrings(&w.header.toHex(txidOf(want)), ev.getText("txid").?);
-    // The BEEF the event carries (0.45.0): the pool's transaction (pool_deploy) by txid — the topic
-    // admitted it —, fund (with its BUMP, the request's), then the signed transaction; one BUMP.
-    const txs = try txsOf(a, ev);
-    try testing.expectEqual(@as(usize, 2), txs.len);
-    try testing.expectEqualSlices(u8, f.raw("fund"), txs[0]);
-    try testing.expectEqualSlices(u8, want, txs[1]);
-    const eb = try w.beef.parse(a, ev.getBytes("beef").?);
+    try testing.expectEqualSlices(u8, &txidOf(want), &served.reply.ok.txid.?);
+    // One intake, for the token's topic; its verdict admitted, pending (unproven).
+    try testing.expectEqual(@as(usize, 1), m.node.intakes.items.len);
+    const call = m.node.intakes.items[0];
+    try testing.expectEqualStrings(m.topic, call.args.getArray("topics").?[0].text);
+    try testing.expectEqualStrings("admitted", call.verdict.getText("state").?);
+    try testing.expectEqualStrings("pending", call.verdict.getText("status").?);
+    try testing.expect(call.verdict.get("steak").?.get(m.topic) != null);
+    // The BEEF it carries (0.45.0): the pool's transaction (pool_deploy) by txid — the topic admitted
+    // it —, fund (with its BUMP, the request's), then the signed transaction; one BUMP.
+    const eb = try w.beef.parse(a, m.node.lastBeef());
     try testing.expectEqual(@as(usize, 1), eb.bumps.len);
     try testing.expectEqual(w.beef.Format.txid_only, eb.entries[0].format);
     try testing.expectEqualSlices(u8, &txidOf(f.raw("pool_deploy")), &eb.entries[0].txid);
     try testing.expectEqual(w.beef.Format.raw_with_bump, eb.entries[1].format);
-    const j = ev.getArray("topics").?[0];
-    try testing.expectEqualStrings(m.topic, j.getText("topic").?);
-    try testing.expectEqual(@as(usize, 1), j.getArray("previousCoins").?.len); // the pool
-    try testing.expectEqual(@as(u64, 0), j.getArray("previousCoins").?[0].uint);
-
-    // The submission thread: the BEEF to the chain app, which registers and
-    // broadcasts the swap (fund arrives proven); pending (nothing admitted),
-    // then the status provider's RECEIVED (the chain app's `accepted`) admits
-    // it — the continuation (0) and the taker's token payout (1).
-    const first = try m.node.step(ev);
-    try testing.expectEqual(Gated.pending, first.gate);
-    try testing.expect(!first.admitted);
-    try testing.expectEqual(@as(usize, 1), m.node.posts);
-    try expectRefused(try m.answer(a, sreq), .pending); // were the thread to rest now (errored)
-    const done = try m.node.status(ev, "RECEIVED");
-    try testing.expectEqual(Gated.accepted, done.gate);
-    try testing.expect(done.admitted);
-    try testing.expectEqualSlices(u32, &.{ 0, 1 }, done.applied[0].outputs_to_admit);
-    try testing.expectEqualSlices(u32, &.{0}, done.applied[0].coins_to_retain); // the pool coin, carried on
-
-    // The engine answered the sender (this instance, box amm): admitted, pending, with the STEAK.
-    try testing.expectEqual(@as(usize, 1), m.node.sent.answers.items.len);
-    try testing.expectEqualSlices(u8, &self_key, m.node.sent.answers.items[0].to);
-    try testing.expectEqualStrings("amm", m.node.sent.answers.items[0].box);
-    const res = m.node.sent.last().get("result").?;
-    try testing.expectEqualStrings("admitted", res.getText("state").?);
-    try testing.expectEqualStrings("pending", res.getText("status").?);
-    try testing.expect(res.get("steak").?.get(m.topic) != null);
-    // The direct call's answer on it.
-    const via = try m.fromSubmit(a, .swap, try spendBody(a, sreq, m.pool_op), m.node.sent.last());
-    try testing.expectEqualSlices(u8, want, via.ok.tx.?);
-    // The same, from the state (a resubmission's wait on the thread).
+    try testing.expectEqualSlices(u8, f.raw("fund"), eb.entries[1].raw.?);
+    try testing.expectEqualSlices(u8, want, eb.entries[2].raw.?);
+    // Ingested and its broadcast emitted in that step (fund arrived proven: the swap alone); admitted
+    // in that step — the continuation (0) and the taker's token payout (1) — with no status delivered.
+    try testing.expectEqual(posts_before + 1, m.node.posts);
+    const st = try m.node.state();
+    try testing.expect(try st.isApplied(m.topic, txidOf(want)));
+    try testing.expectEqual(w.state.Status.unproven, try st.ch.status(txidOf(want)));
+    const ap = (try st.appliedRecord(m.topic, txidOf(want))).?;
+    try testing.expectEqual(@as(usize, 2), ap.getArray("outputsToAdmit").?.len);
+    // No thread rests on chain/tx: the engine's app subscribed to it, its context recorded.
+    try testing.expectEqual(@as(usize, 0), m.node.rests.items.len);
+    try testing.expect(nameIn(m.node.subs.items, try ov.submit.chainTxName(a, txidOf(want))));
+    try testing.expect((try st.pendingRecord(txidOf(want))).?.getCid("event") != null);
+    // Nobody answered by message (an in-VM caller has no source).
+    try testing.expectEqual(@as(usize, 0), m.node.sent.answers.items.len);
+    // The direct call's answer: the signed transaction and the BEEF the overlay was handed.
+    try testing.expectEqualSlices(u8, m.node.lastBeef(), served.reply.ok.beef.?);
+    const body = readBack(a, try messages.replyValue(a, served.reply));
+    try testing.expectEqual(true, body.getBool("ok").?);
+    try testing.expectEqualSlices(u8, want, body.getBytes("tx").?);
+    // The same, from the state.
     const ans = try m.answer(a, sreq);
     try testing.expect(ans == .ok);
     try testing.expectEqualSlices(u8, want, ans.ok.tx.?);
-    try testing.expectEqualSlices(u8, &txidOf(want), &ans.ok.txid.?);
-    const body = readBack(a, try messages.replyValue(a, ans));
-    try testing.expectEqual(true, body.getBool("ok").?);
-    try testing.expectEqualSlices(u8, want, body.getBytes("tx").?);
+}
+
+fn nameIn(names: []const []const u8, name: []const u8) bool {
+    for (names) |x| if (std.mem.eql(u8, x, name)) return true;
+    return false;
 }
 
 test "submission: a request BEEF whose funding the node never held, proven in the BEEF, is accepted; as raw bytes it is refused bad_transaction before signing (D6: the door would refuse its submission, MissingInput)" {
@@ -833,78 +821,72 @@ test "submission: a request BEEF whose funding the node never held, proven in th
     try expectRefused(r.reply, .bad_transaction);
     try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "MissingInput: "));
     try testing.expect(std.mem.indexOf(u8, r.reply.refused.detail.?, &w.header.toHex(fund)) != null);
-    try testing.expect(r.next == .answer);
+    try testing.expectEqual(@as(usize, 0), m.node.intakes.items.len);
     try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
 
-    // The same request as a BEEF carrying fund with its BUMP (on a node that saw no pause): launched, and admitted.
+    // The same request as a BEEF carrying fund with its BUMP: admitted in its step.
     var ms2 = w.store.MemStore.init(testing.allocator);
     defer ms2.deinit();
     const m2 = try Mined.init(a, &ms2);
     const ok = try m2.respond(a, try m2.swapRequest(a));
-    const okev = try m2.node.launched(ok);
-    _ = try m2.node.step(okev);
-    const done = try m2.node.status(okev, "RECEIVED");
-    try testing.expect(done.admitted);
+    try testing.expect(ok.reply == .ok);
+    try testing.expect(try (try m2.node.state()).isApplied(m2.topic, ok.reply.ok.txid.?));
     try testing.expect((try (try m2.node.chain()).status(fund)) == .proven); // held now, with its proof
 }
 
-test "submission: the gate, answered from the state — a rejection admits nothing (rejected, and the same request again is refused at once); a resubmission while pending waits on the first submission's thread, then the answer is the signed transaction" {
+test "after the step (0.51.0): a later REJECTED unwinds the admitted swap by its subscription (no thread held), the same request again is answered rejected; a resend of an admitted request gets the same transaction and the overlay's verdict — no pending, no second signature, nothing handed to the overlay again" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    // The network rejects it: nothing admitted; the answer is `rejected`, the pool live again (no `pool`).
+    // The network rejects it after its admission: the chain app's fact steps the subscription.
     {
         var ms = w.store.MemStore.init(testing.allocator);
         defer ms.deinit();
         const m = try Mined.init(a, &ms);
         const req = try m.swapRequest(a);
         const r = try m.respond(a, req);
-        const ev = try m.node.launched(r);
-        _ = try m.node.step(ev);
-        const done = try m.node.status(ev, "REJECTED");
+        try testing.expect(r.reply == .ok);
+        const txid = r.reply.ok.txid.?;
+        try testing.expect(try (try m.node.state()).isApplied(m.topic, txid));
+        const done = try m.node.fact(txid, "REJECTED", null);
         try testing.expectEqual(Gated.rejected, done.gate);
-        try testing.expect(!done.admitted);
-        // The engine's answer: rejected; the direct call's answer on it.
-        try testing.expectEqualStrings("rejected", m.node.sent.last().get("result").?.getText("state").?);
-        const ans = try m.fromSubmit(a, .swap, try spendBody(a, req, m.pool_op), m.node.sent.last());
+        try testing.expect(!(try (try m.node.state()).isApplied(m.topic, txid))); // unwound
+        try testing.expectEqual(@as(usize, 0), m.node.rests.items.len);
+        const ans = try m.answer(a, req);
         try expectRefused(ans, .rejected);
         try testing.expectEqualStrings("REJECTED", ans.refused.detail.?);
-        try testing.expect(ans.refused.newest == null);
-        const body = readBack(a, try messages.replyValue(a, ans));
-        try testing.expectEqualStrings("rejected", body.getText("reason").?);
-        try testing.expectEqualStrings(&w.header.toHex(r.reply.ok.txid.?), body.getText("txid").?);
-        // The same request again: rejected before, answered from the state at once (nothing submitted).
+        try testing.expect(ans.refused.newest == null); // the pool live again
+        // The same request again: the pool is live again (the rejected spender does not count), so it
+        // is checked and signed again — the same transaction (the same signature) — and answered from
+        // the state, rejected; nothing handed to the overlay again.
+        m.f.oracle.calls = 0;
         const again = try m.respond(a, req);
-        try testing.expect(again.next == .from_state);
-        try expectRefused(try m.answer(a, req), .rejected);
+        try expectRefused(again.reply, .rejected);
+        try testing.expectEqualSlices(u8, &txid, &again.reply.refused.txid.?);
+        try testing.expectEqual(@as(usize, 1), m.f.oracle.calls);
+        try testing.expectEqual(@as(usize, 1), m.node.intakes.items.len);
     }
-    // Pending: the same request again is recognised (not re-signed) and waits on the first thread.
+    // Admitted: the same request sent again is recognised (the pool's live spender is it, signed).
     {
         var ms = w.store.MemStore.init(testing.allocator);
         defer ms.deinit();
         const m = try Mined.init(a, &ms);
         const req = try m.swapRequest(a);
         const r = try m.respond(a, req);
-        const ev = try m.node.launched(r);
-        const first = try m.node.step(ev);
-        try testing.expectEqual(Gated.pending, first.gate);
-
+        try testing.expect(r.reply == .ok);
         m.f.oracle.calls = 0;
+        const posts = m.node.posts;
         const again = try m.respond(a, req);
+        try testing.expect(again.reply == .ok);
+        try testing.expectEqualSlices(u8, r.reply.ok.tx.?, again.reply.ok.tx.?);
+        try testing.expectEqualSlices(u8, r.reply.ok.beef.?, again.reply.ok.beef.?);
         try testing.expectEqual(@as(usize, 0), m.f.oracle.calls); // not signed again
-        try testing.expectEqualSlices(u8, &r.reply.ok.txid.?, &again.next.wait_on);
-        // 0.49.0 (skein-overlay 0.25.0): its pending record names no thread; main.zig answers from the state at once.
-        try testing.expect((try (try m.node.state()).pendingRecord(again.next.wait_on)) != null);
-        try expectRefused(try m.answer(a, req), .pending);
-
-        // The network's word admits it; the thread rests; both waiting calls answer the same.
-        _ = try m.node.status(ev, "SEEN_ON_NETWORK");
-        const ans = try m.answer(a, req);
-        try testing.expectEqualSlices(u8, r.reply.ok.tx.?, ans.ok.tx.?);
-        // Sent once more, after: judged before, answered from the state at once.
-        const last = try m.respond(a, req);
-        try testing.expect(last.next == .from_state);
+        try testing.expectEqual(@as(usize, 1), m.node.intakes.items.len); // not handed again
+        try testing.expectEqual(posts, m.node.posts); // nothing broadcast again
+        const body = readBack(a, try messages.replyValue(a, again.reply));
+        try testing.expectEqual(true, body.getBool("ok").?);
+        try testing.expect(body.get("reason") == null);
     }
 }
 
@@ -1023,8 +1005,9 @@ test "sign: a request as a BEEF: an unheld parent's source verifies the taker's 
     // A raw request: a V1 BEEF of the signed transaction alone.
     const rb = try w.beef.parse(a, try submit.submissionBeef(a, r.ok.tx.?, null, null, no_chain));
     try testing.expectEqual(@as(usize, 1), rb.entries.len);
-    // It goes to the submissions box `<app>/submit` (skein-overlay 0.7.5, shruggr/skein#128).
-    try testing.expectEqualStrings("amm/submit", try submit.box(a, "amm"));
+    // The overlay's in-VM intake takes it (skein-overlay 0.28.0): {beef, topics}.
+    const ia = try submit.intakeArgs(a, "x", "tm_x");
+    try testing.expectEqualStrings("tm_x", ia.getArray("topics").?[0].text);
     // (A bad signature on the taker's funding input is the request's check, D6: "refused: signatures
     // missing or bad" below, through `messages.respond`.)
 }
@@ -1454,7 +1437,7 @@ test "protocol: request bodies parse; bad ones are refused; replies encode" {
     const frame = try package(a, sender_priv, m.f.cfg.identity, "swap", try spendBody(a, req, op));
     const body = (try messages.open(a, frame, m.f.cfg.identity, .swap)).ok.body;
     const r = try messages.respond(a, .swap, body, try m.deps());
-    try testing.expect(r.reply == .ok and r.next == .submit);
+    try testing.expect(r.reply == .ok);
     const reply = try cbor.decode(a, try cbor.encode(a, try messages.replyValue(a, r.reply)));
     try testing.expectEqual(true, reply.getBool("ok").?);
     try testing.expectEqualSlices(u8, m.f.raw("swap_bsv_in"), reply.getBytes("tx").?);
@@ -1469,7 +1452,7 @@ test "protocol: request bodies parse; bad ones are refused; replies encode" {
     // An affirm through the protocol: answered at once, nothing to submit.
     const pr = try m.f.proposed();
     const ar = try messages.respond(a, .affirm, try affirmBody(a, pr.script, pr.satoshis), d);
-    try testing.expect(ar.reply == .ok and ar.next == .answer);
+    try testing.expect(ar.reply == .ok);
     try testing.expect(ar.reply.ok.signature != null and ar.reply.ok.nonce != null and ar.reply.ok.validator_pub_key != null);
     try expectRefused((try messages.respond(a, .swap, .{ .text = "hi" }, d)).reply, .bad_request);
 
@@ -1649,33 +1632,27 @@ test "relay request: a swap with its funding transaction as an unproven parent, 
     try testing.expectEqual(@as(usize, 2), ab.entries.len); // fund (with its BUMP), the funding transaction
     try testing.expectEqualSlices(u8, &txidOf(m.f.raw("fund")), &ab.entries[0].txid);
 
-    // The swap's submission: the engine's route verified the BEEF (the pool contract and both P2PKH spends
-    // run), which names the pool's transaction by txid (0.45.0), fund, the funding transaction, the signed swap;
-    // the chain app ingests it, registering and broadcasting the funding transaction and the swap, parents
-    // first (pool_deploy arrives proven: nothing to broadcast); RECEIVED admits it.
-    const ev = readBack(a, try m.node.launched(served));
-    const txs = try txsOf(a, ev); // 0.45.0: pool_deploy by txid (no bytes), then these
-    try testing.expectEqual(@as(usize, 3), txs.len);
-    try testing.expectEqualSlices(u8, m.f.raw("fund"), txs[0]);
-    try testing.expectEqualSlices(u8, p.funding, txs[1]);
-    try testing.expectEqualSlices(u8, signed, txs[2]);
-    const first = try m.node.step(ev);
-    try testing.expectEqual(Gated.pending, first.gate);
+    // The swap's intake: the engine's route verified the BEEF (the pool contract and both P2PKH spends
+    // run), which names the pool's transaction by txid (0.45.0), fund, the funding transaction, the signed
+    // swap; the chain app ingested it, registering and broadcasting the funding transaction and the swap,
+    // parents first (pool_deploy arrived proven: nothing to broadcast), and both were admitted, in the step.
+    const ib = try w.beef.parse(a, m.node.lastBeef());
+    try testing.expectEqual(@as(usize, 4), ib.entries.len); // pool_deploy by txid, fund, the funding, the swap
+    try testing.expectEqualSlices(u8, signed, ib.entries[3].raw.?);
     try testing.expectEqual(@as(usize, 2), m.node.posts); // the funding transaction and the swap, by the chain app
     try testing.expect((try (try m.node.chain()).txRaw(txidOf(p.funding))) != null); // held now
-    // 0.26.0: the funding transaction (an earlier item) is seen first; then the swap is admitted.
-    _ = try m.node.statusOf(ev, txidOf(p.funding), "RECEIVED");
-    const done = try m.node.status(ev, "RECEIVED");
-    try testing.expect(done.admitted);
-    try testing.expectEqualSlices(u32, &.{ 0, 1 }, done.applied[0].outputs_to_admit);
+    try testing.expect(try (try m.node.state()).isApplied(m.topic, txidOf(signed)));
+    const ap = (try (try m.node.state()).appliedRecord(m.topic, txidOf(signed))).?;
+    try testing.expectEqual(@as(usize, 2), ap.getArray("outputsToAdmit").?.len);
     const ans = try m.answer(a, req);
     try testing.expect(ans == .ok);
     try testing.expectEqualSlices(u8, signed, ans.ok.tx.?);
 
-    // Sent again (pending → admitted now): answered from the state, nothing broadcast again.
+    // Sent again (admitted): answered from the state, nothing broadcast again.
     const again = try m.respond(a, req);
-    try testing.expect(again.next == .from_state);
+    try testing.expect(again.reply == .ok);
     try testing.expectEqual(@as(usize, 0), again.broadcast.len);
+    try testing.expectEqual(@as(usize, 2), m.node.posts);
 }
 
 /// The door's check (skein kernel-zig/src/door.zig `spv`): skein-sdk `chain.spv.verify` over the
@@ -1730,7 +1707,7 @@ test "submission BEEF (0.45.0): the pool's transaction and every held parent by 
     const served = try m.respond(a, req);
     try testing.expect(served.reply == .ok);
     const signed = served.reply.ok.tx.?;
-    const out = served.next.submit.beef;
+    const out = m.node.lastBeef();
     const ob = try w.beef.parse(a, out);
     // (a) the pool's transaction by txid; fund (not held here), the funding raw; the swap the subject, last; V2.
     const pe = ob.find(pool_txid) orelse return error.TestPoolMissing;
@@ -1763,12 +1740,13 @@ test "submission BEEF (0.45.0): the pool's transaction and every held parent by 
     const m2 = try Mined.init(a, &ms2);
     const served2 = try m2.respond(a, with);
     try testing.expect(served2.reply == .ok);
-    const ob2 = try w.beef.parse(a, served2.next.submit.beef);
+    const out2 = m2.node.lastBeef();
+    const ob2 = try w.beef.parse(a, out2);
     try testing.expectEqual(w.beef.Format.txid_only, ob2.find(pool_txid).?.format);
     try testing.expect(ob2.find(txidOf(m2.f.raw("token_deploy"))) == null); // no input of the subject's raw ancestry spends it
-    try testing.expect(served2.next.submit.beef.len < with.len);
+    try testing.expect(out2.len < with.len);
     for (ob2.entries, 0..) |e, i| for (ob2.entries[0..i]) |x| try testing.expect(!std.mem.eql(u8, &e.txid, &x.txid));
-    _ = try doorVerify(a, m2, served2.next.submit.beef);
+    _ = try doorVerify(a, m2, out2);
     // The Rescind's path (submit.withPool) is unchanged: a BEEF that holds the pool already stays as it is.
     const rescinded = try w.beef.parse(a, try submit.withPool(a, full, try ov.state.beefFor((try m.node.state()).ch, pool_txid)));
     try testing.expectEqual(fb.entries.len, rescinded.entries.len);
@@ -1788,7 +1766,6 @@ test "relay request refused: an unsigned funding input, a bad funding signature 
         const r = try m.respond(a, try relayBeef(a, m, p));
         try expectRefused(r.reply, .bad_transaction); // D6: the door's verifier, before step 8
         try testing.expect(std.mem.startsWith(u8, r.reply.refused.detail.?, "ScriptFailed: "));
-        try testing.expect(r.next == .answer);
         try testing.expectEqual(@as(usize, 0), r.broadcast.len);
         try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
     }
@@ -1804,9 +1781,7 @@ test "relay request refused: an unsigned funding input, a bad funding signature 
     // The pool already spent (another swap admitted first): refused with its newest state, nothing broadcast.
     {
         const first = try m.respond(a, try m.swapRequest(a));
-        const fev = try m.node.launched(first);
-        _ = try m.node.step(fev);
-        _ = try m.node.status(fev, "RECEIVED");
+        try testing.expect(first.reply == .ok);
         m.f.oracle.calls = 0;
         const p = try relayPair(a, m.f, .signed);
         const r = try m.respond(a, try relayBeef(a, m, p));
@@ -2009,16 +1984,10 @@ test "answers carry the BEEF (0.41.0): accepted — the BEEF the validator submi
     const sreq = try m.swapRequest(a);
     const served = try m.respond(a, sreq);
     try testing.expect(served.reply == .ok);
-    // Signed, not yet admitted: no BEEF on the reply (the submission carries it).
-    try testing.expect(served.reply.ok.beef == null);
-    const ev = readBack(a, try m.node.launched(served));
-    _ = try m.node.step(ev);
-    _ = try m.node.status(ev, "RECEIVED");
-
-    // Accepted: `beef` = what was submitted, byte for byte; the door verifies it; the swap its subject.
-    const ok = try m.fromSubmit(a, .swap, try spendBody(a, sreq, m.pool_op), m.node.sent.last());
-    try testing.expect(ok == .ok);
-    try testing.expectEqualSlices(u8, served.next.submit.beef, ok.ok.beef.?);
+    // 0.51.0: admitted in the step — `beef` = what the overlay was handed, byte for byte; the door
+    // verifies it; the swap its subject.
+    const ok = served.reply;
+    try testing.expectEqualSlices(u8, m.node.lastBeef(), ok.ok.beef.?);
     _ = try doorVerify(a, m, ok.ok.beef.?);
     try testing.expectEqualSlices(u8, &txidOf(want), &(try w.beef.parse(a, ok.ok.beef.?)).subject().?);
     const okb = readBack(a, try messages.replyValue(a, ok));
@@ -2050,9 +2019,7 @@ test "answers carry the BEEF (0.41.0): accepted — the BEEF the validator submi
         const before = try validator.newest(a, (try m2.deps()).view, m2.topic, m2.pool_op);
         try testing.expect(before.?.live.outpoint.eql(m2.pool_op));
         const routed = try ov.submit.route(a, m2.node.caller(), try m2.node.state(), m2.node.in, .{ .bytes = b }, &.{m2.topic}, null, null);
-        const ev2 = routed.admit.event;
-        _ = try m2.node.step(ev2);
-        const got = try m2.node.status(ev2, "RECEIVED");
+        const got = try m2.node.step(routed.admit.event);
         try testing.expect(got.admitted);
         const after = try validator.newest(a, (try m2.deps()).view, m2.topic, m2.pool_op);
         try testing.expect(after.?.live.outpoint.eql(live.outpoint));
@@ -2060,16 +2027,14 @@ test "answers carry the BEEF (0.41.0): accepted — the BEEF the validator submi
 }
 
 /// A raw transaction through a node's overlay: its BEEF the chain state's BEEF of `parent` (back to
-/// proven ones) with `raw` after it; routed, stepped, accepted.
+/// proven ones) with `raw` after it; routed and admitted in its intake.
 fn admitOn(a: std.mem.Allocator, m: *Mined, parent: [32]u8, raw: []const u8) !void {
     const pb = try w.beef.parse(a, try ov.state.beefFor((try m.node.state()).ch, parent));
     var b = pb;
     b.atomic = null;
     b.entries = try std.mem.concat(a, w.beef.Entry, &.{ pb.entries, &.{.{ .txid = txidOf(raw), .format = .raw, .raw = raw }} });
     const routed = try ov.submit.route(a, m.node.caller(), try m.node.state(), m.node.in, .{ .bytes = try w.beef.serialize(a, b) }, &.{m.topic}, null, null);
-    const ev = routed.admit.event;
-    _ = try m.node.step(ev);
-    try testing.expect((try m.node.status(ev, "RECEIVED")).admitted);
+    try testing.expect((try m.node.step(routed.admit.event)).admitted);
 }
 
 test "pool_spent past the LP's Close (0.41.1): the refusal carries the closing transaction's BEEF back to proven ones; another host holding the pool admits it and then lists no live pool" {
@@ -2082,9 +2047,7 @@ test "pool_spent past the LP's Close (0.41.1): the refusal carries the closing t
     // The validator's host: the two swaps and the LP's Close of swap_tokens_in's pool admitted.
     const sreq = try m.swapRequest(a);
     const served = try m.respond(a, sreq);
-    const ev = readBack(a, try m.node.launched(served));
-    _ = try m.node.step(ev);
-    _ = try m.node.status(ev, "RECEIVED");
+    try testing.expect(served.reply == .ok);
     const s1 = txidOf(m.f.raw("swap_bsv_in"));
     try admitOn(a, m, s1, m.f.raw("swap_tokens_in"));
     const s2 = txidOf(m.f.raw("swap_tokens_in"));
@@ -2114,261 +2077,138 @@ test "pool_spent past the LP's Close (0.41.1): the refusal carries the closing t
     const m2 = try Mined.init(a, &ms2);
     {
         const routed = try ov.submit.route(a, m2.node.caller(), try m2.node.state(), m2.node.in, .{ .bytes = try m2.beef(a, &.{"fund"}, m.f.raw("swap_bsv_in")) }, &.{m2.topic}, null, null);
-        _ = try m2.node.step(routed.admit.event);
-        try testing.expect((try m2.node.status(routed.admit.event, "RECEIVED")).admitted);
+        try testing.expect((try m2.node.step(routed.admit.event)).admitted);
     }
     try admitOn(a, m2, s1, m.f.raw("swap_tokens_in"));
     const held = (try validator.newest(a, (try m2.deps()).view, m2.topic, m2.pool_op)).?;
     try testing.expect(held.live.outpoint.eql(.{ .txid = s2, .vout = 0 }));
     const routed = try ov.submit.route(a, m2.node.caller(), try m2.node.state(), m2.node.in, .{ .bytes = nb }, &.{m2.topic}, null, null);
-    const ev2 = routed.admit.event;
-    _ = try m2.node.step(ev2);
-    try testing.expect((try m2.node.status(ev2, "RECEIVED")).admitted);
+    try testing.expect((try m2.node.step(routed.admit.event)).admitted);
     const after = (try validator.newest(a, (try m2.deps()).view, m2.topic, m2.pool_op)).?;
     try testing.expect(after == .closed);
     try testing.expectEqualSlices(u8, &close, &after.closed.by);
 }
 
-// --- one swap in flight per pool (0.43.0, plans/pool-lock-build-2026-11-06.md D3) ---
+// --- one step per swap (0.51.0, plans/one-step-swap-settled-2026-11-11.md rules 5-7) ---
 
-/// The kernel's threads as the lock sees them: one at rest cannot be awaited (skein VM.md "Waiting
-/// on a thread"); what each step awaited, in order.
-const Threads = struct {
-    a: std.mem.Allocator,
-    at_rest: std.StringHashMapUnmanaged(void) = .empty,
-    awaited: std.ArrayListUnmanaged([]const u8) = .empty,
+test "one pool, consecutive steps (0.51.0): the first request signed and admitted in its step; the second, in its own step, finds the pool spent — pool_spent with the new state and its BEEF, nothing signed, nothing handed to the overlay; no lock anywhere" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const m = try Mined.init(a, &ms);
 
-    fn waitFn(ptr: *anyopaque, t: []const u8) bool {
-        const self: *Threads = @ptrCast(@alignCast(ptr));
-        if (self.at_rest.contains(t)) return false;
-        self.awaited.append(self.a, t) catch @panic("OOM");
-        return true;
+    // Step 1: signed, handed to the overlay, admitted — all in this step.
+    const r1 = try m.swapRequest(a);
+    const s1 = try m.respond(a, r1);
+    try testing.expect(s1.reply == .ok);
+    const t1 = s1.reply.ok.txid.?;
+    try testing.expect(try (try m.node.state()).isApplied(m.topic, t1));
+    try testing.expectEqual(@as(usize, 1), m.node.intakes.items.len);
+
+    // Step 2: another taker's request for the same pool output.
+    const r2 = try relayBeef(a, m, try relayPair(a, m.f, .signed));
+    m.f.oracle.calls = 0;
+    const s2 = try m.respond(a, r2);
+    try expectRefused(s2.reply, .pool_spent);
+    try testing.expect(s2.reply.refused.newest.?.live.outpoint.eql(.{ .txid = t1, .vout = 0 }));
+    try testing.expect(s2.reply.refused.beef != null);
+    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
+    try testing.expectEqual(@as(usize, 1), m.node.intakes.items.len);
+    try testing.expectEqual(@as(usize, 0), s2.broadcast.len);
+    // No lock record: the validator writes no head of its own (amm/locks is gone); the overlay's
+    // state names only the admitted swap's items.
+    try testing.expect((try (try m.node.state()).pendingRecord(t1)) != null);
+    try testing.expect((try (try m.node.state()).pendingRecord(txidOf((try relayPair(a, m.f, .signed)).swap))) == null);
+}
+
+test "every input unspent in our view before signing (0.51.0): a request whose non-pool input a held transaction already spends is refused submit_refused, the overlay's InputSpent text — nothing signed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy" });
+    const op: Outpoint = .{ .txid = txidOf(f.raw("pool_deploy")), .vout = 0 };
+    const req = try request(a, f.raw("swap_bsv_in"), 0);
+    const tx = try Transaction.parse(a, req);
+    try testing.expect(tx.inputs.len > 1);
+    // A held transaction (not rejected) spending the swap's input 1.
+    const in1 = tx.inputs[1].previous_outpoint;
+    const other: [32]u8 = .{0x77} ** 32;
+    try f.mem.spent.put(MemView.key(.{ .txid = in1.txid.bytes, .vout = in1.index }), other);
+    f.oracle.calls = 0;
+    const r = try f.spend(.swap, req, op);
+    try expectRefused(r, .submit_refused);
+    const want = try std.fmt.allocPrint(a, "InputSpent: input {s}.{d} is already spent by {s}", .{ &w.header.toHex(in1.txid.bytes), in1.index, &w.header.toHex(other) });
+    try testing.expectEqualStrings(want, r.refused.detail.?);
+    try testing.expectEqual(@as(usize, 0), f.oracle.calls);
+    // Free again: signed.
+    _ = f.mem.spent.remove(MemView.key(.{ .txid = in1.txid.bytes, .vout = in1.index }));
+    try f.oracle.record(a, f.raw("swap_bsv_in"), 0);
+    try testing.expect((try f.spend(.swap, req, op)) == .ok);
+}
+
+/// A view that answers the pool's transaction with its pool output's satoshis changed once the
+/// oracle has signed: the finished transaction no longer satisfies the pool's script (its preimage
+/// commits to the value), as a stand-in for any script failure the checks before signing miss.
+const AfterSign = struct {
+    inner: view_mod.View,
+    oracle: *KeyOracle,
+    pool_txid: [32]u8,
+    fn rawTxImpl(ptr: *anyopaque, a: std.mem.Allocator, txid: [32]u8) anyerror!?[]const u8 {
+        const self: *AfterSign = @ptrCast(@alignCast(ptr));
+        const raw = (try self.inner.rawTx(a, txid)) orelse return null;
+        if (self.oracle.calls == 0 or !std.mem.eql(u8, &txid, &self.pool_txid)) return raw;
+        var t = try Transaction.parse(a, raw);
+        const outs = try a.dupe(bsvz.transaction.Output, t.outputs);
+        outs[0].satoshis += 1;
+        t.outputs = outs;
+        return try t.serialize(a);
     }
-    fn threads(self: *Threads) pool_lock.Threads {
-        return .{ .ptr = self, .awaitFn = waitFn };
+    fn previousCoinsImpl(ptr: *anyopaque, a: std.mem.Allocator, topic: []const u8, tx: Transaction) anyerror![]const u32 {
+        const self: *AfterSign = @ptrCast(@alignCast(ptr));
+        return self.inner.previousCoins(a, topic, tx);
     }
-    fn rest(self: *Threads, t: []const u8) !void {
-        try self.at_rest.put(self.a, t, {});
+    fn spenderImpl(ptr: *anyopaque, a: std.mem.Allocator, topic: []const u8, op: Outpoint) anyerror!?[32]u8 {
+        const self: *AfterSign = @ptrCast(@alignCast(ptr));
+        return self.inner.spender(a, topic, op);
     }
-    /// What the last step awaited.
-    fn last(self: *Threads) []const u8 {
-        return self.awaited.items[self.awaited.items.len - 1];
+    fn spendersImpl(ptr: *anyopaque, a: std.mem.Allocator, op: Outpoint) anyerror![]const [32]u8 {
+        const self: *AfterSign = @ptrCast(@alignCast(ptr));
+        return self.inner.spenders(a, op);
+    }
+    fn liveSpenderImpl(ptr: *anyopaque, a: std.mem.Allocator, op: Outpoint) anyerror!?[32]u8 {
+        const self: *AfterSign = @ptrCast(@alignCast(ptr));
+        return self.inner.liveSpender(a, op);
+    }
+    fn view(self: *AfterSign) view_mod.View {
+        return .{ .ptr = self, .rawTxFn = rawTxImpl, .previousCoinsFn = previousCoinsImpl, .spenderFn = spenderImpl, .spendersFn = spendersImpl, .liveSpenderFn = liveSpenderImpl };
     }
 };
 
-/// The record as main.zig keeps it between steps: written, then read back.
-fn relock(a: std.mem.Allocator, l: pool_lock.Locks) !pool_lock.Locks {
-    return pool_lock.Locks.parse(a, readBack(a, try l.value(a)));
-}
-
-const T1 = "cid:thread-1";
-const T2 = "cid:thread-2";
-const T3 = "cid:thread-3";
-
-/// One step of a swap's direct call through the lock (main.zig `directCall`): the served request,
-/// or null (it waits); the record kept.
-fn lockedStep(m: *Mined, a: std.mem.Allocator, locks: *pool_lock.Locks, th: *Threads, req: []const u8, op: Outpoint, me: []const u8) !?messages.Served {
-    const served = try messages.respondLocked(a, .swap, try spendBody(a, req, op), try m.deps(), locks, me, th.threads());
-    locks.* = try relock(a, locks.*);
-    return served;
-}
-
-test "pool lock: two swaps on one pool before either is admitted — the second waits on the first's thread; the first admitted → the second answered pool_spent with the new state; the lock gone" {
+test "the pool input's script on the finished transaction (0.51.0): failing, the request is refused bad_transaction after signing — nothing handed to the overlay, nothing recorded" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var ms = w.store.MemStore.init(testing.allocator);
     defer ms.deinit();
     const m = try Mined.init(a, &ms);
-    var th: Threads = .{ .a = a };
-    var locks: pool_lock.Locks = .{};
-
-    // The first: signed, to be submitted; its pool locked by its thread in the same step.
-    const r1 = try m.swapRequest(a);
-    const s1 = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T1)).?;
-    try testing.expect(s1.next == .submit);
-    try testing.expectEqual(@as(usize, 1), locks.entries.items.len);
-    const e = locks.entries.items[0];
-    try testing.expect(e.pool.eql(m.pool_op));
-    try testing.expectEqualSlices(u8, &s1.reply.ok.txid.?, &e.holder.?.txid);
-    try testing.expectEqualStrings(T1, e.holder.?.thread);
-
-    // The second, as on ovh: before the engine has even routed the first (nothing held, nothing pending):
-    // not refused, not signed — it awaits the first's thread.
-    const p = try relayPair(a, m.f, .signed);
-    const r2 = try relayBeef(a, m, p);
+    const req = try m.swapRequest(a);
     m.f.oracle.calls = 0;
-    try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
-    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
-    try testing.expectEqualStrings(T1, th.last());
-    try testing.expectEqual(@as(usize, 1), locks.entries.items[0].waiters.items.len);
-
-    // The first goes through: routed, ingested, admitted. Its thread takes the answer (the lock
-    // released) and comes to rest.
-    const ev = try m.node.launched(s1);
-    _ = try m.node.step(ev);
-    try testing.expect((try m.node.status(ev, "RECEIVED")).admitted);
-    try testing.expect(locks.release(T1));
-    try testing.expect((try m.fromSubmit(a, .swap, try spendBody(a, r1, m.pool_op), m.node.sent.last())) == .ok);
-    try th.rest(T1);
-
-    // The second, stepped again (`resolved`): the same check against the settled state — pool_spent,
-    // the new state (the first's continuation) and its BEEF; nothing signed; no lock left.
-    const s2 = (try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)).?;
-    try expectRefused(s2.reply, .pool_spent);
-    try testing.expect(s2.reply.refused.newest.?.live.outpoint.eql(.{ .txid = s1.reply.ok.txid.?, .vout = 0 }));
-    try testing.expect(s2.reply.refused.beef != null);
-    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
-    try testing.expectEqual(@as(usize, 0), locks.entries.items.len);
-
-    // A stale request naming the first pool output after a third swap locked the new state: the lineage
-    // walked to the lock — it waits too, whatever output of the pool it names.
-    const newest: Outpoint = .{ .txid = s1.reply.ok.txid.?, .vout = 0 };
-    try locks.take(a, newest, .{0x44} ** 32, .{0x45} ** 32, T3);
-    try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
-    try testing.expectEqualStrings(T3, th.last());
-}
-
-test "pool lock: the first rejected → the waiter is checked and signed and takes the lock; the next waiter waits on it" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const m = try Mined.init(a, &ms);
-    var th: Threads = .{ .a = a };
-    var locks: pool_lock.Locks = .{};
-
-    const r1 = try m.swapRequest(a);
-    const s1 = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T1)).?;
-    const r2 = try relayBeef(a, m, try relayPair(a, m.f, .signed));
-    try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
-    // A third, the same pool: in the queue after the second.
-    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
-    try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
-    try testing.expectEqual(@as(usize, 2), locks.entries.items[0].waiters.items.len);
-
-    // The network rejects the first; its thread takes the answer and rests.
-    const ev = try m.node.launched(s1);
-    _ = try m.node.step(ev);
-    try testing.expectEqual(Gated.rejected, (try m.node.status(ev, "REJECTED")).gate);
-    _ = locks.release(T1);
-    try th.rest(T1);
-
-    // The kernel steps the waiters of T1 in its order; here the third first (one millisecond, a
-    // higher CID): the queue keeps arrival order — it waits on the second.
-    try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
-    try testing.expectEqualStrings(T2, th.last());
-    // The second: the head of the queue — checked and signed, the pool locked by it, the third still queued.
-    m.f.oracle.calls = 0;
-    const s2 = (try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)).?;
-    try testing.expect(s2.next == .submit);
-    try testing.expectEqual(@as(usize, 1), m.f.oracle.calls);
-    const e = locks.entries.items[0];
-    try testing.expectEqualStrings(T2, e.holder.?.thread);
-    try testing.expectEqualSlices(u8, &s2.reply.ok.txid.?, &e.holder.?.txid);
-    try testing.expectEqual(@as(usize, 1), e.waiters.items.len);
-    try testing.expectEqualStrings(T3, e.waiters.items[0]);
-    // The third, stepped again (the second still in flight): waits on it.
-    try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
-    try testing.expectEqualStrings(T2, th.last());
-}
-
-test "pool lock: per pool — a lock on another pool never holds a swap; a waiter past its relay's expiry (its thread at rest) is dropped; the request in flight sent again is not a waiter (today's answer)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const m = try Mined.init(a, &ms);
-    var th: Threads = .{ .a = a };
-    var locks: pool_lock.Locks = .{};
-
-    // Another pool's lock (its thread live): this pool's swap goes through and takes its own.
-    const other: Outpoint = .{ .txid = .{0x66} ** 32, .vout = 0 };
-    try locks.take(a, other, .{0x67} ** 32, .{0x68} ** 32, T3);
-    const r1 = try m.swapRequest(a);
-    const s1 = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T1)).?;
-    try testing.expect(s1.next == .submit);
-    try testing.expectEqual(@as(usize, 0), th.awaited.items.len);
-    try testing.expectEqual(@as(usize, 2), locks.entries.items.len);
-
-    // The same request again from another thread (a retry): not a waiter; answered as today — the
-    // engine routes the first meanwhile, so it waits on that submission (not signed again).
-    const ev = try m.node.launched(s1);
-    _ = try m.node.step(ev);
-    m.f.oracle.calls = 0;
-    const again = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T2)).?;
-    try testing.expect(again.next == .wait_on);
-    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
-    try testing.expect(locks.waitingIn(T2) == null);
-
-    // A waiter (T2 with another swap) whose relay times out: its thread rests; the holder's answer
-    // comes, it rests; the next waiter (T3) finds the expired one gone and is checked.
-    const r2 = try relayBeef(a, m, try relayPair(a, m.f, .signed));
-    try testing.expect((try lockedStep(m, a, &locks, &th, r2, m.pool_op, T2)) == null);
-    const stale = try relayBeef(a, m, try relayPairSalted(a, m.f, .signed, 1));
-    try testing.expect((try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)) == null);
-    try th.rest(T2); // the local relay's deadline: timeout, done
-    _ = try m.node.status(ev, "RECEIVED");
-    _ = locks.release(T1);
-    try th.rest(T1);
-    const s3 = (try lockedStep(m, a, &locks, &th, stale, m.pool_op, T3)).?;
-    try expectRefused(s3.reply, .pool_spent);
-    // Only the other pool's lock is left.
-    try testing.expectEqual(@as(usize, 1), locks.entries.items.len);
-    try testing.expect(locks.entries.items[0].pool.eql(other));
-}
-
-test "proven before the lock (D6, 0.46.2): a request naming by txid a transaction this instance does not hold is refused bad_transaction at once — the verifier's error and the txid, nothing signed, no lock taken, no queue joined, even while its pool is locked; the same request with that transaction raw (proven) waits as before" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const m = try Mined.init(a, &ms);
-    var th: Threads = .{ .a = a };
-    var locks: pool_lock.Locks = .{};
-    const fund = txidOf(m.f.raw("fund"));
-    try testing.expect((try (try m.node.chain()).txRaw(fund)) == null); // unknown to the node
-
-    // The request as a page holding a stale view sends it: fund by txid alone, the funding raw, the swap.
-    const p = try relayPair(a, m.f, .signed);
-    const unheld = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = try a.dupe(w.beef.Entry, &.{
-        .{ .txid = fund, .format = .txid_only },
-        .{ .txid = txidOf(p.funding), .format = .raw, .raw = p.funding },
-        .{ .txid = txidOf(p.swap), .format = .raw, .raw = p.swap },
-    }) });
-
-    // With the pool free: refused at once, nothing signed, no lock record.
-    m.f.oracle.calls = 0;
-    const r = (try lockedStep(m, a, &locks, &th, unheld, m.pool_op, T1)).?;
-    try expectRefused(r.reply, .bad_transaction);
-    const why = r.reply.refused.detail.?;
-    try testing.expect(std.mem.startsWith(u8, why, "UnknownTxidOnly: "));
-    try testing.expect(std.mem.indexOf(u8, why, &w.header.toHex(fund)) != null);
-    try testing.expect(r.next == .answer);
-    try testing.expectEqual(@as(usize, 0), r.broadcast.len);
-    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
-    try testing.expectEqual(@as(usize, 0), locks.entries.items.len);
-    try testing.expectEqual(@as(usize, 0), th.awaited.items.len);
-
-    // With the pool locked by a swap in flight: still refused at once — it does not wait, joins no queue.
-    const r1 = try m.swapRequest(a);
-    const s1 = (try lockedStep(m, a, &locks, &th, r1, m.pool_op, T1)).?;
-    try testing.expect(s1.next == .submit);
-    m.f.oracle.calls = 0;
-    const r2 = (try lockedStep(m, a, &locks, &th, unheld, m.pool_op, T2)).?;
-    try expectRefused(r2.reply, .bad_transaction);
-    try testing.expectEqual(@as(usize, 0), m.f.oracle.calls);
-    try testing.expect(locks.waitingIn(T2) == null);
-    try testing.expectEqual(@as(usize, 1), locks.entries.items.len);
-    try testing.expectEqualStrings(T1, locks.entries.items[0].holder.?.thread);
-    try testing.expectEqual(@as(usize, 0), locks.entries.items[0].waiters.items.len);
-
-    // The same swap with fund raw and proven (the relay's BEEF): proven, so it waits on the holder.
-    try testing.expect((try lockedStep(m, a, &locks, &th, try relayBeef(a, m, p), m.pool_op, T2)) == null);
-    try testing.expectEqual(@as(usize, 1), locks.entries.items[0].waiters.items.len);
+    var d = try m.deps();
+    var after = AfterSign{ .inner = d.view, .oracle = &m.f.oracle, .pool_txid = m.pool_op.txid };
+    d.view = after.view();
+    const root_before = m.node.ov_root;
+    const chain_before = m.node.chain_root;
+    const served = try messages.respond(a, .swap, try spendBody(a, req, m.pool_op), d);
+    try expectRefused(served.reply, .bad_transaction);
+    try testing.expect(std.mem.startsWith(u8, served.reply.refused.detail.?, "ScriptFailed: the pool input's script"));
+    try testing.expectEqual(@as(usize, 1), m.f.oracle.calls); // signed, then refused
+    try testing.expectEqual(@as(usize, 0), m.node.intakes.items.len);
+    try testing.expect(std.meta.eql(root_before, m.node.ov_root));
+    try testing.expect(std.meta.eql(chain_before, m.node.chain_root));
+    // The same request with the untampered view: signed and admitted.
+    try testing.expect((try m.respond(a, req)).reply == .ok);
 }
 
 /// A BUMP for a block holding one transaction: its root is the txid.
@@ -2380,7 +2220,7 @@ fn soloPath(a: std.mem.Allocator, height: u32, txid: [32]u8) ![]const u8 {
     return path.items;
 }
 
-test "a swap rejected, then mined: the taker is told it was mined — the status is the chain state's, a proof overrides the rejection (0.50.0); answered from the engine's earlier `rejected` the same" {
+test "a swap admitted, rejected, then mined (0.51.0): the rejection unwinds it and the proof admits it again, each by its subscription; the taker is told it was mined — the status is the chain state's; answered from the overlay's earlier `rejected` the same" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -2389,26 +2229,30 @@ test "a swap rejected, then mined: the taker is told it was mined — the status
     const m = try Mined.init(a, &ms);
     const req = try m.swapRequest(a);
     const r = try m.respond(a, req);
-    const ev = try m.node.launched(r);
-    _ = try m.node.step(ev);
-    const done = try m.node.status(ev, "REJECTED");
+    try testing.expect(r.reply == .ok);
+    const done = try m.node.fact(r.reply.ok.txid.?, "REJECTED", null);
     try testing.expectEqual(Gated.rejected, done.gate);
-    const rejected_answer = m.node.sent.last();
     try expectRefused(try m.answer(a, req), .rejected);
     // Mined after all, alone in block 2: its proof.
     const txid = r.reply.ok.txid.?;
     const hd = mine(w.header.hash(&m.blk), txid, 1_700_000_600);
     try m.node.headers(&.{&hd});
-    const ch = try m.node.chain();
-    try testing.expectEqual(w.state.State.Outcome.proven, try ch.applyStatus(txid, "MINED", try soloPath(a, 2, txid)));
-    m.node.chain_root = try ch.save();
+    // The proof reaches the chain app; its fact steps the swap's subscription: admitted again.
+    const heard = try m.node.fact(txid, "MINED", try soloPath(a, 2, txid));
+    try testing.expectEqual(Gated.mined, heard.gate);
     try testing.expectEqual(w.state.Status.proven, try (try m.node.chain()).status(txid));
-    const heard = try m.node.answer(txid, .{ .mined = .{} }, .mined);
     try testing.expect(heard.admitted);
     const ans = try m.answer(a, req);
     try testing.expect(ans == .ok);
     try testing.expectEqualSlices(u8, &txid, &ans.ok.txid.?);
-    // The engine's earlier word was `rejected`; the state as it stands answers.
-    const from_submit = try m.fromSubmit(a, .swap, try spendBody(a, req, m.pool_op), rejected_answer);
-    try testing.expect(from_submit == .ok);
+    // The overlay's earlier word was `rejected`; the state as it stands answers.
+    const st = try m.node.state();
+    const ovv = try a.create(view_mod.OverlayView);
+    ovv.* = .{ .st = st };
+    const rejected_word: Value = .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "result", .value = .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "txid", .value = .{ .text = try a.dupe(u8, &w.header.toHex(txid)) } },
+        .{ .key = "state", .value = .{ .text = "rejected" } },
+        .{ .key = "reason", .value = .{ .text = "REJECTED" } },
+    }) } }}) };
+    try testing.expect((try messages.answerFromSubmit(a, st, ovv.view(), .swap, try spendBody(a, req, m.pool_op), rejected_word)) == .ok);
 }

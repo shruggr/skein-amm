@@ -3,7 +3,7 @@
 //! `swap` call, `affirm` for the `affirm` call (0.11.0: a proposed pool checked against the
 //! terms and signed before the LP's wallet builds the deploy).
 //!
-//! First (D6, 2026-11-07; messages.zig `proveRequest`, before the pool's lock): the request's BEEF
+//! First (D6, 2026-11-07; messages.zig `proveRequest`): the request's BEEF
 //! passes the door's verifier with the held set (submit.zig `requestProblem`), else `bad_transaction`.
 //! A spend is signed only if, in order:
 //!   1. the transaction parses and spends the named pool outpoint;
@@ -16,7 +16,11 @@
 //!      the refusal carries the pool's newest state (continuations are
 //!      always output 0: followed from spender to spender) — unless that
 //!      spender is this very request, signed (a retry after a 503: the
-//!      signed transaction is answered again, from the state);
+//!      signed transaction is answered again, from the state); and (0.51.0)
+//!      every other input of the transaction is unspent in our own view — no
+//!      held transaction the chain state has not rejected spends it — else
+//!      `submit_refused` with the overlay's own refusal of it at intake
+//!      (`InputSpent: input <txid>.<vout> is already spent by <txid>`);
 //!   4. the pool input calls the direct call's method (Swap / AddLiquidity), as
 //!      Rúnar lays a call out (unlock.zig), with our signature's slot empty
 //!      (`OP_0`) and its code push the pool's own code;
@@ -48,24 +52,26 @@
 //!      hold (the taker's nosend funding transaction, docs/notes.md
 //!      2026-10-02 "Swap funding and signing") are read for the submission;
 //!      every other input's and every such parent's scripts are not checked
-//!      here: that is the request's check before the lock (D6,
-//!      `requestProblem`), run before `spend` on every path;
+//!      here: that is the request's check (D6, `requestProblem`), run before
+//!      `spend` on every path;
 //!  10. we can name our current key (`currentKeyId`, 0.13.0): a Swap's
 //!      continuation's key is keyed by the pool outpoint that Swap spent; a
 //!      deploy's, an affirmed pool's (`pool.affirmedPool`), by its Nonce;
 //!      checked against the pool's ValidatorPubKey. A rescinded pool has none.
 //! Then the oracle signs the digest, the signature goes into its slot, and
-//! the signed transaction is returned with what its submission needs
-//! (`Submission`: the topic, the request's ancestry) — not submitted here:
-//! messages.zig `finishSpend` hands the signed BEEF to skein's own
-//! `submit.route` (submit.zig), and main.zig launches the overlay engine's
-//! submission thread on the record it makes.
+//! (0.51.0) the pool input's script is run on the finished transaction (bsvz's
+//! interpreter, as `requestProblem` runs the others'): failing, `bad_transaction`
+//! and nothing recorded. The signed transaction is returned with what its
+//! submission needs (`Submission`: the topic, the request's ancestry) — not
+//! submitted here: messages.zig `finishSpend` hands the signed BEEF to the
+//! overlay's in-VM `intake` in the same step.
 const std = @import("std");
 const w = @import("chain");
 const color = @import("1color");
 const unlock = @import("unlock.zig");
 const view_mod = @import("view.zig");
 const Oracle = @import("oracle.zig").Oracle;
+const ov = @import("skein_overlay");
 
 const bsvz = w.bsvz;
 const beef = w.beef;
@@ -160,15 +166,14 @@ pub const Reason = enum {
     /// The direct call's frame is not a signed-message package for this
     /// validator (MESSAGES.md "Signed messages (#70)"): detail why.
     unauthenticated,
-    /// The answer after the step found no outcome: the signed transaction is
-    /// not held, or it is held and neither pending, admitted nor rejected.
+    /// The answer after the intake found no outcome: the signed transaction is
+    /// not held, or it is held and neither admitted nor rejected.
     submit_failed,
     /// skein's `submit.route` refused the signed BEEF (it does not decode or
-    /// verify: an input neither held nor in the request's BEEF, say).
+    /// verify: an input neither held nor in the request's BEEF, say); or
+    /// (0.51.0) before signing, an input another held transaction spends —
+    /// the overlay's own refusal (`InputSpent: …`).
     submit_refused,
-    /// The answer after the step: the submission's thread came to rest with
-    /// nothing admitted or rejected (it errored): send the same request again.
-    pending,
     /// The answer after the step: the network rejected it (a status
     /// provider's rejection, a competing proof, abandonment); or a
     /// resubmission of a transaction already rejected.
@@ -472,10 +477,9 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     const live_by = try v.liveSpender(a, req.pool);
     if (std.mem.indexOfScalar(u32, previous, @intCast(pi)) == null or live_by != null) {
         if (live_by orelse try v.spender(a, topic, req.pool)) |sp| {
-            // This very request, signed already (held: awaiting the
-            // broadcaster, or admitted): a retry. Answered again, not signed
-            // again; its submission is routed again and the answer comes
-            // from the state (503 while pending, then the transaction).
+            // This very request, signed already (held): a resend. Answered again, not
+            // signed again; the answer comes from the state (0.51.0: admitted in the
+            // step that signed it).
             if (try signedSpend(a, v, sp, sub, pi, method)) |raw| return .{ .ok = .{ .tx = raw, .txid = sp, .submission = .{
                 .topic = topic,
                 .pool = req.pool,
@@ -484,6 +488,13 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
             return .{ .refused = .{ .reason = .pool_spent, .newest = try newest(a, v, topic, req.pool) } };
         }
         return refuse(.unknown_pool, "not admitted in the topic");
+    }
+    // 0.51.0 (David 2026-11-11): every other input unspent in our own view, before signing — the
+    // overlay's own rule at intake (skein-overlay `spentHere`), its refusal's text.
+    for (tx.inputs, 0..) |in, k| {
+        if (k == pi) continue;
+        const spent_op: Outpoint = .{ .txid = in.previous_outpoint.txid.bytes, .vout = in.previous_outpoint.index };
+        if (try v.liveSpender(a, spent_op)) |by| return refuse(.submit_refused, try std.fmt.allocPrint(a, "{s}: input {s}.{d} is already spent by {s}", .{ ov.submit.input_spent, &w.header.toHex(spent_op.txid), spent_op.vout, &w.header.toHex(by) }));
     }
 
     // 4. The call's method, laid out as Rúnar calls it, our slot empty.
@@ -543,6 +554,16 @@ pub fn spend(a: std.mem.Allocator, op: Op, req: SpendRequest, cfg: Config, v: Vi
     inputs[pi].unlocking_script = bsvz.script.Script.init(try unlock.withArg(a, call, call.layout.validator_sig, checksig));
     var signed = tx;
     signed.inputs = inputs;
+    // 0.51.0: the pool input's script run on the finished transaction (the others' are D6's).
+    const pool_tx = (try v.tx(a, req.pool.txid)) orelse return refuse(.unknown_pool, null);
+    const pool_ok = bsvz.script.interpreter.verifyPrevout(.{
+        .allocator = a,
+        .tx = &signed,
+        .input_index = pi,
+        .previous_output = pool_tx.outputs[req.pool.vout],
+        .unlocking_script = signed.inputs[pi].unlocking_script,
+    }) catch false;
+    if (!pool_ok) return refuse(.bad_transaction, "ScriptFailed: the pool input's script does not verify on the signed transaction");
     const raw = try signed.serialize(a);
     return .{ .ok = .{ .tx = raw, .txid = beef.txidOf(raw), .submission = .{
         .topic = topic,

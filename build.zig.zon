@@ -1,14 +1,14 @@
 .{
     .name = .skein_amm,
-    .version = "0.50.1",
+    .version = "0.51.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4bfa15430693c422,
     .dependencies = .{
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.27.1.tar.gz",
-            .hash = "skein_overlay-0.27.1-IMuNgU3HJAC1MZpet1NmIxf7vV9sxBdDWUnKoZ0WndIF",
+            .url = "https://github.com/shruggr/skein-overlay/archive/fef3dd4eef4ee4d5b6622d0b1b0ce42a1b197744.tar.gz",
+            .hash = "skein_overlay-0.28.0-IMuNgYjnJABHy5sUzHf2IjNBakpgMJVvGcLM7zOloVwW",
         },
         // The 1Color components: the `1color` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
@@ -18,12 +18,12 @@
         // signer app by a kernel-checked name) and the named call (`sk.callAs`). The overlay's own SDK
         // (chain, cbor, …) comes through skein_overlay.
         .skein_sdk_signer = .{
-            .url = "https://github.com/shruggr/skein-sdk/archive/refs/tags/v0.21.3.tar.gz",
-            .hash = "skein_sdk-0.21.3-YroFBBBRHQC3zT-I3_JNl2D6p0eC7iFo_3qfKOzm4EC_",
+            .url = "https://github.com/shruggr/skein-sdk/archive/1a6b875f871143be8b788a9a6c05c8c1fba42edb.tar.gz",
+            .hash = "skein_sdk-0.22.0-YroFBOtRHQDsUCK_sT7ueDaht1ID7aFRQoSzp-Fb7edh",
         },
         .skein_1color = .{
-            .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.19.1.tar.gz",
-            .hash = "skein_1color-0.19.1-_DlbUqV8IgBVNZ9lcR3WhzUeiqqzCae7LJIjV3VGf6Hv",
+            .url = "https://github.com/shruggr/skein-1color/archive/227953677421ada5969e0ef6c2b1a27cb48fecf1.tar.gz",
+            .hash = "skein_1color-0.20.0-_DlbUueYIgAz7oIwne-p4zE7vN5ExMQRMZGLVH8I7MM9",
         },
     },
     .paths = .{
