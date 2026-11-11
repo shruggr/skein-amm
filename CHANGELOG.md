@@ -4,6 +4,28 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.52.0 (branch `trade-time-0.52.0`; not tagged)
+
+On the same pins as 0.51.0 (skein-overlay v0.28.0, skein-1color v0.20.0, skein-sdk v0.22.0; the token
+image on skein-chain v0.12.0).
+
+- amm-lookup: a hop's `at` is decided ONCE, when the hop is recorded (David 2026-11-11,
+  plans/queued-items-2026-11-11.md §14): its transaction already mined at that moment (a history load,
+  a catch-up sync) → its block's time in ms (`Header.time` × 1000); unmined (live trading) → the step's
+  time, as before. A proof arriving later changes nothing. The block time is read from the chain app's
+  state as the step sees it (the head `chain/state`, read only: `status` proven, the linkage's block
+  `proofRecord`, that block's 80-byte header from the store — `stampOf` / `blockTimeOf` in
+  src/index.zig, the head opened in src/main.zig `chainByHead`).
+- Every hop of an admitted transaction follows it: deploy, Swap, rescind, and the Close (stamped by its
+  spender). A Swap's commission flag `amm/commission/<op>` carries its Swap's `at`. Revert rows keep the
+  step's time. A re-admission after a revert is a new recording: mined then, the block's time.
+- Several hops in one block share an `at`; their order is the event place (admission order) and the
+  pool's `swaps` counter, as before.
+- 0.52.0 in etc/app.json, build.zig.zon, the amm-lookup metadata, @dcasegr/amm-engine and amm-client;
+  bin/amm-lookup.wasm rebuilt.
+- Release notes: existing trades keep the `at` they were recorded with; only a fresh home or a reload
+  restamps history.
+
 ## 0.51.1 (branch `trim-submits-0.51.1`; not tagged)
 
 A client-only release: @dcasegr/amm-engine and @dcasegr/amm-client. The token app, its programs and

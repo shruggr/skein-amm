@@ -6,7 +6,8 @@ const std = @import("std");
 const idx = @import("index.zig");
 const lookup = @import("lookup");
 const vm = @import("overlay_sk");
-const cbor = @import("chain").cbor;
+const chain = @import("chain");
+const cbor = chain.cbor;
 
 const ext = struct {
     /// The kernel's name-carrying in-VM call (shruggr/skein `call-permissions`, the contract's §1).
@@ -25,7 +26,7 @@ fn fileByCall(a: std.mem.Allocator, basket: []const u8, arg: cbor.Value) anyerro
     _ = try vm.result(a, ext.callAs, .{ prog.ptr, @as(u32, @intCast(prog.len)), func.ptr, @as(u32, @intCast(func.len)), basket.ptr, @as(u32, @intCast(basket.len)), bytes.ptr, @as(u32, @intCast(bytes.len)) });
 }
 
-pub const version = "0.51.0";
+pub const version = "0.52.0";
 
 pub fn metadata(_: std.mem.Allocator, _: []const u8) anyerror!lookup.Metadata {
     return .{
@@ -67,7 +68,14 @@ pub fn main() u8 {
     return lookup.main(idx.spec);
 }
 
-/// The step's context for the hooks: the in-VM call input's `now` (a row's `at`; skein docs/VM.md,
+/// `idx.open_chain` in the VM: the chain app's state as this step sees it now (the head
+/// `chain/state`, read only; skein-sdk `open`: the record names its own network). No head: none.
+fn chainByHead(a: std.mem.Allocator) anyerror!?lookup.Chain {
+    const h = (try vm.head(a, lookup.chain_head)) orelse return null;
+    return try chain.open(a, vm.store(), h, .main);
+}
+
+/// The step's context for the hooks: the in-VM call input's `now` (an unmined hop's `at`, a revert row's; skein docs/VM.md,
 /// "call"; replay-exact), this instance's identity (`self.identity`: which fees are ours) and the
 /// wallet's `file` by the named call. The events are the service's own (skein-overlay 0.27.0:
 /// `svc.emit`, `svc.events`, `svc.app`). The input is read again by `lookup.main`.
@@ -76,6 +84,7 @@ fn stepTime() void {
     const in = vm.input(a) catch return;
     idx.now_ms = in.getUint("now") orelse 0;
     idx.filer = fileByCall;
+    idx.open_chain = chainByHead;
     if (in.get("self")) |me| if (me.getBytes("identity")) |k| if (k.len == 33) {
         idx.self_identity = k[0..33].*;
     };

@@ -33,7 +33,9 @@
 //!
 //! THE HOP ROW (text and numbers only): `{type: deploy|swap|close|rescind, txid, tokenId, poolId,
 //! outpoint?, bsvReserve?, tokenReserve?, lpPubKey, liquidityFeeBps, validationFeeBps,
-//! commissionBps, validatorIdentityKey, at, swaps, keyId?}` — `at` the admitting step's time in ms,
+//! commissionBps, validatorIdentityKey, at, swaps, keyId?}` — `at` in ms, decided once when the hop
+//! is recorded (0.52.0, `stampOf`): its transaction's block time when it is mined then, else the
+//! admitting step's time (a revert row's `at`: the step's time),
 //! `swaps` the pool's Swap count (0 the deploy; a rescind's the next count), `keyId` the key id the
 //! hop's ValidatorPubKey is derived under (a deploy's its nonce in hex, a Swap continuation's the
 //! spent outpoint `<txid>_<vout>`; none for a close or a rescind); a Swap's adds `side, amountIn,
@@ -78,8 +80,39 @@ pub const maps = [_][]const u8{"counters"};
 
 // ---------------------------------------------------------------- the step's context
 
-/// The step's time (ms): the in-VM call input's `now`, set by main.zig. A row's `at`.
+/// The step's time (ms): the in-VM call input's `now`, set by main.zig. A revert row's `at`, and a
+/// hop's when its transaction is not mined at the moment it is recorded (`stampOf`).
 pub var now_ms: u64 = 0;
+
+/// The chain app's state as this step sees it (the head `chain/state`, read only), opened on
+/// demand: main.zig sets it; the tests set their own. Null: no chain state (no block times).
+pub const ChainOpener = *const fn (a: Allocator) anyerror!?Chain;
+pub var open_chain: ChainOpener = noChain;
+
+fn noChain(_: Allocator) anyerror!?Chain {
+    return null;
+}
+
+/// The time (ms) of the block `txid` is mined in, when the chain state has it mined (proven on our
+/// best chain) right now: its linkage's block (`proofRecord`), that block's header (the 80 bytes
+/// held under its CID, as `State.proofFor` reads them), `Header.time` (seconds) × 1000. Null when
+/// it is not mined.
+pub fn blockTimeOf(ch: *Chain, txid: [32]u8) !?u64 {
+    if ((try ch.status(txid)) != .proven) return null;
+    const r = (try ch.proofRecord(txid)) orelse return null;
+    const raw = try ch.store.get(ch.arena, r.block);
+    if (raw.len != w.header.size) return error.BadRecord;
+    return @as(u64, (try w.header.Header.parse(raw[0..w.header.size])).time) * 1000;
+}
+
+/// THE STAMP of a hop of the admitted transaction `txid` (David 2026-11-11, one decision at the
+/// moment the hop is recorded): mined at that moment (a history load, a catch-up sync) → its
+/// block's time; unmined (live trading) → the step's time. Never changed afterwards: a proof that
+/// arrives later steps nothing here.
+pub fn stampOf(a: Allocator, txid: [32]u8) !u64 {
+    var ch = (try open_chain(a)) orelse return now_ms;
+    return (try blockTimeOf(&ch, txid)) orelse now_ms;
+}
 
 /// The app the engine runs in (`svc.app`, set at each hook's and answer's entry): every event
 /// name's first segment.
@@ -437,10 +470,11 @@ const Trade = struct {
     commission_at: ?usize,
 };
 
-fn hopRow(a: Allocator, kind: []const u8, txid: [32]u8, token: []const u8, pf: PoolFields, with_output: bool, trade: ?Trade) !Value {
+/// A hop row of `txid`, stamped `at` (`stampOf`).
+fn hopRow(a: Allocator, kind: []const u8, txid: [32]u8, token: []const u8, pf: PoolFields, with_output: bool, trade: ?Trade, at: u64) !Value {
     var es: std.ArrayList(Entry) = .empty;
     try rowHead(a, &es, kind, txid, token);
-    try poolPart(a, &es, pf, with_output, now_ms);
+    try poolPart(a, &es, pf, with_output, at);
     if (trade) |t| {
         try es.appendSlice(a, &.{
             .{ .key = "side", .value = .{ .text = if (t.bsv_in) "buy" else "sell" } },
@@ -454,7 +488,7 @@ fn hopRow(a: Allocator, kind: []const u8, txid: [32]u8, token: []const u8, pf: P
         });
         var fv: std.ArrayList(Entry) = .empty;
         inline for (.{ .{ "lp", t.lp_at }, .{ "validator", t.validator_at }, .{ "commission", t.commission_at } }) |x|
-            if (x[1]) |at| try fv.append(a, .{ .key = x[0], .value = .{ .uint = at } });
+            if (x[1]) |vo| try fv.append(a, .{ .key = x[0], .value = .{ .uint = vo } });
         try es.append(a, .{ .key = "feeVouts", .value = .{ .map = fv.items } });
     }
     return .{ .map = es.items };
@@ -735,7 +769,8 @@ fn recognizeFees(a: Allocator, svc: *Service, tp: []const u8, tx: lookup.Tx, row
                 .{ .key = "poolId", .value = row.get("poolId").? },
                 .{ .key = "asset", .value = .{ .text = if (t.bsv_in) "bsv" else "token" } },
                 .{ .key = "amount", .value = .{ .uint = t.commission } },
-                .{ .key = "at", .value = .{ .uint = now_ms } },
+                // The Swap's own stamp (its hop row's `at`).
+                .{ .key = "at", .value = row.get("at") orelse return error.BadEvent },
             }) });
         }
     }
@@ -780,12 +815,16 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
     if (try judge(a, id, tx, outputs_to_admit) != null) return;
     const tp = try topicPrefix(a, topic);
     const token = try tokenTextOf(a, topic);
+    // The transaction's stamp (`stampOf`), read once, when it first has a hop to record.
+    var stamp: ?u64 = null;
     for (outputs_to_admit) |vout| {
         if (vout >= tx.tx.outputs.len) continue;
         const o = tx.tx.outputs[vout];
         var pf = poolAt(tx.txid, vout, o.locking_script.bytes, @intCast(o.satoshis)) orelse continue;
         if ((try outputRow(a, svc, tx.txid, vout)) != null) continue; // recognized already
         const here: ParsedOutpoint = .{ .txid = tx.txid, .vout = vout };
+        const at = stamp orelse try stampOf(a, tx.txid);
+        stamp = at;
         // A Swap's continuation, or a Rescind, at output 0: of a listed pool this tx spends.
         if (vout == 0) {
             const took = for (tx.tx.inputs) |in| {
@@ -799,13 +838,13 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
                 pf.pool_id = wf.pool_id;
                 pf.swaps = wf.swaps + 1;
                 switch (how) {
-                    .rescind => try emitHop(a, svc, try hopRow(a, "rescind", tx.txid, token, pf, true, null), here),
+                    .rescind => try emitHop(a, svc, try hopRow(a, "rescind", tx.txid, token, pf, true, null, at), here),
                     .swap => {
                         var buf: [64 + 1 + 10]u8 = undefined;
                         pf.key_id = try a.dupe(u8, pool.keyId(&buf, op.txid, op.vout));
                         const input = inputSpending(tx, op.txid, op.vout).?;
                         const trade = try tradeOf(a, tx, input, pf, was);
-                        const row = try hopRow(a, "swap", tx.txid, token, pf, true, trade);
+                        const row = try hopRow(a, "swap", tx.txid, token, pf, true, trade, at);
                         try emitHop(a, svc, row, here);
                         if (trade) |t| {
                             try countTrade(a, svc, tp, row, true);
@@ -821,7 +860,7 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
         const p = pool.poolOfScript(o.locking_script.bytes).?;
         var nb: [64]u8 = undefined;
         pf.key_id = try a.dupe(u8, pool.nonceKeyId(&nb, p.nonce));
-        try emitHop(a, svc, try hopRow(a, "deploy", tx.txid, token, pf, true, null), here);
+        try emitHop(a, svc, try hopRow(a, "deploy", tx.txid, token, pf, true, null, at), here);
     }
 }
 
@@ -842,7 +881,8 @@ pub fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Ou
     if (try outputRow(a, svc, spender.txid, 0)) |next| if (eql(u8, next.getText("poolId") orelse "", was.getText("poolId") orelse "-")) return;
     var pf = try fieldsOfRow(was);
     pf.key_id = null;
-    try emitHop(a, svc, try hopRow(a, "close", spender.txid, try tokenTextOf(a, topic), pf, false, null), null);
+    // The Close is a hop of the spender (admitted in this step): stamped by the same rule.
+    try emitHop(a, svc, try hopRow(a, "close", spender.txid, try tokenTextOf(a, topic), pf, false, null, try stampOf(a, spender.txid)), null);
 }
 
 /// Whether the topic's own fact says txid:vout is spent already by a transaction other than

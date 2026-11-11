@@ -269,6 +269,63 @@ const Filed = struct {
     }
 };
 
+// ---------------------------------------------------------------- the chain app's state, stood in for
+
+/// The chain state the hooks read (`idx.open_chain`): the head `chain/state` as the step sees it,
+/// here the record `root` in the Env's store (null: an empty state, nothing mined).
+const TestChain = struct {
+    var store: w.store.Store = undefined;
+    var root: ?[]const u8 = null;
+    fn open(a: Allocator) anyerror!?lookup.Chain {
+        return try w.open(a, store, root, .regtest);
+    }
+};
+
+fn merkleParent(l: [32]u8, r: [32]u8) [32]u8 {
+    return w.store.dblSha256(&(l ++ r));
+}
+
+fn mineHeader(prev: [32]u8, root: [32]u8, time: u32) [80]u8 {
+    var h = w.header.Header{ .version = 1, .prev_hash = prev, .merkle_root = root, .time = time, .bits = 0x207fffff, .nonce = 0 };
+    while (true) : (h.nonce += 1) {
+        const raw = h.serialize();
+        if (w.header.powOk(&raw)) return raw;
+    }
+}
+
+const PE = std.meta.Elem(std.meta.Elem(@FieldType(w.merkle.MerklePath, "path")));
+
+/// The merkle path of a four-transaction block (t0..t3) at `height` for the leaves `which`.
+fn path4(a: Allocator, height: u32, t: [4][32]u8, which: []const usize) !w.merkle.MerklePath {
+    var merged: ?w.merkle.MerklePath = null;
+    for (which) |i| {
+        const sib = i ^ 1;
+        const l0 = try a.alloc(PE, 2);
+        const me: PE = .{ .offset = i, .hash = .{ .bytes = t[i] }, .txid = true };
+        const other: PE = .{ .offset = sib, .hash = .{ .bytes = t[sib] } };
+        l0[0] = if (i < sib) me else other;
+        l0[1] = if (i < sib) other else me;
+        const up = if (i < 2) merkleParent(t[2], t[3]) else merkleParent(t[0], t[1]);
+        const l1 = try a.dupe(PE, &.{.{ .offset = (i >> 1) ^ 1, .hash = .{ .bytes = up } }});
+        const levels = try a.dupe([]PE, &.{ l0, l1 });
+        const p: w.merkle.MerklePath = .{ .block_height = height, .path = levels };
+        if (merged) |*m| try m.combine(&p, a) else merged = p;
+    }
+    return w.merkle.MerklePath.parse(a, try merged.?.bytes(a));
+}
+
+/// Block 1 (on the regtest genesis, header time `time` in seconds) holding the four `leaves`, and
+/// the proofs of the leaves `which` saved — the chain app's state moves (`TestChain.root`).
+fn mineBlock(a: Allocator, leaves: [4][32]u8, which: []const usize, time: u32) !void {
+    var ch = (try TestChain.open(a)).?;
+    const root = merkleParent(merkleParent(leaves[0], leaves[1]), merkleParent(leaves[2], leaves[3]));
+    const blk = mineHeader(w.header.hash(&w.chain.Network.regtest.genesis()), root, time);
+    _ = try ch.addHeaders(&.{&blk});
+    const p = try path4(a, 1, leaves, which);
+    try ch.putProof(leaves[which[0]], p);
+    TestChain.root = try ch.save();
+}
+
 // ---------------------------------------------------------------- the environment
 
 const Env = struct {
@@ -295,6 +352,9 @@ const Env = struct {
         idx.self_identity = null;
         idx.filer = Filed.file;
         idx.now_ms = 1000;
+        TestChain.store = e.ms.store();
+        TestChain.root = null;
+        idx.open_chain = TestChain.open;
         return e;
     }
     fn deinit(self: *Env) void {
@@ -906,4 +966,98 @@ test "audit (0.50.0): the answers read spent-ness from the chain — a pool outp
     try chainOutput(a, pd, 0, "rolledBack", other);
     try testing.expectEqual(@as(usize, 1), (try e.live(a, &svc)).len);
     try testing.expectEqualStrings("live", (try idx.answer(a, &svc, &ch, ids)).freeform.array[0].getText("status").?);
+}
+
+// ---------------------------------------------------------------- the trade time (0.52.0)
+
+const block_time: u32 = 1_700_000_000;
+const block_ms: u64 = @as(u64, block_time) * 1000;
+
+test "trade time (0.52.0): a Swap admitted ALREADY MINED is stamped with its block's time (header time x 1000), its commission flag with it; the deploy, admitted unmined, keeps the step's time" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    const pid = try poolIdOfEnv(a, e);
+    const sw = e.f.txid("swap_bsv_in");
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try mineBlock(a, .{ sw, .{7} ** 32, .{8} ** 32, .{9} ** 32 }, &.{0}, block_time);
+    var ch = (try TestChain.open(a)).?;
+    try testing.expectEqual(@as(?u64, block_ms), try idx.blockTimeOf(&ch, sw));
+    try testing.expectEqual(@as(?u64, null), try idx.blockTimeOf(&ch, e.f.txid("pool_deploy")));
+    idx.now_ms = 9_000_000_000_000; // the load's step time: not the trade's
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    const hops = try idx.standing(a, &svc, pid);
+    try testing.expectEqual(@as(usize, 2), hops.len);
+    try testing.expectEqual(@as(u64, 1000), hops[0].getUint("at").?);
+    try testing.expectEqual(block_ms, hops[1].getUint("at").?);
+    try testing.expectEqual(block_ms, (try latestRow(a, try idx.outputName(a, sw, 0))).?.getUint("at").?);
+    try testing.expectEqual(block_ms, (try latestRow(a, "amm/hop")).?.getUint("at").?);
+    try testing.expectEqual(block_ms, (try e.live(a, &svc))[0].get("lifetime").?.getUint("lastTradeAt").?);
+}
+
+test "trade time (0.52.0): a Swap admitted UNMINED keeps the step's time after its proof is recorded (a re-admission emits nothing); the next Swap, admitted unmined later, its own step's time" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    const pid = try poolIdOfEnv(a, e);
+    const sw = e.f.txid("swap_bsv_in");
+    try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
+    try testing.expectEqual(@as(u64, 1000), (try latestRow(a, try idx.outputName(a, sw, 0))).?.getUint("at").?);
+    // Its proof arrives: the chain state has it mined now.
+    idx.now_ms = 5000;
+    try mineBlock(a, .{ e.f.txid("pool_deploy"), sw, .{8} ** 32, .{9} ** 32 }, &.{ 0, 1 }, block_time);
+    var ch = (try TestChain.open(a)).?;
+    try testing.expectEqual(@as(?u64, block_ms), try idx.blockTimeOf(&ch, sw));
+    const before = Index.names.items.len;
+    try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{}); // the hook again
+    try testing.expectEqual(before, Index.names.items.len);
+    try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ e.op("swap_bsv_in", 0), e.op("swap_bsv_in", 1) });
+    const hops = try idx.standing(a, &svc, pid);
+    try testing.expectEqual(@as(usize, 3), hops.len);
+    try testing.expectEqual(@as(u64, 1000), hops[0].getUint("at").?);
+    try testing.expectEqual(@as(u64, 1000), hops[1].getUint("at").?);
+    try testing.expectEqual(@as(u64, 5000), hops[2].getUint("at").?);
+}
+
+test "trade time (0.52.0): a deploy, two Swaps and the Close mined in ONE block, admitted mined — the same `at`, the block's; their order the admission order (the event place) and the swaps counter; rejected and re-admitted while mined, the Swap keeps the block's time" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const e = try Env.init(a);
+    defer e.deinit();
+    var svc = try e.svc(a);
+    const pid = try poolIdOfEnv(a, e);
+    const names_ = [_][]const u8{ "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close" };
+    var leaves: [4][32]u8 = undefined;
+    for (names_, &leaves) |n, *l| l.* = e.f.txid(n);
+    try mineBlock(a, leaves, &.{ 0, 1, 2, 3 }, block_time);
+    idx.now_ms = 9_000_000_000_000;
+    try e.threeHops(a, &svc);
+    try e.admit(a, &svc, "close", null, &.{1}, &.{e.op("swap_tokens_in", 0)});
+    for ([_][]const u8{ try idx.poolName(a, pid), "amm/hop" }) |nm| {
+        const rows = try idx.recordsOf(a, &svc, nm);
+        try testing.expectEqual(@as(usize, 4), rows.len);
+        for (rows, [_][]const u8{ "deploy", "swap", "swap", "close" }, [_]u64{ 0, 1, 2, 2 }, leaves) |r, k, n, t| {
+            try testing.expectEqualStrings(k, r.getText("type").?);
+            try testing.expectEqual(n, r.getUint("swaps").?);
+            try testing.expectEqualStrings(&w.header.toHex(t), r.getText("txid").?);
+            try testing.expectEqual(block_ms, r.getUint("at").?);
+        }
+    }
+    // The sell rejected (with the close that spent it) and admitted again while mined: block time.
+    try e.reject(a, &svc, "close", null);
+    try e.reject(a, &svc, "swap_tokens_in", null);
+    idx.now_ms = 9_000_000_100_000;
+    try e.admit(a, &svc, "swap_tokens_in", null, &.{ 0, 2, 3, 4 }, &.{ e.op("swap_bsv_in", 0), e.op("swap_bsv_in", 1) });
+    const hops = try idx.standing(a, &svc, pid);
+    try testing.expectEqual(@as(usize, 3), hops.len);
+    for (hops) |h| try testing.expectEqual(block_ms, h.getUint("at").?);
+    try testing.expectEqual(@as(u64, 2), hops[2].getUint("swaps").?);
 }
