@@ -4,10 +4,10 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
-## 0.50.1 (branch `skip-held-0.50.1`; not tagged)
+## 0.50.1 (2026-11-11)
 
 On skein-overlay v0.27.1, skein-1color v0.19.1, skein-sdk v0.21.3 (the signer client); the token image
-on skein-chain v0.11.1. Pinned by branch commit until those are tagged.
+on skein-chain v0.11.1, each by tag.
 
 - amm-validator: the request's scripts and signatures are checked once, before the lock (D6,
   `requestProblem`). Step 8's second, signature-only check (`inputsSigned`, `completeParents`) goes;
@@ -15,6 +15,7 @@ on skein-chain v0.11.1. Pinned by branch commit until those are tagged.
   bad or missing signature is `bad_transaction`, `ScriptFailed: …`), and `unlock.checkInput`.
 - skein-sdk 0.21.3: a transaction this instance holds, carried raw in a request's BEEF, is not
   script-checked again.
+- 0.50.1 everywhere (etc/app.json, build.zig.zon, amm-lookup metadata, @dcasegr/amm-engine, amm-client).
 
 ## 0.50.0 (branch `release-0.50`; not tagged)
 
