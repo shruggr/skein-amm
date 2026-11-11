@@ -7,8 +7,8 @@
         // The overlay engine (its bin/overlay.wasm is copied into bin/) and the topic and lookup
         // contracts; the SDK (chain, wallet, app, sk, cbor, dagjson, message) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/fef3dd4eef4ee4d5b6622d0b1b0ce42a1b197744.tar.gz",
-            .hash = "skein_overlay-0.28.0-IMuNgYjnJABHy5sUzHf2IjNBakpgMJVvGcLM7zOloVwW",
+            .url = "https://github.com/shruggr/skein-overlay/archive/e8e439b1df41ed4822c8e30912b157fb4a1f9889.tar.gz",
+            .hash = "skein_overlay-0.28.0-IMuNgR7vJABjsqEMooP7EiaPI5d3PbxNcUkM45vnpgHe",
         },
         // The 1Color components: the `1color` module (the BRC-162 / BRC-161 parsers, the BSV-21
         // rules, topic names) and the built bin/color-topic.wasm, bin/color-lookup.wasm, copied
@@ -22,8 +22,8 @@
             .hash = "skein_sdk-0.22.0-YroFBOtRHQDsUCK_sT7ueDaht1ID7aFRQoSzp-Fb7edh",
         },
         .skein_1color = .{
-            .url = "https://github.com/shruggr/skein-1color/archive/227953677421ada5969e0ef6c2b1a27cb48fecf1.tar.gz",
-            .hash = "skein_1color-0.20.0-_DlbUueYIgAz7oIwne-p4zE7vN5ExMQRMZGLVH8I7MM9",
+            .url = "https://github.com/shruggr/skein-1color/archive/b7f079423dabf84094aa26b91f7ff7c33e93f17c.tar.gz",
+            .hash = "skein_1color-0.20.0-_DlbUnKcIgDNeRMOKQeaCyro9-eMkBkIHZBBY3-s94Qe",
         },
     },
     .paths = .{

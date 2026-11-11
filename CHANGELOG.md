@@ -6,7 +6,7 @@ names of their time, and each release commit names what changed.
 
 ## 0.51.0 (branch `one-step-0.51`; not tagged)
 
-On skein-overlay 0.28.0 (fef3dd4, branch `one-step-0.28`), skein-1color 0.20.0 (2279536, branch `one-step-0.20`), skein-sdk 0.22.0 (1a6b875, the
+On skein-overlay 0.28.0 (e8e439b, branch `one-step-0.28`), skein-1color 0.20.0 (b7f0794, branch `one-step-0.20`), skein-sdk 0.22.0 (1a6b875, the
 signer client); the token image on skein-chain 0.12.0 (2f276b6), each by commit until tagged.
 
 - amm-validator: a swap is ONE step (David 2026-11-11, plans/one-step-swap-settled-2026-11-11.md rules 5-7):
@@ -19,7 +19,12 @@ signer client); the token image on skein-chain 0.12.0 (2f276b6), each by commit 
 - Gone: the pool locks (src/lock.zig, the head `amm/locks` — a record an earlier version wrote is not read),
   `Reason.pending`, `{wait: true}`, the handler called again (`reply` / `resolved`), the submission by message
   (`submit.box`, `submit.body`) from the signing path, `Next`.
+- The intake call names this app (`{app, beef, topics}`): the engine resolves its configuration by it (the
+  validator runs in the front door's request thread, which names no app).
 - 0.51.0 everywhere (etc/app.json, build.zig.zon, amm-lookup metadata, @dcasegr/amm-engine, amm-client).
+- Release notes: a FRESH HOME is required (skein-overlay 0.28.0's: a 0.27.x engine's submission threads
+  resting on `chain/tx/<txid>` end in error on their next wake, and transactions admitted before have no
+  `chainTx` subscription); an old `amm/locks` record is left unread.
 
 ## 0.50.1 (2026-11-11)
 

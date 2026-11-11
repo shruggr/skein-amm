@@ -147,11 +147,16 @@ fn answerBody(a: std.mem.Allocator, r: validator.Reply) !void {
 
 var overlay_in: Value = .null;
 
-/// The app's overlay engine (its role `overlay` in the app record's `programs`), its fn `intake`.
+/// The app's overlay engine (its role `overlay` in the app record's `programs`), its fn `intake`,
+/// with `app` this app's name: the engine resolves its configuration by it (skein-overlay 0.28.0
+/// routes.zig `intakeCall` — this step's thread is the front door's request thread, which names no
+/// app); its writes are its own scope's.
 fn intakeCall(_: *anyopaque, a: std.mem.Allocator, args: Value) anyerror!Value {
     const programs = overlay_in.get("programs") orelse return error.NoOverlayEngine;
     const engine = programs.getCid(ov.config.engine_role) orelse return error.NoOverlayEngine;
-    return vm.call(a, engine, "intake", args);
+    if (args != .map) return error.BadInput;
+    const named: Value = .{ .map = try std.mem.concat(a, cbor.Entry, &.{ &.{.{ .key = "app", .value = .{ .text = ov.calls.appOf(overlay_in) } }}, args.map }) };
+    return vm.call(a, engine, "intake", named);
 }
 
 /// The app's overlay state again (the intake's head moves read back in this step).
