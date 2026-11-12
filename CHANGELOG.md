@@ -14,6 +14,8 @@ programs and etc/app.json stay at 0.52.1; the engine's code is unchanged.
   `{from, to, sats, tokens: [{tokenId, amount}], swaps, pools, byPool: [{poolId, tokenId, sats, tokens,
   swaps}]}`, a buy's fee in sats, a sell's in the pool's token, amounts as bigints. The `LpFees` type is
   exported. (The same change as 0.55.1.)
+- web/ui and the client on `@bopen-io/color-permission-module` 0.2.3 and `@1sat/actions` 0.1.6 (as the 0.55
+  line since 0.55.0).
 
 ## 0.54.1 (branch `collect-report-0.54.1`; not tagged)
 
