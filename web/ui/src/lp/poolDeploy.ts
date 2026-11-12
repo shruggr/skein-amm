@@ -6,11 +6,15 @@
  * adds token change; every key and signature comes from the wallet.
  *
  *   1. The LP key: security level 1, protocol `[1, "openex fees"]`, counterparty
- *      self, keyID 16 random bytes base64 (`newLpKey`). Kept in the position
- *      row and in the pool output's description: `AMM pool: <SYM> / BSV ·
- *      openex fees <the keyID's bytes, hex>`. A keyID with a space is an older
- *      BRC-29 key (` · amm-lp <suffix hex>`). The deploy history gives either
- *      back. Nothing is kept in the browser.
+ *      self, keyID 16 random bytes base64 (`newLpKey`); the key that closes the
+ *      pool. Kept in the position row and in the pool output's description:
+ *      `AMM pool: <SYM> / BSV · openex fees <the keyID's bytes, hex>`. A keyID
+ *      with a space is an older BRC-29 key (` · amm-lp <suffix hex>`). The
+ *      deploy history gives either back. Nothing is kept in the browser.
+ *      0.55.0: the pool's two LP fee addresses are derived from the same keyID
+ *      (`lpFeeAddresses`): LpSatsPkh a BRC-29 key, LpTokenPkh a 1Color module
+ *      receiving key, the sender the LP's own identity key; nothing more is
+ *      recorded.
  *   2. `amm.pool.terms` (the validator and its fees), then `amm.pool.affirm
  *      {pool, satoshis}`: the proposed pool output, its ValidatorPubKey,
  *      Nonce and Affirmation still to come (33 zero bytes, 32 zero bytes,
@@ -42,8 +46,8 @@ import { PoolTemplate, RESCINDED_KEY, decodeOneColor, oneColorValuePrefix, type 
 import { deriveFirstValidatorPubKey } from "../lib/keys.js";
 import { priceOf } from "../market/view.js";
 import { callApp, dagBytes, readBytes, type AuthFetchLike } from "../market/relay.js";
-import { BRC29_PROTOCOL, randomBase64 } from "../wallet/brc29.js";
-import { POOLS_BASKET, runTokenAction, transferPlanLabels, type HeldOutput } from "../wallet/color.js";
+import { BRC29_PROTOCOL, brc29PublicKey, identityKeyOf, randomBase64 } from "../wallet/brc29.js";
+import { POOLS_BASKET, newReceivingKey, runTokenAction, transferPlanLabels, type HeldOutput } from "../wallet/color.js";
 import { POOL_OP, POOL_TAG, isPoolRow } from "./poolRows.js";
 import { parseOutpoint, parseTokenId, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId.js";
 import { submitToOverlay, steakText } from "./close.js";
@@ -115,6 +119,38 @@ export function newLpDerivation(): { derivationPrefix: string; derivationSuffix:
   return { derivationPrefix: LP_DERIVATION_PREFIX, derivationSuffix: randomBase64(16) };
 }
 
+/**
+ * The derivation of a pool's two LP fee addresses from its keyID (0.55.0, agent-env
+ * plans/lp-fee-addresses-settled-2026-11-12.md): the BRC-29 payment's and the 1Color receipt's
+ * derivationPrefix and derivationSuffix, the same pair for both. The ONE place the mapping lives
+ * (deploy, rebalance and the walk use it): the keyID's 16 bytes split in half (David 2026-11-12:
+ * "split it in half … All that matters is that it's deterministic"), the prefix the first 8 bytes,
+ * the suffix the last 8, each base64. A keyID that is not 16 bytes of base64 throws.
+ */
+export function lpFeeDerivation(keyID: string): { derivationPrefix: string; derivationSuffix: string } {
+  let bytes: number[] = [];
+  try {
+    bytes = /^[A-Za-z0-9+/]+={0,2}$/.test(keyID) ? Utils.toArray(keyID, "base64") : [];
+  } catch {
+    bytes = [];
+  }
+  if (bytes.length !== 16 || Utils.toBase64(bytes) !== keyID) throw new PoolDeployError(`the pool's keyID is not 16 bytes of base64, so its LP fee addresses cannot be derived: ${keyID}`);
+  return { derivationPrefix: Utils.toBase64(bytes.slice(0, 8)), derivationSuffix: Utils.toBase64(bytes.slice(8)) };
+}
+
+/**
+ * A pool's LP fee addresses (0.55.0), from its LP keyID, the sender the LP's own identity key
+ * `me`: LpSatsPkh, hash160 of the BRC-29 key (`brc29PublicKey`, taken in as a wallet payment);
+ * LpTokenPkh, hash160 of the module receiving key of `assetId` (`newReceivingKey`, taken in as a
+ * `p color` receipt).
+ */
+export async function lpFeeAddresses(wallet: WalletInterface, keyID: string, assetId: string, me: string): Promise<{ lpSatsPkh: string; lpTokenPkh: string }> {
+  const derivation = lpFeeDerivation(keyID);
+  const sats = await brc29PublicKey(wallet, derivation);
+  const tokens = await newReceivingKey(wallet, assetId, me, derivation);
+  return { lpSatsPkh: toHex(PublicKey.fromString(sats).toHash() as number[]), lpTokenPkh: tokens.pkh };
+}
+
 /** A basket row as the wallet lists it. */
 export interface BasketRow {
   outpoint: string;
@@ -171,6 +207,9 @@ export interface PoolDeployForm {
   lpPubKey: string;
   /** The LP key's keyID (BRC-29, `newLpDerivation`). */
   lpKeyId: string;
+  /** 0.55.0: the pool's LP fee addresses, 20 bytes hex each (`lpFeeAddresses`). */
+  lpSatsPkh: string;
+  lpTokenPkh: string;
   validator: ValidatorChoice;
   dec?: number;
 }
@@ -220,6 +259,8 @@ export function planPoolDeploy(f: PoolDeployForm): PoolDeployPlan {
     validatorPubKey: RESCINDED_KEY, // to come: the validator's
     validatorIdentity: PublicKey.fromString(f.validator.identityKey).toString(),
     nonce: "00".repeat(32),
+    lpSatsPkh: f.lpSatsPkh,
+    lpTokenPkh: f.lpTokenPkh,
     affirmation: "",
   };
   return {
@@ -378,8 +419,9 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
   assetIdHex(i.tokenId);
   const held = valueOutputsOf(i.held, i.tokenId).reduce((a, o) => a + o.amount, 0n);
   if (held < i.tokens) throw new PoolDeployError(`Your wallet holds fewer than ${i.tokens} base units of that token`);
-  // 1. The LP key.
+  // 1. The LP key, and the LP fee addresses from its keyID (0.55.0).
   const lpKey = await newLpKey(wallet);
+  const feeAddresses = await lpFeeAddresses(wallet, lpKey.keyID, sdkId, await identityKeyOf(wallet));
   const plan = planPoolDeploy({
     tokenId: i.tokenId,
     tokens: i.tokens,
@@ -387,6 +429,7 @@ export async function deployPool(i: DeployPoolInput): Promise<DeployedPool> {
     ...i.fees,
     lpPubKey: lpKey.publicKey,
     lpKeyId: lpKey.keyID,
+    ...feeAddresses,
     validator: i.validator,
     ...(meta.dec !== undefined ? { dec: meta.dec } : {}),
   });

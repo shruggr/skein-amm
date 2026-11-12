@@ -77,8 +77,8 @@ describe("PoolTemplate.decode", () => {
     expect(pool).not.toBeNull();
     expect(tx.outputs[0]!.satoshis).toBe(p.bsv);
     expect(pool.args).toEqual({ assetId, lpFeeBps: BigInt(v.lpFeeBps), validatorFeeBps: BigInt(v.validatorFeeBps), commissionBps: BigInt(v.commissionBps) });
-    expect(pool.version).toBe(2);
-    expect(pool.state).toEqual({ tokenReserve: BigInt(p.tokens), lpPubKey: pub(lp), validatorPubKey: p.validator, validatorIdentity: v.identity, nonce: v.nonce, affirmation: v.affirmation });
+    expect(pool.version).toBe(3);
+    expect(pool.state).toEqual({ tokenReserve: BigInt(p.tokens), lpPubKey: pub(lp), validatorPubKey: p.validator, validatorIdentity: v.identity, nonce: v.nonce, lpSatsPkh: v.lpSatsPkh, lpTokenPkh: v.lpTokenPkh, affirmation: v.affirmation });
   });
 
   it("returns null for every non-pool output", () => {
@@ -111,13 +111,18 @@ describe("PoolTemplate.lockDeploy", () => {
 });
 
 describe("the affirmation (0.13.0)", () => {
-  it("message v2 is src/pool.zig's and gen/vectors' (221 bytes); pool_deploy attests itself, the unaffirmed, forged and own-key deploys and any other satoshis do not; a continuation carries it but does not", () => {
+  it("message v3 (0.55.0) is src/pool.zig's and gen/vectors' (261 bytes, the LP fee addresses after the nonce); pool_deploy attests itself, the unaffirmed, forged and own-key deploys and any other satoshis do not; a continuation carries it but does not", () => {
     const pool = PoolTemplate.decode(poolDeploy.outputs[0]!.lockingScript)!;
     const m = PoolTemplate.affirmationMessage(pool, BigInt(v.pool0.bsv));
-    expect(m.length).toBe(221);
-    expect(Utils.toUTF8(m.slice(0, 18))).toBe("skein-amm affirm 2");
+    expect(m.length).toBe(261);
+    expect(Utils.toUTF8(m.slice(0, 18))).toBe("skein-amm affirm 3");
     expect(Utils.toHex(m.slice(18, 50))).toBe(assetId);
-    expect(Utils.toHex(m.slice(-32))).toBe(v.nonce);
+    expect(Utils.toHex(m.slice(-72, -40))).toBe(v.nonce);
+    expect(Utils.toHex(m.slice(-40, -20))).toBe(v.lpSatsPkh);
+    expect(Utils.toHex(m.slice(-20))).toBe(v.lpTokenPkh);
+    // Another LP fee address: the affirmation no longer verifies.
+    const moved = PoolTemplate.lockDeploy(pool.args, { ...pool.state, lpSatsPkh: v.lpTokenPkh });
+    expect(PoolTemplate.affirmed(moved, BigInt(v.pool0.bsv))).toBe(false);
     expect(PoolTemplate.affirmed(poolDeploy.outputs[0]!.lockingScript, BigInt(v.pool0.bsv))).toBe(true);
     expect(PoolTemplate.affirmed(poolDeploy.outputs[0]!.lockingScript, BigInt(v.pool0.bsv) + 1n)).toBe(false);
     for (const name of ["pool_deploy_unaffirmed", "pool_deploy_forged", "pool_deploy_own_key"] as const) {
@@ -345,6 +350,8 @@ describe("PoolTemplate.planSwap: the commission output", () => {
     expect(plan.swap).toEqual({ amountOut: BigInt(v.swapBsvInTokensOut), lpFee: 60n, validatorFee: 10n, commission: 20n });
     expect(plan.outputs).toHaveLength(5);
     expect(plan.outputs[4]).toEqual({ satoshis: 20n, script: `76a914${relay}88ac` });
+    // 0.55.0: the LP fee in sats to the pool's LpSatsPkh.
+    expect(plan.outputs[2]).toEqual({ satoshis: 60n, script: `76a914${v.lpSatsPkh}88ac` });
     expect(plan.outputs.map((o) => [o.satoshis, o.script])).toEqual(swap1.outputs.slice(0, 5).map((o) => [BigInt(o.satoshis!), o.lockingScript.toHex()]));
     expect(plan.args[5]).toBe(relay);
     expect(plan.args).toHaveLength(8); // 0.40.0: + tokenChangePkh, tokenChange
@@ -357,6 +364,9 @@ describe("PoolTemplate.planSwap: the commission output", () => {
     expect(plan.swap.commission).toBe(50n);
     expect(plan.outputs).toHaveLength(5);
     expect(plan.outputs[4]!.satoshis).toBe(1n);
+    // 0.55.0: the LP fee in tokens to the pool's LpTokenPkh (a 1-sat 1Color output).
+    expect(plan.outputs[2]!.satoshis).toBe(1n);
+    expect(plan.outputs[2]!.script.endsWith(`76a914${v.lpTokenPkh}88ac`)).toBe(true);
     expect(plan.outputs.map((o) => [o.satoshis, o.script])).toEqual(swap2.outputs.slice(0, 5).map((o) => [BigInt(o.satoshis!), o.lockingScript.toHex()]));
   });
 

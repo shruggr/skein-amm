@@ -1284,7 +1284,7 @@ dependencies' types): `npm ci` here and in `../engine` first, then `npm pack` in
 - `lockDeploy(args, state)` (layout 2): the prefix plus runar-sdk's locking
   script, the key, nonce and affirmation in state (or still to come).
 - `affirmationMessage(pool, satoshis)`, `affirmed(script, satoshis)`
-  (0.13.0, message v2): the 221 bytes the validator's affirmation signs
+  (0.13.0; 0.55.0, message v3): the 261 bytes the validator's affirmation signs
   (docs/AMM.md "The deploy and the affirmation"; src/pool.zig
   `affirmMessage`), and whether a pool attests itself (the key derived from
   the identity and the nonce, the signature verifying). `rescinded(pool)`.

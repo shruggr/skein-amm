@@ -40,11 +40,7 @@ export { legDerivation } from "./market/swapAction.js";
 export { swapInstructions } from "./wallet/color.js";
 /** customInstructions of an `amm-swap` sats row (`sats: true`, its key; a change row's `order`). */
 export { swapSatsInstructions } from "./wallet/color.js";
-/** The LP's fee rows (`openex fees`): filed on catch-up, spent when the LP collects. */
-export { FEES_BASKET } from "./wallet/color.js";
-/** 0.54.0: the collect page rule's constants (src/lp/sync.ts). */
-export { COLLECT_FEE_MARGIN, COLLECT_FEE_RATE_SATS_PER_KB, COLLECT_PAGE_TOKEN_INPUTS } from "./lp/sync.js";
-/** The key protocol of a new pool's LP key (`[1, "openex fees"]`, to self). An older pool keeps its BRC-29 key. */
+/** The key protocol of a new pool's LP key (`[1, "openex fees"]`, to self): the key that closes it (0.55.0: its fees go to the addresses derived from its keyID, `lpFeeDerivation`). An older pool keeps its BRC-29 key. */
 export { LP_KEY_PROTOCOL } from "./lp/poolDeploy.js";
 /** The marker an older pool output description ends with (` · amm-lp <hex>`). */
 export { LP_KEY_MARK } from "./lp/poolDeploy.js";

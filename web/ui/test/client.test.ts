@@ -69,7 +69,6 @@ describe("the shared names (D10)", () => {
     expect(pkg.swapKeyIdOfDescription(pkg.swapKeyDescription("TST for a swap", `amm-swap-${"0f".repeat(16)}`))).toBe(`amm-swap-${"0f".repeat(16)}`);
     expect(pkg.legDerivation(`${"cd".repeat(32)}.1`, "change").derivationPrefix).toBe("YW1tIHN3YXAgY2hhbmdl");
     expect(pkg.LP_KEY_PROTOCOL).toEqual([1, "openex fees"]);
-    expect(pkg.FEES_BASKET).toBe("openex fees");
     expect(pkg.LP_KEY_MARK).toBe(" · amm-lp ");
     expect(pkg.FEES_KEY_MARK).toBe(" · openex fees ");
     expect(pkg.lpProtocolOfDescription(`AMM pool: TST / BSV · openex fees ${"ab".repeat(16)}`)).toEqual([1, "openex fees"]);

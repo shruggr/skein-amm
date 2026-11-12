@@ -34,6 +34,7 @@ import {
   LP_KEY_PROTOCOL,
   lpKeyDescription,
   lpKeyIdOfDescription,
+  lpFeeDerivation,
   assetIdHex,
   deployPool,
   isPoolRow,
@@ -86,6 +87,8 @@ describe("pool deploy: plan", () => {
       commissionBps: BigInt(v.commissionBps),
       lpPubKey: pub(lpKey),
       lpKeyId: "YW1tLWxw abc=",
+      lpSatsPkh: v.lpSatsPkh,
+      lpTokenPkh: v.lpTokenPkh,
       validator: { identityKey: v.identity },
     });
     expect(plan.lockingScript).toBe(proposedPool);
@@ -96,12 +99,14 @@ describe("pool deploy: plan", () => {
     expect(plan.args.assetId).toBe(Utils.toHex(tokenDeploy.hash() as number[]));
     expect(plan.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
     expect(plan.price).toBe("0.2");
+    // 0.55.0: the LP fee addresses in the state.
+    expect([plan.state.lpSatsPkh, plan.state.lpTokenPkh]).toEqual([v.lpSatsPkh, v.lpTokenPkh]);
     expect(PoolTemplate.decode(plan.lockingScript)!.state).toEqual(plan.state);
   });
 
   it("refusals: legacy id, zero deposits, fees", () => {
     expect(() => assetIdHex(`${DEPLOY_TXID}_1`)).toThrow(/32-byte id/);
-    const base = { tokenId: TOKEN_ID, tokens: 1n, sats: 1n, lpFeeBps: 30n, validatorFeeBps: 5n, lpPubKey: pub(lpKey), lpKeyId: "k", validator: { identityKey: v.identity } };
+    const base = { tokenId: TOKEN_ID, tokens: 1n, sats: 1n, lpFeeBps: 30n, validatorFeeBps: 5n, lpPubKey: pub(lpKey), lpKeyId: "k", lpSatsPkh: v.lpSatsPkh, lpTokenPkh: v.lpTokenPkh, validator: { identityKey: v.identity } };
     expect(() => planPoolDeploy({ ...base, tokens: 0n })).toThrow(/token deposit/);
     expect(() => planPoolDeploy({ ...base, sats: 0n })).toThrow(/sats deposit/);
     expect(() => planPoolDeploy({ ...base, lpFeeBps: 10_000n })).toThrow(/LP fee/);
@@ -245,9 +250,23 @@ function atomic(tx: Transaction, ancestors: Transaction[]): number[] {
   return b.toBinaryAtomic(tx.id("hex"));
 }
 
-/** The wallet's honest keys. A new pool's `openex fees` key, and an older BRC-29 key with the `amm-lp` prefix, both return the fixture LP key so the pool output stays the fixture's bytes. */
-const deployKeys = (a: KeyArgs) =>
-  (isBrc29(a.protocolID) && a.keyID.startsWith("YW1tLWxw ")) || (a.protocolID[0] === 1 && a.protocolID[1] === "openex fees") ? lpKey : side.privateKey(a);
+/**
+ * The wallet's honest keys. A new pool's `openex fees` key, and an older BRC-29 key with the `amm-lp` prefix, both return the
+ * fixture LP key so the pool output stays the fixture's bytes; 0.55.0: the LP fee keys derived from the last `openex fees`
+ * keyID asked (`lpFeeDerivation`) return the fixture's LP fee keys (gen/vectors key 13, BRC-29; key 14, the module's).
+ */
+let lastLpKeyId: string | undefined;
+const deployKeys = (a: KeyArgs) => {
+  if (a.protocolID[0] === 1 && a.protocolID[1] === "openex fees") {
+    lastLpKeyId = a.keyID;
+    return lpKey;
+  }
+  if (isBrc29(a.protocolID) && a.keyID.startsWith("YW1tLWxw ")) return lpKey;
+  const d = lastLpKeyId ? lpFeeDerivation(lastLpKeyId) : undefined;
+  if (d && isBrc29(a.protocolID) && a.keyID === `${d.derivationPrefix} ${d.derivationSuffix}`) return key(13);
+  if (d && a.protocolID[1] === colorProtocolID(SDK_ID, d.derivationPrefix, d.derivationSuffix)[1] && a.keyID === "color") return key(14);
+  return side.privateKey(a);
+};
 
 /**
  * A fake `/call` for `amm.pool.affirm`: answers the fixture's affirmation for the fixture's
@@ -293,11 +312,18 @@ describe("pool deploy (0.13.0): the validator's affirmation, then one createActi
     expect(http).toEqual([{ fn: "amm.pool.affirm", args: { pool: dagBytes(Utils.toArray(proposedPool, "hex")), satoshis: 1_000_000 } }]);
     expect(d.affirmation).toMatchObject({ validatorPubKey: v.pool0.validator, nonce: v.nonce, signature: v.affirmation });
 
-    // The wallet sequence: the LP key; the action (signed and broadcast by the wallet); the filing.
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "createAction", "internalizeAction"]);
+    // The wallet sequence: the LP key; 0.55.0: the identity key and the two LP fee keys from the LP key's keyID; the action
+    // (signed and broadcast by the wallet); the filing.
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "createAction", "internalizeAction"]);
     const lpReq = calls[0]!.args as KeyArgs;
     expect(lpReq.protocolID).toEqual([1, "openex fees"]);
     expect(lpReq.keyID).toMatch(/^[A-Za-z0-9+/]{22}==$/); // 16 random bytes, base64, no prefix
+    const fd = lpFeeDerivation(lpReq.keyID);
+    expect(calls[1]!.args).toEqual({ identityKey: true });
+    expect(calls[2]!.args).toEqual({ protocolID: [2, "3241645161d8"], keyID: `${fd.derivationPrefix} ${fd.derivationSuffix}`, counterparty: "self", forSelf: true });
+    expect(calls[3]!.args).toEqual({ protocolID: colorProtocolID(SDK_ID, fd.derivationPrefix, fd.derivationSuffix), keyID: "color", counterparty: side.identityKey, forSelf: true });
+    // The pool's state carries their hashes (the fixture's LpSatsPkh and LpTokenPkh).
+    expect([d.plan.state.lpSatsPkh, d.plan.state.lpTokenPkh]).toEqual([v.lpSatsPkh, v.lpTokenPkh]);
     const create = calls.find((c) => c.method === "createAction")!.args as CreateActionArgs;
     expect(create.inputs).toBeUndefined();
     const keyHex = Utils.toHex(Utils.toArray(lpReq.keyID, "base64"));
@@ -566,7 +592,8 @@ describe("rebalance (0.38.0, D11): the old pool closed and a new one deployed in
     const { r, calls, aff, submitted } = await run(tokens, 900_000n);
     expect(aff.calls.map((c) => c.fn)).toEqual(["amm.pool.affirm"]);
     expect(calls.filter((c) => c.method === "createAction")).toHaveLength(1);
-    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "createAction", "createSignature", "signAction", "internalizeAction"]);
+    // The old LP key; the new LP key; 0.55.0: the identity key and the new pool's two LP fee keys; the module receiving key.
+    expect(calls.map((c) => c.method)).toEqual(["getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "getPublicKey", "createAction", "createSignature", "signAction", "internalizeAction"]);
     const create = calls.find((c) => c.method === "createAction")!.args as CreateActionArgs;
     expect(create.inputs).toEqual([{ outpoint: A, unlockingScriptLength: create.inputs![0]!.unlockingScriptLength, inputDescription: "The TST pool" }]);
     expect(Beef.fromBinary(Array.from(create.inputBEEF!)).findTxid(poolTx.id("hex"))).toBeTruthy();
@@ -577,6 +604,13 @@ describe("rebalance (0.38.0, D11): the old pool closed and a new one deployed in
     expect(create.outputs![0]).toEqual({ lockingScript: r.affirmation.lockingScript, satoshis: 900_000, outputDescription: lpKeyDescription("AMM pool: TST / BSV", lpReq.keyID) });
     expect(PoolTemplate.affirmed(create.outputs![0]!.lockingScript, 900_000n)).toBe(true);
     expect(PoolTemplate.decode(create.outputs![0]!.lockingScript)!.state.tokenReserve).toBe(tokens);
+    // 0.55.0: B's LP fee addresses from B's keyID, as the wallet derives them (sender the LP's identity).
+    const fd = lpFeeDerivation(lpReq.keyID);
+    const h = (k: PrivateKey) => Utils.toHex(k.toPublicKey().toHash() as number[]);
+    expect(PoolTemplate.decode(create.outputs![0]!.lockingScript)!.state).toMatchObject({
+      lpSatsPkh: h(side.privateKey({ protocolID: BRC29, keyID: `${fd.derivationPrefix} ${fd.derivationSuffix}`, counterparty: "self" })),
+      lpTokenPkh: h(side.privateKey({ protocolID: colorProtocolID(SDK_ID, fd.derivationPrefix, fd.derivationSuffix), keyID: "color", counterparty: side.identityKey })),
+    });
     expect(decodeAmount(create.outputs![1]!.lockingScript)).toBe(base.state.tokenReserve - tokens);
     expect(create.labels!.slice(-2)).toEqual(["amm-pool-deploy", "amm-close"]);
     const plan = ColorPlan.fromLabels(create.labels)!;

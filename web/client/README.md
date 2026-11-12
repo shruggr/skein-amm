@@ -66,8 +66,8 @@ The client (each an async function unless noted):
 - liquidity: `myPositions`, `validatorTerms`, `deployPosition({tokenId, tokens, sats})`,
   `closePosition({poolId})` (`poolId` = the pool's deploy outpoint `<txid>_<vout>`; the fee walk
   first), `rebalancePosition({outpoint, tokens, sats})` (the fee walk first; the old pool closed
-  and a new one deployed in ONE wallet createAction), `syncFees`, `availableFees`,
-  `collectFees(options?)` (below);
+  and a new one deployed in ONE wallet createAction), `syncFees` (below; 0.55.0: no
+  `availableFees` / `collectFees`, the fees go to the wallet itself);
 - your tokens: `myTokens`, `settleSwaps` (the pass over the swap basket: a staged token output the
   basket lacks filed from its action's description; then every row's spender, this wallet's legs
   taken in: the txids), `swapBasketSats`, `moveBackTokens(tokenId)` (every row of the token and
@@ -150,39 +150,21 @@ amountIn, amountOut, txid}], totalIn, totalOut, unfilled, returned?}`.
 ## LP fees
 
 A position's "fees earned" (`Position.feesEarnedSats` / `feesEarnedTokens`) is the LIFETIME figure
-the exchange reports for the pool. What can be collected is what the wallet's fees basket
-`openex fees` holds: each swap's LP fee output, filed there by the fee walk. Nothing reaches the
-wallet's balance until the LP collects.
+the exchange reports for the pool. 0.55.0: there is nothing to collect. Every pool names two LP fee
+addresses in its state, derived by the LP's wallet from the pool's LP keyID (`lpFeeDerivation`: the
+keyID's 16 bytes split in half, the derivation prefix and suffix; the sender the LP's own identity
+key): a BRC-29 key for the fee of a sats-in swap and a 1Color module receiving key for the fee of a
+token-in swap. The fee walk takes each swap's LP fee straight into the wallet: a sats fee as a
+`wallet payment` (it becomes the wallet's own sats), a token fee as a `p color` receipt into the
+token's value basket. Consolidation is the wallet's.
 
-- `syncFees()` → `{poolId, reason}[]`: the fee walk alone over every position the client reports
-  (the wallet's spendable `amm-pools` row of each pool, else its deploy-history row), filing each
-  uncollected LP fee output into `openex fees` (one `internalizeAction` per swap). Silent, never
-  throws: call it on every page load, as `settleSwaps`. A walk ends caught up at the pool's close or
-  at a rebalance. It answers the pools it could not walk: stopped walks, pools on an old contract,
-  pools whose token is not enabled on this exchange. Something filed: `onDataChange` fires.
-- `availableFees()` → `{sats: bigint, tokens: [{tokenId, amount}], outputs: number}`: ONE
-  `listOutputs` of `openex fees` (sats rows summed, token rows per token id, the row count). What a
-  page shows beside its Collect button.
-- `collectFees({feeRateSatsPerKb?})` → `CollectResult`: `syncFees`' walk, then the basket moved into
-  the wallet's own balance in PAGES, each ONE wallet createAction with the fee rows as its inputs
-  (the client signs them): one `p color` output per token on the page (the module files it), NO
-  sats output — the wallet keeps the sats as its own change at its own fee rate. Every page runs in
-  sequence in one call.
-
-The page rule: token rows first (by token id), up to `COLLECT_PAGE_TOKEN_INPUTS` (250) per page,
-each page with as many sats rows (largest first) as cover its estimated miner fee (its inputs and
-outputs at `feeRateSatsPerKb`, default `COLLECT_FEE_RATE_SATS_PER_KB` = 200, times
-`COLLECT_FEE_MARGIN` = 1.25); the sats rows left go in sats-only pages of up to 250 inputs. When the
-sats rows run out first, the later token pages have none: the wallet funds their miner fee (it may
-prompt). Each token page asks the wallet's 1Color consent once.
-
-`CollectResult`: `txid?` (the last page's; absent when nothing was spent), `txids` (every completed
-page), `pages` (the pages composed), `sats` / `tokens` (gross, what the completed pages spent; the
-wallet's balance rises by the sats less the miner fees), `stopped?` (as `syncFees`), `refused?:
-{page, error}` (the page the wallet refused or that failed, the wallet's full error text; the pages
-after it did not run), `remaining?` (what `openex fees` still holds, as `availableFees`). A refusal
-on the first page throws (nothing was spent); on a later page the pages done are returned with
-`refused`: call `collectFees` again for the rest.
+- `syncFees()` → `{poolId, reason}[]`: the fee walk over every position the client reports (the
+  wallet's spendable `amm-pools` row of each pool, else its deploy-history row): one
+  `internalizeAction` per swap, the continuation into `amm-pools` and output 2 (the LP fee) as above.
+  Silent, never throws: call it on every page load, as `settleSwaps`. A walk ends caught up at the
+  pool's close or at a rebalance. It answers the pools it could not walk: stopped walks, pools on an
+  old contract, pools whose token is not enabled on this exchange. Something filed: `onDataChange`
+  fires. `closePosition` and `rebalancePosition` run the same walk first.
 
 ## Build
 

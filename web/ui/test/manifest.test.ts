@@ -34,7 +34,7 @@ describe("manifest.json", () => {
     // first visit, the store the wallet's 1Color module reads); no other `p color` entry (per-token reads and sends the module asks itself).
     // 0.31.4: plus the toolbox's balance special operation (`specOpWalletBalance`), the Swap page's "Wallet: N sats" line; the
     // `default` basket is admin-only to a page.
-    expect(g.basketAccess.map((b: { basket: string }) => b.basket)).toEqual(["amm-swap", "amm-pools", "openex fees", "p color assets", specOpWalletBalance]); // 0.29.0: no 1sat-deposit (no funding transaction)
+    expect(g.basketAccess.map((b: { basket: string }) => b.basket)).toEqual(["amm-swap", "amm-pools", "p color assets", specOpWalletBalance]); // 0.29.0: no 1sat-deposit (no funding transaction); 0.55.0: no `openex fees` (the LP fees go to the wallet itself)
     expect(specOpWalletBalance).toBe("893b7646de0e1c9f741bd6e9169b76a8847ae34adef7bef1e6a285371206d2e8");
     expect(JSON.stringify(manifest.metanet).match(/p color [a-z0-9]+/g)).toEqual(["p color assets"]);
     expect(JSON.stringify(manifest)).not.toMatch(/spendingAuthorization/);

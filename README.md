@@ -101,7 +101,7 @@ the engine (skein-overlay 0.14.1) and the validator and relay; skein-sdk
 0.11.1. Since **0.13.0** (David Case, 2026-10-22; docs/AMM.md
 "The pool rule", "The deploy and the affirmation", "The listing"): the
 validator's nonce and affirmation live in every pool's state (Nonce,
-Affirmation; message v2, no termsHash), the validator's first key is its
+Affirmation; message v2, no termsHash; 0.55.0: message v3, with the pool's LP fee addresses), the validator's first key is its
 child keyed by the nonce it picks at `amm.pool.affirm {pool, satoshis}` →
 `{validatorPubKey, nonce, signature}`, and `ls_amm_<assetId>` lists a pool only when
 it derives that key itself and the affirmation verifies (a Swap's

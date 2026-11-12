@@ -30,7 +30,9 @@ spent is the validator's.
 
 A pool is a BRC-162 value output at output 0 whose lock is the compiled
 Pool code, `OP_RETURN`, and the state (0.13.0, layout 2; David Case
-2026-10-22, agent-env plans/validator-signoff-2026-10-22.md §9):
+2026-10-22, agent-env plans/validator-signoff-2026-10-22.md §9; 0.55.0, layout 3,
+the two LP fee addresses after the Nonce, agent-env
+plans/lp-fee-addresses-settled-2026-11-12.md):
 
 | bytes | state field |
 |---|---|
@@ -39,6 +41,8 @@ Pool code, `OP_RETURN`, and the state (0.13.0, layout 2; David Case
 | 33 | ValidatorPubKey (33 zero bytes once rescinded) |
 | 33 | ValidatorIdentity |
 | 32 | Nonce (Rúnar's fixed 32-byte type, raw) |
+| 20 | LpSatsPkh (0.55.0): where a sats-in Swap pays the LP fee |
+| 20 | LpTokenPkh (0.55.0): where a token-in Swap pays the LP fee |
 | 1 + n | Affirmation: one length byte, then the validator's DER signature (n ≤ 72; `OP_0` when empty) |
 
 The BSV reserve is the output's satoshis; the token reserve is the prefix's
@@ -52,7 +56,10 @@ Affirmation costs each method a state parser, and Rescind its own copy of
 the continuation writer. A pool deployed before 0.13.0 (layout 1: the first
 four state fields, `Close(sig, bsvFee)`) is no pool to the pages since
 0.29.1 (David: dropped, every testnet pool is layout 2); amm-lookup and
-amm-validator know layout 2 only (below, "Not wired").
+amm-validator know layout 2 only (below, "Not wired"). 0.55.0: layout 3
+(LpSatsPkh, LpTokenPkh), template 3,773 bytes (3,729 at 0.54.x); a layout-2
+pool is no pool to the pages, amm-lookup or amm-validator (as 0.40.0: close
+such pools on 0.54.x's pages first).
 
 - **Indexed** (amm-lookup, `pool.check`): at output 0; the prefix's id and
   amount equal the AssetId and TokenReserve the code and state carry (the
@@ -70,7 +77,7 @@ amm-validator know layout 2 only (below, "Not wired").
   checks no hashOutputs and takes no change parameters); `Rescind(
   validatorSig)`, the validator's: `OP_CHECKSIG` against the current
   ValidatorPubKey, exactly one continuation at output 0 — the same sats,
-  TokenReserve, LpPubKey, ValidatorIdentity, Nonce and Affirmation — with
+  TokenReserve, LpPubKey, ValidatorIdentity, Nonce, LpSatsPkh, LpTokenPkh and Affirmation — with
   ValidatorPubKey 33 zero bytes, then Rúnar's change output (the validator
   pays the fee from an input of its own; nothing is taken from the pool).
   After a Rescind no Swap can be signed (no key matches the zero key) and no
@@ -167,19 +174,20 @@ nonce, the attestation in state, no input named by the page.
   from it, has the signer agree (`wrong_validator_key`), and signs the
   message below. It answers `{validatorPubKey, nonce, signature}`. Nothing
   is recorded or submitted.
-- **The message v2** (src/pool.zig `affirmMessage`, web/ui
-  `PoolTemplate.affirmationMessage`, gen/vectors `affirmMessage`; 221
+- **The message v3** (0.55.0; src/pool.zig `affirmMessage`, web/ui
+  `PoolTemplate.affirmationMessage`, gen/vectors `affirmMessage`; 261
   bytes):
 
   | bytes | field |
   |---|---|
-  | 18 | `"skein-amm affirm 2"`, ASCII: the tag (a domain separator, the layout's version) |
+  | 18 | `"skein-amm affirm 3"`, ASCII: the tag (a domain separator, the layout's version) |
   | 32 | AssetId: the bytes the pool script pushes (the token's deploy txid, internal byte order) |
   | 8 × 3 | LpFeeBps, ValidatorFeeBps, CommissionBps: int64, little-endian |
   | 8 | TokenReserve: uint64, little-endian |
   | 8 | the pool output's satoshis (the BSV reserve): uint64, little-endian |
   | 33 × 3 | LpPubKey, ValidatorPubKey, ValidatorIdentity: compressed |
   | 32 | Nonce |
+  | 20 × 2 | LpSatsPkh, LpTokenPkh |
 
   The signature is ECDSA by the ValidatorPubKey over sha256(message), DER
   (the signer signs that digest as is: BRC-100 `createSignature`
@@ -390,9 +398,11 @@ Rescind's included; `closed` once a Close spent it). The current output's BEEF c
 ## Fees (0.33.0)
 
 Each Swap pays three fees in the input asset (sats on a sats-in Swap, a 1Color value output on a
-token-in Swap), each its own output (pool/Pool.runar.go `Swap`): the LP's to Hash160 of the pool's
-LpPubKey, the validator's to Hash160 of its key, the commission to the call's `commissionPkh`.
-Nobody sweeps them yet; a Close leaves them on chain.
+token-in Swap), each its own output (pool/Pool.runar.go `Swap`): the LP's (0.55.0) to the pool's
+LpSatsPkh on a sats-in Swap and its LpTokenPkh on a token-in Swap, the validator's to Hash160 of its
+key, the commission to the call's `commissionPkh`. The LP's wallet derives both LP fee addresses
+from the pool's LP keyID (a BRC-29 key; a 1Color module receiving key) and takes each fee in on its
+fee walk (a wallet payment; a `p color` receipt).
 
 `ls_amm_<assetId>` keeps a fee ROW per Swap, written when it admits the Swap's continuation and
 removed when a rejection takes it back: under the pool's LpPubKey (the pool's id: constant along its

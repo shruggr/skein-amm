@@ -7,7 +7,8 @@
  *
  *   1. The old pool A's current output and its BEEF (the caller's: `GET
  *      /@<token>/amm/pools/beef?lp=<A's LP key>`), A's LP key checked against the wallet's.
- *   2. The new pool B as the deploy makes it: a new LP key (`newLpKey`), the proposed pool
+ *   2. The new pool B as the deploy makes it: a new LP key (`newLpKey`), its LP fee addresses
+ *      from that key's keyID (`lpFeeAddresses`, 0.55.0), the proposed pool
  *      (`planPoolDeploy`), the validator's affirmation (`amm.pool.affirm`, `affirmPool`: the same
  *      call a deploy makes, with B's sats and tokens).
  *   3. ONE createAction through the wallet's BRC-207 module, a `p color plan` transfer:
@@ -42,7 +43,7 @@ import { sdkTokenId } from "../lib/tokenId.js";
 import { POOLS_BASKET, newReceivingKey, transferPlanLabels, type HeldOutput } from "../wallet/color.js";
 import { inputIndexOf, runAppSignedAction } from "../wallet/action.js";
 import { submitToOverlay, steakText } from "./close.js";
-import { POOL_TAG, PoolDeployError, affirmPool, lpKeyDescription, newLpKey, planPoolDeploy, poolCustomInstructions, tokenP2pkhScript, valueOutputsOf, type Affirmation, type BasketFiling, type PoolDeployPlan, type ValidatorChoice } from "./poolDeploy.js";
+import { POOL_TAG, PoolDeployError, affirmPool, lpFeeAddresses, lpKeyDescription, newLpKey, planPoolDeploy, poolCustomInstructions, tokenP2pkhScript, valueOutputsOf, type Affirmation, type BasketFiling, type PoolDeployPlan, type ValidatorChoice } from "./poolDeploy.js";
 import { POOL_DEPLOY_LABEL } from "./positions.js";
 
 export class RebalanceShapeError extends Error {
@@ -128,8 +129,9 @@ export async function rebalancePool(i: RebalanceInput): Promise<RebalancedPool> 
     if (held < tokenDelta) throw new PoolDeployError(`Your wallet holds fewer than ${tokenDelta} base units of that token`);
   }
 
-  // 2. B: a new LP key, the proposed pool, the validator's affirmation.
+  // 2. B: a new LP key and its LP fee addresses (0.55.0), the proposed pool, the validator's affirmation.
   const lpKey = await newLpKey(wallet);
+  const me = await identityKeyOf(wallet);
   const plan = planPoolDeploy({
     tokenId: i.tokenId,
     tokens: i.tokens,
@@ -137,6 +139,7 @@ export async function rebalancePool(i: RebalanceInput): Promise<RebalancedPool> 
     ...i.fees,
     lpPubKey: lpKey.publicKey,
     lpKeyId: lpKey.keyID,
+    ...(await lpFeeAddresses(wallet, lpKey.keyID, sdkId, me)),
     validator: i.validator,
     ...(meta.dec !== undefined ? { dec: meta.dec } : {}),
   });
@@ -147,7 +150,6 @@ export async function rebalancePool(i: RebalanceInput): Promise<RebalancedPool> 
   const outputs: CreateActionOutput[] = [{ lockingScript: poolScript, satoshis: Number(plan.sats), outputDescription: lpKeyDescription(describe(`AMM pool: ${sym} / BSV`), lpKey.keyID) }];
   let owned: Parameters<typeof transferPlanLabels>[1] = {};
   if (tokenDelta < 0n) {
-    const me = await identityKeyOf(wallet);
     const k = await newReceivingKey(wallet, sdkId, me);
     outputs.push({ lockingScript: tokenP2pkhScript(sdkId, -tokenDelta, k.publicKey), satoshis: 1, outputDescription: describe(`${sym} pool tokens to you`) });
     owned = { ownedOutputs: [{ outputIndex: 1, ...k.receipt }] };

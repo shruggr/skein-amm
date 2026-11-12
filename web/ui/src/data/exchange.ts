@@ -125,9 +125,7 @@ export const myPositions: AmmClient["myPositions"] = (...a: Parameters<AmmClient
 export const validatorTerms: AmmClient["validatorTerms"] = (...a: Parameters<AmmClient["validatorTerms"]>) => (client.validatorTerms as (...x: unknown[]) => ReturnType<AmmClient["validatorTerms"]>)(...a);
 export const deployPosition: AmmClient["deployPosition"] = (...a: Parameters<AmmClient["deployPosition"]>) => (client.deployPosition as (...x: unknown[]) => ReturnType<AmmClient["deployPosition"]>)(...a);
 export const closePosition: AmmClient["closePosition"] = (...a: Parameters<AmmClient["closePosition"]>) => (client.closePosition as (...x: unknown[]) => ReturnType<AmmClient["closePosition"]>)(...a);
-export const collectFees: AmmClient["collectFees"] = (...a: Parameters<AmmClient["collectFees"]>) => (client.collectFees as (...x: unknown[]) => ReturnType<AmmClient["collectFees"]>)(...a);
 export const syncFees: AmmClient["syncFees"] = () => client.syncFees();
-export const availableFees: AmmClient["availableFees"] = () => client.availableFees();
 export const rebalancePosition: AmmClient["rebalancePosition"] = (...a: Parameters<AmmClient["rebalancePosition"]>) => (client.rebalancePosition as (...x: unknown[]) => ReturnType<AmmClient["rebalancePosition"]>)(...a);
 export const myTokens: AmmClient["myTokens"] = (...a: Parameters<AmmClient["myTokens"]>) => (client.myTokens as (...x: unknown[]) => ReturnType<AmmClient["myTokens"]>)(...a);
 export const settleSwaps: AmmClient["settleSwaps"] = (...a: Parameters<AmmClient["settleSwaps"]>) => (client.settleSwaps as (...x: unknown[]) => ReturnType<AmmClient["settleSwaps"]>)(...a);
@@ -295,7 +293,7 @@ export function useTokenPools(tokenId: TokenId | undefined): { data: PoolsAnswer
   return { data, error };
 }
 
-/** The Liquidity page's load (0.54.0): the silent fee walk (`syncFees`), once per connected wallet. */
+/** The Liquidity page's load (0.54.0): the silent fee walk (`syncFees`), once per connected wallet; 0.55.0: it takes each swap's LP fee into the wallet. */
 export function useSyncFees(connected: boolean): void {
   useEffect(() => {
     if (connected) void syncFees();
@@ -358,8 +356,6 @@ export function useData<T>(load: () => Promise<T>, deps: unknown[], enabled = tr
 }
 
 export const useMyPositions = (enabled: boolean) => useData(myPositions, [], enabled);
-/** 0.54.0: what the fees basket holds (`availableFees`); reloads after the load walk files anything. */
-export const useAvailableFees = (enabled: boolean) => useData(availableFees, [], enabled);
 export const useMyTokens = (enabled: boolean) => useData(myTokens, [], enabled);
 export const useSwapBasketSats = (enabled: boolean) => useData(swapBasketSats, [], enabled);
 

@@ -8,14 +8,16 @@ import poolArtifactJson from "./pool.artifact.json" with { type: "json" };
  * (there with its codeSepIndex slots resolved); both are written by
  * `go run ./gen/vectors` (0.9.0).
  *
- * 0.13.0 (layout 2): state TokenReserve, LpPubKey, ValidatorPubKey,
- * ValidatorIdentity, Nonce, Affirmation; methods Swap, Close (the LP's, outputs
- * free), Rescind.
+ * 0.55.0 (layout 3): state TokenReserve, LpPubKey, ValidatorPubKey,
+ * ValidatorIdentity, Nonce, LpSatsPkh, LpTokenPkh, Affirmation; methods Swap
+ * (the LP fee to LpSatsPkh on a sats-in Swap, LpTokenPkh on a token-in Swap),
+ * Close (the LP's, outputs free), Rescind. Layout 2 (0.13.0-0.54.x, no fee
+ * addresses: the LP fee to Hash160 of LpPubKey) is not a pool.
  */
 export const poolArtifact = resolveCodeSepSlots(poolArtifactJson as unknown as RunarArtifact);
 
 /**
- * The artifact with its codeSepIndex slots resolved in `script` (layout 2: its variable-length
+ * The artifact with its codeSepIndex slots resolved in `script` (its variable-length
  * state makes each method push its OP_CODESEPARATOR's index). The separator is the code's
  * byte 1, before every constructor slot, so each slot is OP_1 in every pool — as gen/vectors
  * resolves them for src/pool.zig. runar-sdk's matcher (`matchesArtifact`,
@@ -33,8 +35,8 @@ function resolveCodeSepSlots(a: RunarArtifact): RunarArtifact {
   return { ...a, script };
 }
 
-/** A pool's layout: 2, the only one (0.29.1: layout 1, the 0.9.0-0.12.x contract, is dropped). */
-export type PoolVersion = 2;
+/** A pool's layout: 3, the only one (0.55.0: layout 2, the 0.13.0-0.54.x contract, is not a pool; 0.29.1: layout 1 dropped). */
+export type PoolVersion = 3;
 
 export function artifactOf(_version: PoolVersion): RunarArtifact {
   return poolArtifact;

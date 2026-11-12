@@ -114,11 +114,10 @@ import { deployPool, poolCustomInstructions, poolRowTokenId } from "./lp/poolDep
 import { rebalancePool } from "./lp/rebalance.js";
 import { historyPoolRows, mergePoolRows, positionRowsOf, type PositionRow } from "./lp/positions.js";
 import { isPoolRow } from "./lp/poolRows.js";
-import { availableFees as basketFees, collectBasket, heldPoolRow, storedKey, syncPool, type AvailableFees, type CollectOptions, type CollectResult, type SyncIo } from "./lp/sync.js";
+import { heldPoolRow, storedKey, syncPool, type SyncIo } from "./lp/sync.js";
 import { PoolTemplate } from "./pool/index.js";
 import { POOLS_BASKET, assetBasket, heldOutputs } from "./wallet/color.js";
 import { prepareClose, submitToOverlay } from "./lp/close.js";
-export type { AvailableFees, CollectOptions, CollectResult };
 import { ClientError, errorText, toClientError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
@@ -1568,7 +1567,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
         continue;
       }
       if (!PoolTemplate.decode(row.lockingScript)) {
-        stopped.push({ poolId: id, reason: "an old pool contract: not collectable by this client" });
+        stopped.push({ poolId: id, reason: "an old pool contract: not walked by this client" });
         continue;
       }
       const tokenId = poolRowTokenId(row);
@@ -1593,8 +1592,9 @@ function makeClient(opts: ClientOptions, s: Shared) {
   }
 
   /**
-   * The fee walk alone (0.54.0): every reported position's uncollected LP fee outputs filed into
-   * `openex fees` (one internalizeAction per swap). Silent, never throws: safe on every page load
+   * The fee walk alone (0.54.0): every reported position's swaps taken in, each hop's continuation
+   * into `amm-pools` and its LP fee into the wallet itself (0.55.0: a sats fee a wallet payment, a
+   * token fee a `p color` receipt; one internalizeAction per swap). Silent, never throws: safe on every page load
    * (as `settleSwaps`). → the pools whose walk stopped, with why. Something filed: the pages' data reloads.
    */
   async function syncFees(): Promise<{ poolId: string; reason: string }[]> {
@@ -1606,33 +1606,6 @@ function makeClient(opts: ClientOptions, s: Shared) {
     } catch (e) {
       return [{ poolId: "", reason: errorText(e) }];
     }
-  }
-
-  /** What is available to collect (0.54.0): ONE `listOutputs` of `openex fees` — sats rows summed, token rows per token id, the row count. */
-  async function availableFees(): Promise<AvailableFees> {
-    const { wallet } = needWallet();
-    return basketFees(wallet);
-  }
-
-  /**
-   * Collects the LP fees (0.54.0): the fee walk first (`syncFees`' walk), then the `openex fees` basket
-   * moved into the wallet's own balance in pages (src/lp/sync.ts `collectBasket`): each page one
-   * wallet createAction, its fee rows the inputs, one `p color` output per token on the page, no sats
-   * output (the wallet keeps the sats as its change). Every page runs in sequence; a refusal after
-   * the first page stops the loop and returns what was done (`refused`, `remaining`). The pools stay open.
-   */
-  async function collectFees(options: CollectOptions = {}): Promise<CollectResult> {
-    const { wallet } = needWallet();
-    const walked = await walkPositions(wallet);
-    let r: CollectResult;
-    try {
-      r = await collectBasket(wallet, options);
-    } catch (e) {
-      if (walked.filed > 0) emit();
-      throw e;
-    }
-    if (r.txids.length > 0 || walked.filed > 0) emit();
-    return walked.stopped.length ? { ...r, stopped: walked.stopped } : r;
   }
 
   /**
@@ -2093,9 +2066,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
     validatorTerms: guard(validatorTerms),
     deployPosition: guard(deployPosition),
     closePosition: guard(closePosition),
-    collectFees: guard(collectFees),
     syncFees,
-    availableFees: guard(availableFees),
     rebalancePosition: guard(rebalancePosition),
     // your tokens
     myTokens: guard(myTokens),

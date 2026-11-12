@@ -14,12 +14,12 @@
         {
           "protocolID": [2, "3241645161d8"],
           "counterparty": "self",
-          "description": "Derive one-time keys for the sats pools pay you, and for your LP position (BRC-29 payments to yourself)."
+          "description": "Derive one-time keys for the sats pools pay you, your LP fees among them (BRC-29 payments to yourself)."
         },
         {
           "protocolID": [1, "openex fees"],
           "counterparty": "self",
-          "description": "Derive the key of each pool you deploy and the fees it pays you, asked once."
+          "description": "Derive the key of each pool you deploy, the key that closes it, asked once."
         },
         {
           "protocolID": [2, "amm swap"],
@@ -81,10 +81,6 @@
         {
           "basket": "amm-pools",
           "description": "File and read the pools you hold as LP, and drop one when you close it."
-        },
-        {
-          "basket": "openex fees",
-          "description": "File the fees your pools pay you, and spend them when you collect."
         },
         {
           "basket": "p color assets",

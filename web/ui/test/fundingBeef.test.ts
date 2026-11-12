@@ -11,7 +11,7 @@ const OTHER = "cd".repeat(32);
 const k = PrivateKey.fromRandom();
 const pay = new P2PKH().lock(k.toPublicKey().toAddress());
 const poolScript = (asset: string) =>
-  PoolTemplate.lockDeploy({ assetId: asset, lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: 10n }, { tokenReserve: 1000n, lpPubKey: k.toPublicKey().toString(), validatorPubKey: k.toPublicKey().toString(), validatorIdentity: k.toPublicKey().toString(), nonce: "00".repeat(32), affirmation: "" });
+  PoolTemplate.lockDeploy({ assetId: asset, lpFeeBps: 30n, validatorFeeBps: 5n, commissionBps: 10n }, { tokenReserve: 1000n, lpPubKey: k.toPublicKey().toString(), validatorPubKey: k.toPublicKey().toString(), validatorIdentity: k.toPublicKey().toString(), nonce: "00".repeat(32), lpSatsPkh: "66".repeat(20), lpTokenPkh: "77".repeat(20), affirmation: "" });
 
 function tx(srcs: [Transaction | string, number][], outs: { lockingScript: ReturnType<typeof poolScript> | typeof pay; satoshis: number }[]): Transaction {
   const t = new Transaction();

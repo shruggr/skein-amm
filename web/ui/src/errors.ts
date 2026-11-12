@@ -103,14 +103,6 @@ export function errorText(e: unknown): string {
   return `thrown: ${name}${main ? ` "${main}"` : ""} with nothing else${at ? `, ${at}` : ""}`;
 }
 
-/** `e` when it is an Error whose message says something; else an Error of `errorText(e)` (its `code` kept, `e` the cause). */
-export function asError(e: unknown): Error {
-  if (e instanceof Error && e.message.trim() && !SAYS_NOTHING.test(e.message.trim())) return e;
-  const err = new Error(errorText(e), { cause: e }) as Error & { code?: unknown };
-  if (e && typeof e === "object" && "code" in e) err.code = (e as { code?: unknown }).code;
-  return err;
-}
-
 /** `e` as a `ClientError` of its kind (its message unchanged, `e` the cause) when it has one; else `e` itself. */
 export function toClientError(e: unknown): unknown {
   if (e instanceof ClientError) return e;

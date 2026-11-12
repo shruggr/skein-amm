@@ -8,22 +8,17 @@ import { useEffect, useState } from "react";
 import { Id } from "../components/Id";
 import {
   closePosition,
-  collectFees,
   deployPosition,
-  useAvailableFees,
   useMyPositions,
   useSyncFees,
   useMyTokens,
   hasTerms,
   NO_TERMS_TEXT,
   useValidatorTerms,
-  type AvailableFees,
-  type CollectResult,
   type HostedToken,
   type Position,
   type Session,
 } from "../data/exchange";
-import { errorText } from "../errors";
 import { fmtAmount, fmtPrice, fmtSats, parseInput } from "./format";
 import { followAmount, type DeploySource } from "./deployFill";
 import { feesByToken } from "../lp/positions";
@@ -269,67 +264,15 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   );
 }
 
-/** What the fees basket holds as one line ("nothing" when it holds no row). */
-export function feesLine(fees: AvailableFees, metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined): string {
-  if (fees.outputs === 0) return "nothing";
-  return [`${fmtSats(fees.sats)} sats`, ...fees.tokens.map((t) => {
-    const m = metaOf(t.tokenId);
-    return `${fmtAmount(t.amount, m?.dec ?? 0)} ${m?.sym ?? t.tokenId.slice(0, 8)}`;
-  })].join(" · ");
-}
-
-/**
- * The notice after a collect (0.54.1): what the completed pages moved and, when a later page failed,
- * the wallet's own text and what is still in the basket.
- */
-export function collectNotice(r: CollectResult, metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined): { kind: "ok" | "bad"; text: string } {
-  if (!r.txid) return { kind: "ok", text: "No fees to collect." };
-  const what = r.sats > 0n && r.tokens.length > 0 ? `${fmtSats(r.sats)} sats and your token fees` : r.sats > 0n ? `${fmtSats(r.sats)} sats` : "your token fees";
-  const done = `Collected ${what} in ${r.txids.length} transaction${r.txids.length === 1 ? "" : "s"}.`;
-  if (!r.refused) return { kind: "ok", text: done };
-  const left = r.remaining ? `${feesLine(r.remaining, metaOf)} is still available to collect.` : "The rest is still available to collect.";
-  return { kind: "bad", text: `${done} The next one failed: ${r.refused.error}. ${left}` };
-}
-
-/** A collect attempt (0.54.1): its notice (a throw's real text), and "Available to collect" re-read after it, success or failure. */
-export async function runCollect(
-  collect: () => Promise<CollectResult>,
-  reloadAvailable: () => void,
-  metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined,
-): Promise<{ kind: "ok" | "bad"; text: string }> {
-  try {
-    return collectNotice(await collect(), metaOf);
-  } catch (e) {
-    return { kind: "bad", text: errorText(e) };
-  } finally {
-    reloadAvailable();
-  }
-}
-
 export function Liquidity({ session, hosted }: { session: Session; hosted: HostedToken[] | null }) {
   const connected = session.status === "connected";
   const positions = useMyPositions(connected);
-  // 0.54.0: the fee walk on load files what the swaps paid into the fees basket; "available" is that basket.
+  // 0.54.0: the fee walk on load; 0.55.0: it takes what the swaps paid the LP into the wallet itself (no collect).
   useSyncFees(connected);
-  const available = useAvailableFees(connected);
   const [closed, setClosed] = useState<{ msg: string; txid: string } | null>(null);
-  const [collected, setCollected] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
-  const [collecting, setCollecting] = useState(false);
-  async function collect() {
-    setCollecting(true);
-    setCollected(null);
-    try {
-      setCollected(await runCollect(() => collectFees(), available.reload, metaOf));
-    } finally {
-      setCollecting(false);
-    }
-  }
   // 0.32.0: the cards are the live positions; the per-token fees line counts the closed ones too.
   const live = positions.data?.filter((p) => !p.closed) ?? null;
   const byToken = positions.data ? feesByToken(positions.data) : [];
-  const metaOf = (tokenId: string) => positions.data?.find((p) => p.tokenId === tokenId) ?? hosted?.find((h) => h.tokenId === tokenId);
-  const fees = available.data;
-  const availableText = !fees ? null : feesLine(fees, metaOf);
   if (!connected) {
     return (
       <>
@@ -360,13 +303,6 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
             ))}
           </div>
         )}
-        <div className="row">
-          <button type="button" className="btn btn-outline" onClick={() => void collect()} disabled={collecting}>
-            {collecting ? "Collecting…" : "Collect fees"}
-          </button>
-          {availableText !== null && <span className="fg2 small num">Available to collect: {availableText}</span>}
-        </div>
-        {collected && <Notice kind={collected.kind}>{collected.text}</Notice>}
         {live === null ? (
           <p className="muted loading">Loading your positions…</p>
         ) : live.length === 0 ? (

@@ -4,6 +4,39 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.55.0 (branch `lp-fee-addresses-0.55.0`; not tagged)
+
+LP fees paid straight to the LP's wallet (David 2026-11-12, agent-env
+plans/lp-fee-addresses-settled-2026-11-12.md). A full release: the contract, the token app's
+programs and etc/app.json, @dcasegr/amm-engine and amm-client 0.55.0, and the Liquidity page.
+
+- The contract (layout 3): two fixed 20-byte state fields after the Nonce, LpSatsPkh and LpTokenPkh,
+  never assigned (carried like the Nonce). Swap pays the LP fee (still output 2, the same amount) to
+  LpSatsPkh on a sats-in swap and to LpTokenPkh on a token-in swap. LpPubKey stays (Close). The
+  validator fee and the commission are unchanged. Template 3,729 → 3,773 bytes.
+- The affirmation signs the two hashes too: message v3, tag "skein-amm affirm 3", 261 bytes (the
+  hashes after the Nonce). src/pool.zig, amm-validator (`swapOutputs`, `affirm`), amm-lookup
+  (`affirmed`, `feesOf`) and the pages (`PoolTemplate`, `PoolVersion` 3) follow; no row, event or
+  answer gains a field.
+- Both addresses are derived by the LP's wallet from the pool's LP keyID (the `[1, "openex fees"]`
+  key's 16 random bytes, as stored and recovered today; nothing new recorded): `lpFeeDerivation`
+  splits the bytes in half, derivationPrefix the first 8 and derivationSuffix the last 8, base64
+  (David: "split it in half … All that matters is that it's deterministic"); LpSatsPkh a BRC-29 key,
+  LpTokenPkh the 1Color module receiving key of the token, the sender the LP's own identity key.
+  Deploy and rebalance derive them for the new pool (`lpFeeAddresses`).
+- The fee walk (`syncPool`) stays one internalizeAction per swap, output 0 into `amm-pools`; output
+  2 is now a `wallet payment` on a sats-in swap and a `p color` receipt into the token's value basket
+  on a token-in swap. A hop whose continuation is filed is skipped (its fee went in with it).
+- Gone: the `openex fees` basket (and its manifest entry), `availableFees`, `collectFees`,
+  `collectBasket`, `composePages`, `estimatePageFee`, `feeInputsOf`, the `COLLECT_*` constants,
+  `FEES_BASKET`, the `AvailableFees` / `CollectOptions` / `CollectResult` types, `asError`, and the
+  Liquidity page's Collect button and "Available to collect" line. `syncFees` and the page-load walk
+  stay; the "fees earned" figures stay.
+- No dual layout (as 0.40.0): pools on the 0.54.x script are no pools to this release; close them on
+  0.54.x's pages first.
+- 0.55.0 in etc/app.json, build.zig.zon, the amm-lookup metadata, @dcasegr/amm-engine and
+  amm-client; bin/ rebuilt.
+
 ## 0.54.1 (branch `collect-report-0.54.1`; not tagged)
 
 A web-only cut: @dcasegr/amm-engine and amm-client 0.54.1, and the Liquidity page. The token app, its

@@ -13,16 +13,14 @@ import { ColorPlan } from "@bsv/color-permission-module";
 import { sdk as toolboxSdk } from "@bsv/wallet-toolbox-client";
 const { specOpWalletBalance } = toolboxSdk;
 import { decodeOneColor } from "../src/pool";
-import { tokenP2pkhScript } from "../src/lp/poolDeploy";
+import { lpFeeDerivation, tokenP2pkhScript } from "../src/lp/poolDeploy";
 import { decode, encode } from "cbor2";
 import { OneColor } from "@1sat/templates";
 import {
   NO_TERMS_TEXT,
   clearDefaultMarket,
   clearDefaultTerms,
-  availableFees,
   closePosition,
-  collectFees,
   connectAction,
   defaults,
   disableToken,
@@ -1083,8 +1081,8 @@ describe("LP fees (0.54.0): the walk covers every reported position", () => {
   const pd = poolDeploy.id("hex");
   const s1 = swap1.id("hex");
   const suffix = "c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9";
-  /** The BRC-29 era LP keyID the deploy's description names (` · amm-lp <suffix hex>`). */
-  const keyID = `${Utils.toBase64(Utils.toArray("amm-lp", "utf8"))} ${Utils.toBase64(Utils.toArray(suffix, "hex"))}`;
+  /** The LP keyID the deploy's description names (` · openex fees <its bytes, hex>`). */
+  const keyID = Utils.toBase64(Utils.toArray(suffix, "hex"));
   const deployAction = {
     txid: pd,
     satoshis: 0,
@@ -1094,10 +1092,10 @@ describe("LP fees (0.54.0): the walk covers every reported position", () => {
     labels: ["amm-pool-deploy"],
     version: 1,
     lockTime: 0,
-    outputs: [{ outputIndex: 0, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), outputDescription: `AMM pool: TST / BSV · amm-lp ${suffix}` }],
+    outputs: [{ outputIndex: 0, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), outputDescription: `AMM pool: TST / BSV · openex fees ${suffix}` }],
   };
   /** The NANNER case: the basket's row at the deploy output is listed `spendable: false`. */
-  const staleRow = { outpoint: `${pd}.0`, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), tags: ["amm-pool"], customInstructions: JSON.stringify({ protocolID: [2, "3241645161d8"], keyID, counterparty: "self", poolId: PID }) };
+  const staleRow = { outpoint: `${pd}.0`, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), tags: ["amm-pool"], customInstructions: JSON.stringify({ protocolID: [1, "openex fees"], keyID, counterparty: "self", poolId: PID }) };
   const oldPool = `${"ee".repeat(32)}_0`;
   const oldRow = { outpoint: `${"ee".repeat(32)}.0`, satoshis: 1000, lockingScript: new P2PKH().lock(new PrivateKey(5).toAddress()).toHex(), tags: ["amm-pool"], customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "old", counterparty: "self", poolId: oldPool }) };
   const swapEvent = { type: "swap", txid: s1, poolId: PID, outpoint: `${s1}_0`, lpPubKey: v.lp, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: SKEIN, at: 1, swaps: 1, side: "buy", feeLp: 60 };
@@ -1121,37 +1119,34 @@ describe("LP fees (0.54.0): the walk covers every reported position", () => {
       },
     } as unknown as WalletInterface;
   }
-  const filedOf = () => internalized as { outputs: { outputIndex: number; insertionRemittance: { basket: string; customInstructions: string } }[] }[];
+  const filedOf = () => internalized as { outputs: { outputIndex: number; protocol: string; insertionRemittance: { basket: string; customInstructions: string }; paymentRemittance?: unknown }[] }[];
 
   beforeEach(() => {
     inst.history = { [PID]: [swapEvent] };
     inst.txs[s1] = atomic(swap1, [fund, tokenDeploy, poolDeploy]);
   });
 
-  it("collectFees: a position only in the deploy history (its basket row non-spendable) is walked from the deploy, its fee filed under the description's BRC-29 key; an old-contract row is `stopped`, no read", async () => {
+  it("syncFees: a position only in the deploy history (its basket row non-spendable) is walked from the deploy, its sats fee taken in as a wallet payment from the description's keyID; an old-contract row is `stopped`, no read", async () => {
     setExchangeContext({ wallet: filingWallet({ pools: [staleRow, oldRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
-    const r = await collectFees();
-    expect(r).toEqual({ txids: [], pages: 0, sats: 0n, tokens: [], stopped: [{ poolId: oldPool, reason: "an old pool contract: not collectable by this client" }] });
+    expect(await syncFees()).toEqual([{ poolId: oldPool, reason: "an old pool contract: not walked by this client" }]);
     expect(filedOf()).toHaveLength(1);
     const [cont, fee] = filedOf()[0]!.outputs;
-    const want = { protocolID: [2, "3241645161d8"], keyID, counterparty: "self", poolId: PID };
+    const want = { protocolID: [1, "openex fees"], keyID, counterparty: "self", poolId: PID };
     expect(cont).toMatchObject({ outputIndex: 0, insertionRemittance: { basket: "amm-pools" } });
     expect(JSON.parse(cont!.insertionRemittance.customInstructions)).toEqual(want);
-    expect(fee).toMatchObject({ outputIndex: 2, insertionRemittance: { basket: "openex fees" } });
-    expect(JSON.parse(fee!.insertionRemittance.customInstructions)).toEqual(want);
+    expect(fee).toMatchObject({ outputIndex: 2, protocol: "wallet payment", paymentRemittance: lpFeeDerivation(keyID) });
     expect(inst.requests.filter((x) => x.includes("/pools/history"))).toEqual([`GET /@${TOKEN}/amm/pools/history?limit=100&outpoint=${PID}`, `GET /@${TOKEN}/amm/pools/history?limit=100&outpoint=${s1}_0`]);
     expect(inst.requests.some((x) => x.includes("ee".repeat(32)))).toBe(false);
   });
 
-  it("collectFees: a pool whose token is not enabled is `stopped` and no longer aborts the collect", async () => {
+  it("syncFees: a pool whose token is not enabled is `stopped`, nothing filed", async () => {
     inst.enabled[0]!.status = "disabled";
     setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
-    const r = await collectFees();
-    expect(r.stopped).toEqual([{ poolId: PID, reason: `${TOKEN.slice(0, 8)}… is not enabled on this exchange` }]);
+    expect(await syncFees()).toEqual([{ poolId: PID, reason: `${TOKEN.slice(0, 8)}… is not enabled on this exchange` }]);
     expect(internalized).toEqual([]);
   });
 
-  it("syncFees: the walk alone, silent; something filed fires onDataChange; no wallet, nothing; availableFees reads the fees basket once", async () => {
+  it("syncFees: the walk alone, silent; something filed fires onDataChange; no wallet, nothing; no fees basket is read", async () => {
     expect(await syncFees()).toEqual([]);
     setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
     let changed = 0;
@@ -1160,9 +1155,7 @@ describe("LP fees (0.54.0): the walk covers every reported position", () => {
     off();
     expect(changed).toBe(1);
     expect(filedOf()).toHaveLength(1);
-    walletReads = [];
-    expect(await availableFees()).toEqual({ sats: 0n, tokens: [], outputs: 0 });
-    expect(walletReads).toEqual(["openex fees"]);
+    expect(walletReads).not.toContain("openex fees");
     // A walk that stops is answered, not thrown.
     inst.history = null;
     expect((await syncFees())[0]).toMatchObject({ poolId: PID, reason: expect.stringMatching(/^the pool's history cannot be read/) });
@@ -1190,7 +1183,7 @@ describe("LP fees (0.54.0): the walk covers every reported position", () => {
     };
     await expect(rebalance()).rejects.toThrow(/^(?!could not catch up|No such position|the pool is already closed)/);
     expect(filedOf()).toHaveLength(1);
-    expect(filedOf()[0]!.outputs.map((o) => o.insertionRemittance.basket)).toEqual(["amm-pools", "openex fees"]);
+    expect(filedOf()[0]!.outputs.map((o) => o.protocol)).toEqual(["basket insertion", "wallet payment"]);
     internalized = [];
     inst.history = null;
     await expect(rebalance()).rejects.toThrow(/^could not catch up: the pool's history cannot be read/);
