@@ -92,6 +92,16 @@ describe("the history readers (H1–H6)", () => {
     expect(asked).toHaveLength(1);
   });
 
+  it("lpFees: GET /amm/lp/fees?pool=id1,id2&from=&to=; amounts as bigints", async () => {
+    const big = "1152921504606846977"; // 2^60 + 1
+    const { c, asked } = clientOver(() => json({ from: 10, to: 20, sats: "16", tokens: [{ tokenId: T, amount: big }], swaps: 3, pools: 2, byPool: [{ poolId: idOf(LP1), tokenId: T, sats: "16", tokens: "0", swaps: 1 }, { poolId: idOf(LP2), tokenId: T, sats: "0", tokens: big, swaps: 2 }] }));
+    const f = await c.lpFees([idOf(LP1), idOf(LP2)], { from: 10, to: 20 });
+    expect(asked).toEqual([`/amm/lp/fees?pool=${idOf(LP1)},${idOf(LP2)}&from=10&to=20`]);
+    expect(f).toEqual({ from: 10, to: 20, sats: 16n, tokens: [{ tokenId: T, amount: 2n ** 60n + 1n }], swaps: 3, pools: 2, byPool: [{ poolId: idOf(LP1), tokenId: T, sats: 16n, tokens: 0n, swaps: 1 }, { poolId: idOf(LP2), tokenId: T, sats: 0n, tokens: 2n ** 60n + 1n, swaps: 2 }] });
+    await c.lpFees([idOf(LP1)]);
+    expect(asked[1]).toBe(`/amm/lp/fees?pool=${idOf(LP1)}`);
+  });
+
   it("0.40.0: poolsAt GET /@<token>/amm/pools/at?t=; poolHistory GET /@<token>/amm/pools/history (forward paging: next → after); spendsAll GET /amm/spends?outpoint=a,b", async () => {
     const ev = { type: "swap", txid: "cd".repeat(32), poolId: idOf(LP1), outpoint: `${"cd".repeat(32)}_0`, bsvReserve: 1019910, tokenReserve: 4902394, lpPubKey: LP1, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: K, at: 7, swaps: 1, side: "buy", amountIn: 20000, amountOut: 97606, feeLp: 60, feeValidator: 10, feeCommission: 20, commissionPkh: "55".repeat(20), payoutPkh: "ee".repeat(20) };
     const { c, asked } = clientOver((u) =>

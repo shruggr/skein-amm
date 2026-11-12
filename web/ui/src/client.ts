@@ -14,7 +14,7 @@
  * - **Prices** (0.39.0, D3, D7): ONE read of the host-wide stats `GET <origin>/amm/stats`
  *   (`hostedTokens`): each token's price, liquidity (TVL) and pool count; no host-wide stream.
  * - **History** (0.39.0, D1–D6): `trades`, `trade`, `candles`, `stats`, `statsAll`, `holders`,
- *   `positionsAll` — plain GETs of the history routes (H1–H6, src/lib/overlay.ts).
+ *   `positionsAll`, `lpFees` — plain GETs of the history routes (H1–H6, H10, src/lib/overlay.ts).
  * - **Swap** (D11–D16; 0.40.0; 0.41.0): the token's pools route `GET /@<token>/amm/pools`, a plain
  *   read (`tokenPools`): the pools whose validator is beating and whose commission meets the
  *   market's minimum (the host's filter), each validator's minimum leg, the market's identity key
@@ -61,6 +61,7 @@ import {
   readDiscoveryIds,
   readDiscoveryList,
   readAllPositions,
+  readLpFees,
   readAllStats,
   readCandles,
   readHolders,
@@ -86,6 +87,7 @@ import {
   type DiscoveryRow,
   type Holders,
   type TokenPosition,
+  type LpFees,
   type TokenStats,
   type Trade,
   type TradesPage,
@@ -408,7 +410,7 @@ export interface RegisteredToken {
   status: EnabledToken["status"];
 }
 
-export type { EnabledToken, Defaults, Discovery, ExchangeBalance, PoolRow, PoolsAnswer, Candle, CandleSeries, CandleTf, Holders, PoolAt, PoolHistoryPage, SpendAll, TokenPosition, TokenStats, Trade, TradesPage };
+export type { EnabledToken, Defaults, Discovery, ExchangeBalance, PoolRow, PoolsAnswer, Candle, CandleSeries, CandleTf, Holders, PoolAt, PoolHistoryPage, SpendAll, TokenPosition, LpFees, TokenStats, Trade, TradesPage };
 export type { PoolEvent, PoolEventMessage, PoolRevert } from "./lib/overlay.js";
 export type { Price } from "./lib/overlay.js";
 export { parsePoolEventMessage } from "./lib/overlay.js";
@@ -1017,6 +1019,11 @@ function makeClient(opts: ClientOptions, s: Shared) {
   /** H5: the pools' positions on every enabled token (0.40.0: by pool id). */
   async function positionsAll(poolIds: string[]): Promise<TokenPosition[]> {
     return readAllPositions(swapBase, poolIds, ff);
+  }
+
+  /** H10: the pools' LP fees over swaps with from ≤ at < to (each optional; the host's `/amm/lp/fees`). */
+  async function lpFees(poolIds: string[], o: { from?: number; to?: number } = {}): Promise<LpFees> {
+    return readLpFees(swapBase, poolIds, o, ff);
   }
 
 
@@ -2083,6 +2090,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
     statsAll: guard(statsAll),
     holders: guard(holders),
     positionsAll: guard(positionsAll),
+    lpFees: guard(lpFees),
     registeredTokens: guard(registeredTokens),
     // swap
     quoteSwap,
