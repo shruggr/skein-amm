@@ -29,13 +29,13 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@1sat/actions": "0.1.5",
+    "@1sat/actions": "0.1.6",
     "@dcasegr/amm-engine": "0.55.0",
     "cbor2": "^2.3.0"
   },
   "peerDependencies": {
     "@1sat/templates": "^0.1.1",
-    "@bsv/color-permission-module": "^0.1.0",
+    "@bsv/color-permission-module": "^0.2.3",
     "@bsv/sdk": "^4.0.0"
   }
 }
