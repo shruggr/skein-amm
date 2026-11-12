@@ -33,6 +33,7 @@
  * | H7 | `GET /@<token>/amm/pools/at?t=<ms>` (0.40.0) | `[{poolId, outpoint, bsvReserve, tokenReserve, lpPubKey, …the three bps, validatorIdentityKey, at, swaps}]`: every pool listed at `t` |
  * | H8 | `GET /@<token>/amm/pools/history?from=&to=&pool=&limit=&after=&outpoint=` (0.40.0) | `{events: [PoolEvent], next}` oldest first; `next` → `after`; `outpoint` starts strictly after that record |
  * | H9 | `GET <origin>/amm/spends?outpoint=a,b` (0.40.0, the host's) | `[{outpoint, tokenId?, spentBy?}]`: each enabled token's `/spends`, the first that names a spender |
+ * | H10 | `GET <origin>/amm/lp/fees?pool=id1,id2&from=&to=` (open-exchange, the host's) | `{from, to, sats, tokens: [{tokenId, amount}], swaps, pools, byPool: [{poolId, tokenId, sats, tokens, swaps}]}`: the pools' LP fees over swaps with from ≤ at < to (a buy's in sats, a sell's in the pool's token; amounts decimal strings) |
  * | H6 | `GET /@<token>/amm/color/<token>/holders?limit=&skip=` | `{count, rows: [{address, balance}]}` largest first |
  * | E1 | `GET /@<token>/amm/events`, `GET <origin>/amm/events` (0.41.0, the host's) | Server-Sent Events, each `event: pool`, `data: {tokenId, …row}`: the AMM lookup's pool event (a deploy, swap, close or rescind: the H8 row; a `revert`), one token's or every enabled token's; nothing on connect, nothing replayed |
  *
@@ -708,6 +709,33 @@ export async function readAllPositions(swapBase: string, poolIds: string[], fetc
   return (Array.isArray(a) ? (a as Record<string, unknown>[]) : [])
     .filter((r) => r && typeof r.tokenId === "string" && typeof r.poolId === "string")
     .map((r) => ({ tokenId: String(r.tokenId), ...lpPoolOf(r, String(r.poolId)) }));
+}
+
+/** H10: the LP fees of named pools over a period (amounts bigints; `tokens` the sells' fees per token). */
+export interface LpFees {
+  from: number | null;
+  to: number | null;
+  sats: bigint;
+  tokens: Array<{ tokenId: string; amount: bigint }>;
+  swaps: number;
+  pools: number;
+  byPool: Array<{ poolId: string; tokenId: string; sats: bigint; tokens: bigint; swaps: number }>;
+}
+
+/** H10: `GET <swap base>/lp/fees?pool=id1,id2&from=&to=` → the pools' LP fees over swaps with from ≤ at < to (each optional). */
+export async function readLpFees(swapBase: string, poolIds: string[], o: { from?: number; to?: number } = {}, fetchFn?: FetchFn): Promise<LpFees> {
+  const q = query({ from: o.from, to: o.to });
+  const a = (await getJson(`${trim(swapBase)}/lp/fees?pool=${list(poolIds)}${q ? `&${q.slice(1)}` : ""}`, fetchFn)) as Record<string, unknown> | null;
+  const rows = (x: unknown) => (Array.isArray(x) ? (x as Record<string, unknown>[]) : []).filter((r) => r && typeof r === "object");
+  return {
+    from: intOrNull(a?.from),
+    to: intOrNull(a?.to),
+    sats: wireBig(a?.sats),
+    tokens: rows(a?.tokens).filter((r) => typeof r.tokenId === "string").map((r) => ({ tokenId: String(r.tokenId), amount: wireBig(r.amount) })),
+    swaps: int(a?.swaps),
+    pools: int(a?.pools),
+    byPool: rows(a?.byPool).filter((r) => typeof r.poolId === "string" && typeof r.tokenId === "string").map((r) => ({ poolId: String(r.poolId), tokenId: String(r.tokenId), sats: wireBig(r.sats), tokens: wireBig(r.tokens), swaps: int(r.swaps) })),
+  };
 }
 
 // ---------------------------------------------------------------------------

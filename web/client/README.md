@@ -52,7 +52,10 @@ The client (each an async function unless noted):
   from, to, series?})` (`series` `fill`, the default, or `market`), `stats(tokenId)` /
   `statsAll({ids?, fresh?})` (`price` = the midpoint of what a buy and a sell of 1% of the pooled sats
   would pay now, `buyPrice`, `sellPrice`, `lastTradePrice`), `holders(tokenId, {limit?, skip?})` →
-  `{count, rows}`, `positionsAll(poolIds)`, `poolsAt(tokenId, t)` (every pool listed at `t`),
+  `{count, rows}`, `positionsAll(poolIds)`, `lpFees(poolIds, {from?, to?})` (the host's
+  `/amm/lp/fees`: the pools' LP fees over swaps with `from ≤ at < to` → `{from, to, sats, tokens:
+  [{tokenId, amount}], swaps, pools, byPool: [{poolId, tokenId, sats, tokens, swaps}]}`, a buy's fee in
+  sats, a sell's in the pool's token), `poolsAt(tokenId, t)` (every pool listed at `t`),
   `poolHistory(tokenId, {from?, to?, pool?, limit?, after?})` → `{events, next}` (oldest first;
   forward paging: `next` as `after`), `spendsAll(outpoints)` (the host's `/amm/spends`); amounts
   bigints, prices `{sats, tokens}` pairs of bigints (base units both);
