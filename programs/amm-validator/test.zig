@@ -1146,6 +1146,30 @@ test "refused: a swap's outputs not the contract's (bad_outputs): the commission
     try S.expectBad(f, try S.outs(a, req, short), op, "the LP fee");
     // An output past the change.
     try S.expectBad(f, try S.outs(a, req, try std.mem.concat(a, bsvz.transaction.Output, &.{ tx.outputs, &.{tx.outputs[4]} })), op, "outputs past");
+    // 0.55.0: the sats-in LP fee to the LP key's hash (the old address) or to the pool's LpTokenPkh: not the contract's.
+    try S.expectBad(f, try withOutput(a, req, 2, try p2pkhLock(a, &bsvz.crypto.hash.hash160(&key33(vec.lp)).bytes)), op, "the LP fee");
+    try S.expectBad(f, try withOutput(a, req, 2, try p2pkhLock(a, &key20(vec.lp_token_pkh))), op, "the LP fee");
+    try testing.expectEqual(@as(usize, 0), f.oracle.calls);
+}
+
+test "refused (0.55.0): a tokens-in swap's LP fee paid to another address than the pool's LpTokenPkh (bad_outputs)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try Fx.init(a, &.{ "fund", "token_deploy", "pool_deploy", "swap_bsv_in" });
+    const req = try request(a, f.raw("swap_tokens_in"), 0);
+    const op: Outpoint = .{ .txid = txidOf(f.raw("swap_bsv_in")), .vout = 0 };
+    const tx = try Transaction.parse(a, req);
+    const fee = tx.outputs[2].locking_script.bytes;
+    // The token fee output pays the pool's LpTokenPkh: its P2PKH remainder's hash.
+    try testing.expectEqualSlices(u8, &key20(vec.lp_token_pkh), fee[fee.len - 22 ..][0..20]);
+    for ([_][20]u8{ bsvz.crypto.hash.hash160(&key33(vec.lp)).bytes, key20(vec.lp_sats_pkh) }) |to| {
+        const other = try a.dupe(u8, fee);
+        @memcpy(other[other.len - 22 ..][0..20], &to);
+        const r = try f.spend(.swap, try withOutput(a, req, 2, other), op);
+        try expectRefused(r, .bad_outputs);
+        try testing.expect(std.mem.indexOf(u8, r.refused.detail.?, "the LP fee") != null);
+    }
     try testing.expectEqual(@as(usize, 0), f.oracle.calls);
 }
 

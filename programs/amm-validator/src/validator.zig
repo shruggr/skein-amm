@@ -612,7 +612,8 @@ pub fn swapArgs(call: unlock.Call) ?SwapArgs {
 
 /// A Swap's output set against the contract's (the pool spent holding
 /// `satoshis`): 0 the continuation holding the new reserves, 1 the payout to
-/// userPkh in the other asset, then the LP fee (to the LpPubKey's hash), the
+/// userPkh in the other asset, then the LP fee (0.55.0: to the pool's LpSatsPkh on a sats-in
+/// Swap, its LpTokenPkh on a token-in Swap), the
 /// validator fee (to the spent ValidatorPubKey's hash) and the commission
 /// (to commissionPkh), each in the input asset and only when nonzero, then
 /// (0.40.0) the token change (1 sat, `tokenChange` tokens to tokenChangePkh)
@@ -627,7 +628,7 @@ pub fn swapOutputs(a: std.mem.Allocator, spent: pool.Pool, satoshis: u64, call: 
     if (outs[0].satoshis != q.bsv_reserve) return "the continuation's BSV reserve";
     if (next.pool.token_reserve != q.token_reserve) return "the continuation's TokenReserve";
     const Want = struct { name: []const u8, amount: u64, pkh: [20]u8, is_bsv: bool };
-    const lp_pkh = bsvz.crypto.hash.hash160(&spent.lp).bytes;
+    const lp_pkh = if (args.bsv_in) spent.lp_sats_pkh else spent.lp_token_pkh;
     const val_pkh = bsvz.crypto.hash.hash160(&spent.validator).bytes;
     var wants: std.ArrayList(Want) = .empty;
     try wants.append(a, .{ .name = "the payout", .amount = q.out, .pkh = args.user_pkh, .is_bsv = !args.bsv_in });
@@ -683,7 +684,7 @@ pub const AffirmRequest = struct {
 /// docs/AMM.md "The deploy and the affirmation"). Before the LP's wallet builds the deploy, the
 /// validator checks the proposed pool, picks a random 32-byte nonce, derives its key from it
 /// (`pool.firstValidatorKey`, the key this validator signs the pool's first swap with) and signs
-/// the pool's parameters as they will be (`pool.affirmMessage`, message v2, the key and the nonce
+/// the pool's parameters as they will be (`pool.affirmMessage`, message v3, the key, the nonce and the LP fee addresses
 /// in it). Checked, in order: the script is a pool (the Pool code, a 32-byte id at output 0's
 /// form, its prefix agreeing with the state) with no payload; its ValidatorIdentity is ours; its
 /// token's topic is one this instance validates; its fees are our terms, exactly; its reserves are

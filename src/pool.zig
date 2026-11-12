@@ -17,8 +17,10 @@
 //!         assetId as `0x20 <32 bytes>`, lpFeeBps, validatorFeeBps and
 //!         commissionBps as script numbers) || OP_RETURN ||
 //!   TokenReserve (8 bytes, LE sign-magnitude) || LpPubKey || ValidatorPubKey
-//!   || ValidatorIdentity (33 bytes each) || Nonce (32 bytes) || Affirmation
-//!   (one length byte, then the validator's DER signature; `OP_0` when empty)
+//!   || ValidatorIdentity (33 bytes each) || Nonce (32 bytes) || LpSatsPkh ||
+//!   LpTokenPkh (20 bytes each, 0.55.0: where Swap pays the LP fee, by direction)
+//!   || Affirmation (one length byte, then the validator's DER signature; `OP_0`
+//!   when empty)
 //!
 //! A rescinded pool's ValidatorPubKey is 33 zero bytes (`Pool.rescinded`).
 //!
@@ -56,9 +58,10 @@ const bsvz = c.bsvz;
 /// `1-amm pool-<txid>_<vout>`). gen/vectors must match.
 pub const validator_protocol = bsvz.primitives.key_deriver.Protocol{ .security_level = 1, .name = "amm pool" };
 
-/// The state's fixed part: TokenReserve, three keys, the Nonce. The Affirmation follows, one
-/// length byte then the DER (`state_len_max` with a 72-byte DER, the longest a low-S DER is).
-pub const state_fixed_len = 8 + 33 * 3 + 32;
+/// The state's fixed part: TokenReserve, three keys, the Nonce, the two LP fee addresses
+/// (0.55.0). The Affirmation follows, one length byte then the DER (`state_len_max` with a
+/// 72-byte DER, the longest a low-S DER is).
+pub const state_fixed_len = 8 + 33 * 3 + 32 + 20 * 2;
 pub const state_len_max = state_fixed_len + 1 + 72;
 const OP_RETURN = 0x6a;
 
@@ -76,6 +79,10 @@ pub const Pool = struct {
     identity: [33]u8,
     /// The validator's nonce (0.13.0): keys the pool's first validator key.
     nonce: [32]u8,
+    /// Where Swap pays the LP fee (0.55.0): on a sats-in Swap (the fee in sats)…
+    lp_sats_pkh: [20]u8,
+    /// …and on a token-in Swap (the fee in tokens). Fixed at deploy, carried unchanged.
+    lp_token_pkh: [20]u8,
     /// The validator's affirmation (0.13.0): its DER signature over `affirmMessage`; empty when
     /// the pool carries none. A slice of the parsed lock.
     affirmation: []const u8,
@@ -288,6 +295,8 @@ pub fn parse(lock: []const u8) ParseError!?Pool {
         .validator = keys[1],
         .identity = keys[2],
         .nonce = st[8 + 99 ..][0..32].*,
+        .lp_sats_pkh = st[8 + 99 + 32 ..][0..20].*,
+        .lp_token_pkh = st[8 + 99 + 32 + 20 ..][0..20].*,
         .affirmation = st[state_fixed_len + 1 ..],
         .code_len = code_len,
     };
@@ -381,26 +390,28 @@ pub const Terms = struct {
 };
 
 /// The affirmation message's tag (its first bytes): a domain separator and the layout's version.
-pub const affirm_tag = "skein-amm affirm 2";
+pub const affirm_tag = "skein-amm affirm 3";
 
-/// The affirmation message's length: the tag, the asset id, three fees, two reserves, three keys
-/// and the nonce (221 bytes).
-pub const affirm_len = affirm_tag.len + 32 + 8 * 3 + 8 * 2 + 33 * 3 + 32;
+/// The affirmation message's length: the tag, the asset id, three fees, two reserves, three keys,
+/// the nonce and the two LP fee addresses (261 bytes).
+pub const affirm_len = affirm_tag.len + 32 + 8 * 3 + 8 * 2 + 33 * 3 + 32 + 20 * 2;
 
 fn le64(out: []u8, v: u64) void {
     std.mem.writeInt(u64, out[0..8], v, .little);
 }
 
-/// The bytes the affirmation signs (docs/AMM.md "The deploy and the affirmation"), message v2:
+/// The bytes the affirmation signs (docs/AMM.md "The deploy and the affirmation"), message v3
+/// (0.55.0):
 ///
-///   "skein-amm affirm 2" (18 bytes, ASCII)
+///   "skein-amm affirm 3" (18 bytes, ASCII)
 ///   ‖ AssetId (32: the bytes the pool script pushes, the token's deploy txid in internal order)
 ///   ‖ LpFeeBps ‖ ValidatorFeeBps ‖ CommissionBps (int64 LE each)
 ///   ‖ TokenReserve ‖ the pool output's satoshis (uint64 LE each)
 ///   ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity (33 each, compressed)
 ///   ‖ Nonce (32)
+///   ‖ LpSatsPkh ‖ LpTokenPkh (20 each)
 ///
-/// 221 bytes; the signature is ECDSA (DER) by the ValidatorPubKey over sha256 of them. No
+/// 261 bytes; the signature is ECDSA (DER) by the ValidatorPubKey over sha256 of them. No
 /// termsHash (v1's): the three fees are the terms.
 pub fn affirmMessage(p: Pool, satoshis: u64) [affirm_len]u8 {
     var m: [affirm_len]u8 = undefined;
@@ -426,6 +437,8 @@ pub fn affirmMessage(p: Pool, satoshis: u64) [affirm_len]u8 {
     put(&m, &at, &p.validator);
     put(&m, &at, &p.identity);
     put(&m, &at, &p.nonce);
+    put(&m, &at, &p.lp_sats_pkh);
+    put(&m, &at, &p.lp_token_pkh);
     std.debug.assert(at == affirm_len);
     return m;
 }
@@ -626,7 +639,8 @@ pub const SwapFees = struct {
 /// The fees a Swap transaction paid: the call on input `pool_input` (`parseSwapCall`), the
 /// continuation at output 0, the fee outputs where `feeLayout` puts them, each checked to hold the
 /// contract's amount (`payoutSats`) and the LP's and the commission's their payout script
-/// (`payoutScript` to Hash160 of the continuation's LpPubKey, to the call's commissionPkh); a zero
+/// (`payoutScript` to the continuation's LpSatsPkh on a sats-in Swap, its LpTokenPkh on a token-in
+/// Swap (0.55.0), to the call's commissionPkh); a zero
 /// fee has no output. Null when the transaction is not such a Swap (no call, no continuation, a fee
 /// output missing or not the contract's).
 pub fn feesOf(a: std.mem.Allocator, tx: c.bsvz.transaction.Transaction, pool_input: usize) !?SwapFees {
@@ -638,7 +652,7 @@ pub fn feesOf(a: std.mem.Allocator, tx: c.bsvz.transaction.Transaction, pool_inp
     if (l.end > tx.outputs.len) return null;
     const pkh = call.commission_pkh[0..20].*;
     const checks = [_]struct { at: ?usize, amount: u64, to: ?[20]u8 }{
-        .{ .at = l.lp_at, .amount = l.lp_fee, .to = bsvz.crypto.hash.hash160(&cont.lp).bytes },
+        .{ .at = l.lp_at, .amount = l.lp_fee, .to = if (call.bsv_in) cont.lp_sats_pkh else cont.lp_token_pkh },
         .{ .at = l.validator_at, .amount = l.validator_fee, .to = null },
         .{ .at = l.commission_at, .amount = l.commission, .to = pkh },
     };

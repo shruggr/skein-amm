@@ -158,7 +158,7 @@ test "pool: deploy admitted" {
     }
 }
 
-test "pool: the affirmation (0.13.0): derived from the nonce, signed over message v2; unaffirmed, forged and own-key deploys are not affirmed" {
+test "pool: the affirmation (0.13.0): derived from the nonce, signed over message v3 (0.55.0); unaffirmed, forged and own-key deploys are not affirmed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -169,12 +169,16 @@ test "pool: the affirmation (0.13.0): derived from the nonce, signed over messag
     try testing.expect(pool.affirmed(a, ps, sats));
     const p = pool.poolOfScript(ps).?;
 
-    // The message: 221 bytes, the tag first and the nonce last.
+    // The message (0.55.0, v3): 261 bytes, the tag first, then the nonce and the two LP fee addresses last.
     const m = pool.affirmMessage(p, sats);
-    try testing.expectEqual(@as(usize, 221), m.len);
-    try testing.expectEqualStrings("skein-amm affirm 2", m[0..18]);
+    try testing.expectEqual(@as(usize, 261), m.len);
+    try testing.expectEqualStrings("skein-amm affirm 3", m[0..18]);
     try testing.expectEqualSlices(u8, &f.id, m[18..][0..32]);
-    try testing.expectEqualSlices(u8, unhex(a, vec.nonce), m[m.len - 32 ..]);
+    try testing.expectEqualSlices(u8, unhex(a, vec.nonce), m[m.len - 72 ..][0..32]);
+    try testing.expectEqualSlices(u8, &key20(vec.lp_sats_pkh), m[m.len - 40 ..][0..20]);
+    try testing.expectEqualSlices(u8, &key20(vec.lp_token_pkh), m[m.len - 20 ..]);
+    try testing.expectEqualSlices(u8, &key20(vec.lp_sats_pkh), &p.lp_sats_pkh);
+    try testing.expectEqualSlices(u8, &key20(vec.lp_token_pkh), &p.lp_token_pkh);
     try testing.expectEqualSlices(u8, &key33(vec.pool0.validator), m[18 + 32 + 24 + 16 + 33 ..][0..33]);
 
     // Any other satoshis, fee, key or nonce: it does not verify.
@@ -186,6 +190,13 @@ test "pool: the affirmation (0.13.0): derived from the nonce, signed over messag
     other.nonce[0] ^= 1;
     try testing.expect(!pool.affirmationVerifies(other, sats, p.affirmation));
     try testing.expect(!pool.affirmedPool(a, other, sats));
+    // 0.55.0: the LP fee addresses are signed too.
+    other = p;
+    other.lp_sats_pkh[0] ^= 1;
+    try testing.expect(!pool.affirmationVerifies(other, sats, p.affirmation));
+    other = p;
+    other.lp_token_pkh[19] ^= 1;
+    try testing.expect(!pool.affirmationVerifies(other, sats, p.affirmation));
 
     // Unaffirmed (no Affirmation), forged (another key signed it), own key (the key is not the
     // identity's child of the nonce, though its signature verifies: v0.11.0's defect).
@@ -306,7 +317,7 @@ test "pool: quoteSwap and payoutScript reproduce the fixtures' swaps (the contra
     try testing.expect(pool.feeOf(1, -1) == null);
 }
 
-test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swaps — the three fee outputs where the relay looks, in the input asset; the LP's to Hash160 of the LpPubKey, the commission's to the call's commissionPkh" {
+test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swaps — the three fee outputs where the relay looks, in the input asset; the LP's to the pool's LpSatsPkh or LpTokenPkh by direction (0.55.0), the commission's to the call's commissionPkh" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -331,7 +342,8 @@ test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swap
     try testing.expectEqual(@as(u64, 20), fee1.commission);
     try testing.expect(fee1.bsv_in);
     try testing.expectEqualSlices(u8, &key20(vec.commission_pkh), &fee1.commission_pkh);
-    try testing.expectEqualSlices(u8, &pool.p2pkh(bsvz.crypto.hash.hash160(&key33(vec.lp)).bytes), sw1.outputs[2].locking_script.bytes);
+    // 0.55.0: a sats-in Swap's LP fee goes to the pool's LpSatsPkh.
+    try testing.expectEqualSlices(u8, &pool.p2pkh(key20(vec.lp_sats_pkh)), sw1.outputs[2].locking_script.bytes);
 
     // Tokens in, 50,000: LP 150 tokens, a 1-sat token output.
     const fee2 = (try pool.feesOf(a, sw2, 0)).?;
@@ -339,6 +351,8 @@ test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swap
     try testing.expectEqual(@as(u64, 25), fee2.validator);
     try testing.expectEqual(@as(u64, 50), fee2.commission);
     try testing.expect(!fee2.bsv_in);
+    // 0.55.0: a token-in Swap's LP fee goes to the pool's LpTokenPkh.
+    try testing.expectEqualSlices(u8, try pool.payoutScript(a, cont1.asset_id, 150, key20(vec.lp_token_pkh), false), sw2.outputs[2].locking_script.bytes);
 
     // Not a Swap: a deploy has no call; a pool input that is not the call's; an LP output not the contract's.
     const pd = f.txs.get(w.beef.txidOf(f.raws.get("pool_deploy").?)).?;
@@ -356,6 +370,21 @@ test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swap
     var bad2 = sw1;
     bad2.outputs = outs2;
     try testing.expect((try pool.feesOf(a, bad2, 0)) == null);
+    // 0.55.0: the LP fee paid to the LP key's hash (the old address), or to the other direction's: not the contract's.
+    for ([_][20]u8{ bsvz.crypto.hash.hash160(&key33(vec.lp)).bytes, key20(vec.lp_token_pkh) }) |to| {
+        const outs3 = try a.dupe(bsvz.transaction.Output, sw1.outputs);
+        outs3[2].locking_script = bsvz.script.Script.init(&pool.p2pkh(to));
+        var bad3 = sw1;
+        bad3.outputs = outs3;
+        try testing.expect((try pool.feesOf(a, bad3, 0)) == null);
+    }
+    {
+        const outs4 = try a.dupe(bsvz.transaction.Output, sw2.outputs);
+        outs4[2].locking_script = bsvz.script.Script.init(try pool.payoutScript(a, cont1.asset_id, 150, key20(vec.lp_sats_pkh), false));
+        var bad4 = sw2;
+        bad4.outputs = outs4;
+        try testing.expect((try pool.feesOf(a, bad4, 0)) == null);
+    }
 
     // A rate the contract's arithmetic is not defined for names itself.
     var neg = cont1;
@@ -369,7 +398,7 @@ test "pool (0.33.0): parseSwapCall, feeLayout and feesOf read the fixtures' swap
     try testing.expectEqual(@as(?usize, 2), l0.validator_at);
     // No commission: no commission output (the continuation's CommissionBps OP_0, output 4 gone); its fees read as 0.
     const script = try a.dupe(u8, sw1.outputs[0].locking_script.bytes);
-    script[script.len - brc162.decode(script).?.lock.len + 724] = 0x00;
+    script[script.len - brc162.decode(script).?.lock.len + 740] = 0x00;
     var outs3: std.ArrayList(bsvz.transaction.Output) = .empty;
     for (sw1.outputs, 0..) |o, i| if (i != 4) try outs3.append(a, o);
     outs3.items[0].locking_script = bsvz.script.Script.init(script);
@@ -416,11 +445,11 @@ test "pool: CommissionBps is read under the canonical-number rule" {
     const a = arena.allocator();
     const f = try Fixtures.init(a);
     const lock = brc162.decode((try f.tx(a, "pool_deploy")).outputs[0].script).?.lock;
-    // Slots 697 (lpFeeBps 30: `01 1e`, one byte longer than the placeholder)
-    // and 710 (validatorFeeBps 5: OP_5) come first (the codeSepIndex slot at
-    // 608 is OP_1, one byte), so CommissionBps (template offset 723) sits at
-    // 724 in the lock, as OP_10.
-    const at = 724;
+    // Slots 713 (lpFeeBps 30: `01 1e`, one byte longer than the placeholder)
+    // and 726 (validatorFeeBps 5: OP_5) come first (the codeSepIndex slots
+    // are OP_1, one byte), so CommissionBps (template offset 739, 0.55.0) sits
+    // at 740 in the lock, as OP_10.
+    const at = 740;
     try testing.expectEqual(@as(u8, 0x5a), lock[at]);
 
     // OP_0: a pool with no commission.

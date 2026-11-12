@@ -12,7 +12,7 @@
 //! is listed when
 //!   (a) it attests itself (pool.zig `affirmed`): not rescinded, its ValidatorPubKey the
 //!       ValidatorIdentity's child keyed by its Nonce (derived here, not trusted), and its
-//!       Affirmation that key's signature of the pool's parameters (message v2) — a deploy; or
+//!       Affirmation that key's signature of the pool's parameters (message v3) — a deploy; or
 //!   (b) its transaction calls Swap on a listed pool of this token (the pool input's method, the
 //!       unlocking script's last push) and its ValidatorPubKey is the identity's child keyed by
 //!       that spent outpoint (pool.zig `nextKeyOf`) — a Swap's continuation.
