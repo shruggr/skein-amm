@@ -4,6 +4,21 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.53.0 (branch `merge-pr8-ui-design-pass`; not tagged)
+
+A pages-only release: the web/ui design pass contributed by Dan Wagner (PR #8), plus @dcasegr/amm-engine
+and amm-client at 0.53.0 (no client change). The token app, its programs and etc/app.json stay at 0.52.1.
+
+- A type and spacing system over the Open Exchange pages (src/styles.css); light by default
+  (index.html `color-scheme` light, `theme-color` #FFFFFF, manifest background #F6F5F1), dark kept.
+- A light/dark switch in the header (`ThemeToggle`, src/ox/bits.tsx; the choice in localStorage `ox-theme`;
+  an inline script in index.html sets `data-theme` before first paint).
+- Form fields with unit affixes, status pills, a danger button for Disable, empty-state hints ("Add the
+  first pool"), loading states, pluralised position counts, "sats per SYM" next to the market price.
+- Settings: thousands separators in sats (`groupSats`, an optional `fmt` on `enablePriceText` and
+  `exchangeBalanceText`, default `String`).
+- No call into the client changes; no data flow change.
+
 ## 0.52.1 (2026-11-11)
 
 Re-pins (David 2026-11-11: a held transaction a BEEF carries raw is read as its txid-only entry):
