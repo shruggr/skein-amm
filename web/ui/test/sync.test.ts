@@ -11,8 +11,8 @@ import { Beef, LockingScript, P2PKH, PrivateKey, Transaction, UnlockingScript, U
 import { describe, expect, it } from "vitest";
 import { assetBasket } from "@bsv/color-permission-module";
 import type { PoolEvent } from "../src/lib/overlay";
-import { PoolTemplate, RESCINDED_KEY } from "../src/pool";
-import { POOL_TAG, lpFeeDerivation, tokenP2pkhScript } from "../src/lp/poolDeploy";
+import { PoolTemplate, RESCINDED_KEY, oneColorValuePrefix } from "../src/pool";
+import { POOL_TAG, lpFeeDerivation } from "../src/lp/poolDeploy";
 import { syncPool, type SyncIo } from "../src/lp/sync";
 import { poolCustomInstructions } from "../src/lp/poolDeploy";
 import { POOLS_BASKET } from "../src/wallet/color";
@@ -26,7 +26,10 @@ const payee = new PrivateKey(11);
 const PUB = payee.toPublicKey().toString();
 const pool = PoolTemplate.decode(poolDeploy.outputs[0]!.lockingScript)!;
 const payout = new P2PKH().lock(payee.toAddress());
-const feeLock = new P2PKH().lock(payee.toAddress());
+/** 0.55.0: a sats-in swap's LP fee output, to the pool's LpSatsPkh. */
+const feeLock = LockingScript.fromHex(`76a914${pool.state.lpSatsPkh}88ac`);
+/** 0.55.0: a token-in swap's LP fee output of `amount`, to the pool's LpTokenPkh. */
+const tokenFeeLock = (amount: bigint) => Utils.toHex(oneColorValuePrefix(Utils.toArray(pool.args.assetId, "hex"), amount)) + `76a914${pool.state.lpTokenPkh}88ac`;
 
 const HELD = {
   id: TOKEN_ID,
@@ -261,7 +264,7 @@ describe("syncPool", () => {
   });
 
   it("takes a token fee in from output 2 as a `p color` receipt into the pool's token's value basket (its token the pool's, not the row's)", async () => {
-    const tokenFee = tokenP2pkhScript(TOKEN_ID, 7n, PUB);
+    const tokenFee = tokenFeeLock(7n);
     // A token-in swap: the pool's BSV reserve falls.
     const tx = spend(poolDeploy, 0, [
       { satoshis: poolDeploy.outputs[0]!.satoshis! - 1000, lockingScript: cont },
@@ -327,6 +330,43 @@ describe("syncPool", () => {
     });
     expect(await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs))).toEqual({ caughtUp: false, reason: `${txid} names an LP fee and has no output 2` });
     expect(internalized(bag)).toHaveLength(0);
+  });
+
+  it("0.55.0: the fee is the transaction's — an event naming no fee, the tx paying the pool's LP fee at output 2: the fee is declared", async () => {
+    const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(swap, "swap")]]]);
+    const bag = syncWallet({ pools: [deployRow()] });
+    expect(await syncPool(bag.wallet, POOL_ID, ioOf(pages, new Map([[swap.id("hex"), swapBeef]])))).toEqual({ caughtUp: true, filed: 1 });
+    expect(internalized(bag)[0]!.outputs[1]).toEqual(satsFee(HELD.keyID));
+  });
+
+  it("0.55.0: an event naming a fee whose tx pays another script at output 2 (the LP key's, or the other direction's address) stops the walk, nothing filed", async () => {
+    for (const other of [new P2PKH().lock(payee.toAddress()), LockingScript.fromHex(`76a914${pool.state.lpTokenPkh}88ac`)]) {
+      const tx = spend(poolDeploy, 0, [
+        { satoshis: poolDeploy.outputs[0]!.satoshis! + 1000, lockingScript: cont },
+        { satoshis: 1000, lockingScript: payout },
+        { satoshis: 60, lockingScript: other },
+      ]);
+      const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(tx, "swap", { feeLp: 60n })]]]);
+      const bag = syncWallet({ pools: [deployRow()] });
+      expect(await syncPool(bag.wallet, POOL_ID, ioOf(pages, new Map([[tx.id("hex"), rawBeef(tx, [poolDeploy])]])))).toEqual({
+        caughtUp: false,
+        reason: `${tx.id("hex")} names an LP fee and its output 2 is not the pool's LP fee output`,
+      });
+      expect(internalized(bag)).toHaveLength(0);
+    }
+  });
+
+  it("0.55.0: a token-in swap whose output 2 is a token output to the sats address (not the pool's LP fee output) and an event naming no fee: the continuation alone", async () => {
+    const wrong = Utils.toHex(oneColorValuePrefix(Utils.toArray(pool.args.assetId, "hex"), 7n)) + `76a914${pool.state.lpSatsPkh}88ac`;
+    const tx = spend(poolDeploy, 0, [
+      { satoshis: poolDeploy.outputs[0]!.satoshis! - 1000, lockingScript: cont },
+      { satoshis: 1000, lockingScript: payout },
+      { satoshis: 1, lockingScript: wrong },
+    ]);
+    const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(tx, "swap")]]]);
+    const bag = syncWallet({ pools: [deployRow()] });
+    await syncPool(bag.wallet, POOL_ID, ioOf(pages, new Map([[tx.id("hex"), rawBeef(tx, [poolDeploy])]])));
+    expect(internalized(bag)[0]!.outputs.map((o) => o.outputIndex)).toEqual([0]);
   });
 
   it("stops, nothing filed, when the pool's keyID does not split into the fee derivation (not 16 bytes)", async () => {

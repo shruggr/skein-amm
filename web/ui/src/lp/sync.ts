@@ -15,7 +15,7 @@
 import { Beef, Transaction, Utils, type InternalizeOutput, type WalletInterface, type WalletOutput, type WalletProtocol } from "@bsv/sdk";
 import type { PoolEvent } from "../lib/overlay.js";
 import { parseOutpoint, sdkTokenId, tokenIdOfWire } from "../lib/tokenId.js";
-import { PoolTemplate } from "../pool/index.js";
+import { PoolTemplate, decodeOneColor, oneColorValuePrefix, type Pool } from "../pool/index.js";
 import { POOLS_BASKET, receiptOutput } from "../wallet/color.js";
 import { WALLET_PAYMENT, identityKeyOf } from "../wallet/brc29.js";
 import { errorText } from "../errors.js";
@@ -117,6 +117,22 @@ function spendsHeld(tx: Transaction, held: WalletOutput): boolean {
   });
 }
 
+/**
+ * Whether output 2 of the swap `tx` is the pool's LP fee output (0.55.0), read from the transaction
+ * alone: on a sats-in swap a P2PKH to the pool's LpSatsPkh; on a token-in swap a 1Color value
+ * output of the pool's token whose P2PKH remainder is its LpTokenPkh, byte for byte.
+ */
+function paysLpFee(tx: Transaction, pool: Pool, bsvIn: boolean): boolean {
+  const out = tx.outputs[2];
+  if (!out?.lockingScript) return false;
+  const script = out.lockingScript.toHex();
+  if (bsvIn) return script === `76a914${pool.state.lpSatsPkh}88ac`;
+  const t = decodeOneColor(Utils.toArray(script, "hex"));
+  if (!t || t.role !== "value" || t.amount <= 0n) return false;
+  const prefix = oneColorValuePrefix(Utils.toArray(pool.args.assetId, "hex"), t.amount);
+  return script === Utils.toHex(prefix) + `76a914${pool.state.lpTokenPkh}88ac`;
+}
+
 function continuationOf(held: WalletOutput, tx: Transaction, poolId: string): WalletOutput {
   const out = tx.outputs[0]!;
   return {
@@ -184,8 +200,15 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
     if (!pool) return { stop: `${event.txid}'s output 0 is not a pool` };
     if (lpPubKey && pool.state.lpPubKey.toLowerCase() !== lpPubKey) return { closed: event.txid };
     const rescind = event.type === "rescind" || PoolTemplate.rescinded(pool);
-    const wantFee = event.type === "swap" && (event.feeLp ?? 0n) > 0n && !rescind;
-    if (wantFee && !tx.outputs[2]) return { stop: `${event.txid} names an LP fee and has no output 2` };
+    // 0.55.0: whether the hop pays the LP fee is the transaction's (output 2 the pool's LP fee output for
+    // the swap's direction: a sats-in swap raises the pool's BSV reserve), never the event's alone. An
+    // event naming a fee the transaction does not pay stops the walk: a filed continuation is never
+    // walked again, so its fee would be lost.
+    const bsvIn = (tx.outputs[0]!.satoshis ?? 0) > current.satoshis;
+    const wantFee = event.type === "swap" && !rescind && paysLpFee(tx, pool, bsvIn);
+    if (event.type === "swap" && !rescind && (event.feeLp ?? 0n) > 0n && !wantFee) {
+      return { stop: tx.outputs[2] ? `${event.txid} names an LP fee and its output 2 is not the pool's LP fee output` : `${event.txid} names an LP fee and has no output 2` };
+    }
     const txid = tx.id("hex").toLowerCase();
     // 0.55.0: the continuation and its fee go in in one call, so a filed continuation is a taken-in fee.
     if (!knownPools.has(pointKey(txid, 0))) {
@@ -210,8 +233,7 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
         } catch (e) {
           return { stop: errorText(e) };
         }
-        // The Swap's direction, from the transaction: a sats-in Swap raises the pool's BSV reserve.
-        if ((tx.outputs[0]!.satoshis ?? 0) > current.satoshis) {
+        if (bsvIn) {
           outputs.push({ outputIndex: 2, protocol: WALLET_PAYMENT, paymentRemittance: { ...derivation, senderIdentityKey: me } });
         } else {
           const assetId = sdkTokenId(tokenIdOfWire(Utils.toArray(pool.args.assetId, "hex")));

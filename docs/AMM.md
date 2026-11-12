@@ -240,11 +240,12 @@ counterparty}`).
   amount typed last (Tokens or Sats) is the source and the other follows
   at the "market price now" rate: sats = tokens × price rounded to whole
   sats, tokens = sats ÷ price in the token's decimals; no pools, no
-  filling. The LP key: a BRC-29 key to self under a
-  fresh random keyID (derivationPrefix base64("amm-lp"), derivationSuffix
-  16 random bytes), named in the deploy's pool output description: `AMM pool:
-  <SYM> / BSV · amm-lp <the suffix's 16 bytes, lowercase hex>` (0.29.4; 0.29.3
-  used a label, which prompted on every deploy), nothing kept in the browser. `amm.pool.terms`;
+  filling. The LP key: `[1, "openex fees"]` to self under a fresh random
+  keyID (16 random bytes, base64), named in the deploy's pool output
+  description: `AMM pool: <SYM> / BSV · openex fees <the keyID's 16 bytes,
+  lowercase hex>` (0.29.4; 0.29.3 used a label, which prompted on every
+  deploy), nothing kept in the browser; 0.55.0: the pool's LpSatsPkh and
+  LpTokenPkh derived from the same keyID (`lpFeeDerivation`). `amm.pool.terms`;
   `amm.pool.affirm {pool, satoshis}` → `{validatorPubKey, nonce,
   signature}`, checked and written into the pool's state; one
   `createAction`: outputs [the pool] (a transfer to a foreign script), no
@@ -277,7 +278,7 @@ counterparty}`).
   `amm-swap` inputs spent (no relinquishOutput); an output a failed leg did
   not spend stays there for a later swap (a sats output is reused by a leg
   needing exactly its amount).
-- **Recover a position** (0.12.1, `src/lp/recover.ts`). A deploy whose
+- **Recover a position** (0.12.1; `src/lp/recover.ts` is gone: `myPositions` files a deploy-history row that has no `amm-pools` row, D23). A deploy whose
   `amm-pools` row was never filed (the deploy broadcast, the filing did
   not happen) is not in the positions list, so it cannot be closed there.
   Liquidity's Recover takes the pool's outpoint (`<txid>.<vout>` or
@@ -285,7 +286,7 @@ counterparty}`).
   current output (`GET <base>/spends`), reads that output's BEEF from
   BRC-207's `color-spendability` at `ls_color_<tokenId>` (0.20.1; `ls_color {txid, outputIndex}` before) and decodes the pool. Its LP keyID is random and on no
   chain, so the keyIDs of the wallet's deploy history are tried (0.29.4: the
-  `… · amm-lp <hex>` description of each `amm-pool-deploy` action's pool
+  `… · openex fees <hex>` description of each `amm-pool-deploy` action's pool
   output, read through the manager with `listActions({labels:
   ["amm-pool-deploy"], includeOutputs, includeOutputLockingScripts})`, the pool from the output's script; the
   first source for Positions too); none: "not in this wallet's deploy

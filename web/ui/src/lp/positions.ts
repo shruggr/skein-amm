@@ -15,7 +15,7 @@
  *
  * 0.29.3: the deploy HISTORY is the first source (`historyPoolRows`): 0.29.4,
  * each `amm-pool-deploy` action's pool output names its LP keyID in its
- * description (`… · amm-lp <hex>`) and its script is the pool (no
+ * description (`… · openex fees <hex>`) and its script is the pool (no
  * customInstructions needed: BRC-100's listActions does not answer them). 0.28.0: the rows also come from the wallet's HISTORY (`historyPoolRows`):
  * `listOutputs` answers spendable outputs only, so a pool output the wallet
  * itself spent (the LP swapped against its own pool) left no row and the

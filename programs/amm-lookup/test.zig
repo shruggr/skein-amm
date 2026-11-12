@@ -99,31 +99,6 @@ fn opStr(a: Allocator, txid: [32]u8, vout: u32) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}_{d}", .{ &w.header.toHex(txid), vout });
 }
 
-/// `pool_deploy`'s output-0 script, with the state's TokenReserve and keys
-/// overwritten and the prefix amount set to the new reserve: a spend's
-/// continuation (or an unrelated pool), sharing the real,
-/// gen/main.go-compiled Pool template so `pool.parse` still succeeds. The
-/// Nonce and Affirmation are kept, unless `attest` names others (0.13.0).
-fn withState(a: Allocator, id: [32]u8, script: []const u8, token_reserve: u64, lp: [33]u8, validator: [33]u8, identity: [33]u8) ![]u8 {
-    return withStateAttested(a, id, script, token_reserve, lp, validator, identity, null);
-}
-
-const Attest = struct { nonce: [32]u8, affirmation: []const u8 };
-
-fn withStateAttested(a: Allocator, id: [32]u8, script: []const u8, token_reserve: u64, lp: [33]u8, validator: [33]u8, identity: [33]u8, attest: ?Attest) ![]u8 {
-    const lock = pool.brc162.decode(script).?.lock;
-    const p = (try pool.parse(lock)).?;
-    var st: [8 + 99 + 32]u8 = undefined;
-    std.mem.writeInt(u64, st[0..8], token_reserve, .little);
-    @memcpy(st[8..][0..33], &lp);
-    @memcpy(st[8 + 33 ..][0..33], &validator);
-    @memcpy(st[8 + 66 ..][0..33], &identity);
-    @memcpy(st[8 + 99 ..][0..32], if (attest) |t| &t.nonce else &p.nonce);
-    const af = if (attest) |t| t.affirmation else p.affirmation;
-    var buf: [10]u8 = undefined;
-    return cat(a, &.{ &.{0x20}, &id, pool.brc162.pushAmount(&buf, token_reserve), &.{0x6d}, lock[0 .. p.code_len + 1], &st, &.{@intCast(af.len)}, af });
-}
-
 /// `script` with the state's ValidatorPubKey replaced.
 fn withValidator(a: Allocator, script: []const u8, validator: [33]u8) ![]u8 {
     const c = try a.dupe(u8, script);

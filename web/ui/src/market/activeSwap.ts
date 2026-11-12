@@ -10,7 +10,7 @@
  *     customInstructions (`{sats: true, protocolID, keyID, counterparty}`: no token tag). With
  *     tokens: the module transfer plan — ONE token output to a fresh key and the ONE sats output in
  *     the same action, the token key's id ALSO in that output's description (`… · amm-swap <hex>`,
- *     as the LP key's `amm-lp <hex>`), the action labelled `SWAP_STAGE_LABEL`; the module selects
+ *     as the LP key's `openex fees <hex>`), the action labelled `SWAP_STAGE_LABEL`; the module selects
  *     the token inputs, adds change, signs and submits; the page submits it too, then files the
  *     token output in `amm-swap` (basket insertion, `{assetId, amount, protocolID, keyID,
  *     counterparty}`; 0.48.0 no `assetId`/`amount`, the script holds them). A labelled staged token output the basket lacks (the page died before the

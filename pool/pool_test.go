@@ -755,6 +755,21 @@ func TestRescind(t *testing.T) {
 		c.outs[0].script = f.poolScript(other)
 		mustFail(t, f.run(t, p, c))
 	})
+	// 0.55.0: the LP fee addresses are carried unchanged through a Rescind too.
+	t.Run("LpSatsPkh changed", func(t *testing.T) {
+		c := f.rescindCall(p)
+		other := r
+		other.satsPkh = bytes.Repeat([]byte{0x88}, 20)
+		c.outs[0].script = f.poolScript(other)
+		mustFail(t, f.run(t, p, c))
+	})
+	t.Run("LpTokenPkh changed", func(t *testing.T) {
+		c := f.rescindCall(p)
+		other := r
+		other.tokenPkh = bytes.Repeat([]byte{0x88}, 20)
+		c.outs[0].script = f.poolScript(other)
+		mustFail(t, f.run(t, p, c))
+	})
 	t.Run("no continuation", func(t *testing.T) {
 		c := f.rescindCall(p)
 		c.outs = c.outs[1:]

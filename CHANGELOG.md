@@ -26,14 +26,19 @@ programs and etc/app.json, @dcasegr/amm-engine and amm-client 0.55.0, and the Li
   Deploy and rebalance derive them for the new pool (`lpFeeAddresses`).
 - The fee walk (`syncPool`) stays one internalizeAction per swap, output 0 into `amm-pools`; output
   2 is now a `wallet payment` on a sats-in swap and a `p color` receipt into the token's value basket
-  on a token-in swap. A hop whose continuation is filed is skipped (its fee went in with it).
+  on a token-in swap. A hop whose continuation is filed is skipped (its fee went in with it). Whether
+  a hop pays the LP fee is read from the transaction (output 2 exactly the pool's LP fee output for
+  the swap's direction); an event naming a fee the transaction does not pay stops the walk at that
+  hop, nothing filed.
 - Gone: the `openex fees` basket (and its manifest entry), `availableFees`, `collectFees`,
   `collectBasket`, `composePages`, `estimatePageFee`, `feeInputsOf`, the `COLLECT_*` constants,
   `FEES_BASKET`, the `AvailableFees` / `CollectOptions` / `CollectResult` types, `asError`, and the
   Liquidity page's Collect button and "Available to collect" line. `syncFees` and the page-load walk
   stay; the "fees earned" figures stay.
-- No dual layout (as 0.40.0): pools on the 0.54.x script are no pools to this release; close them on
-  0.54.x's pages first.
+- Before upgrading, LPs must COLLECT their fees and CLOSE their pools with 0.54.x. This version has
+  no collect: the fee outputs 0.54.x filed in the `openex fees` basket, and pools on the 0.54.x
+  script (no dual layout, as 0.40.0: they are no pools to this release), are reachable only from
+  0.54.x's pages.
 - 0.55.0 in etc/app.json, build.zig.zon, the amm-lookup metadata, @dcasegr/amm-engine and
   amm-client; bin/ rebuilt.
 
