@@ -35,7 +35,7 @@
   },
   "peerDependencies": {
     "@1sat/templates": "^0.1.1",
-    "@bsv/color-permission-module": "^0.2.3",
+    "@bsv/color-permission-module": "^0.1.0",
     "@bsv/sdk": "^4.0.0"
   }
 }
