@@ -8,9 +8,9 @@
  *   1. The LP key: security level 1, protocol `[1, "openex fees"]`, counterparty
  *      self, keyID 16 random bytes base64 (`newLpKey`); the key that closes the
  *      pool. Kept in the position row and in the pool output's description:
- *      `AMM pool: <SYM> / BSV · openex fees <the keyID's bytes, hex>`. A keyID
- *      with a space is an older BRC-29 key (` · amm-lp <suffix hex>`). The
- *      deploy history gives either back. Nothing is kept in the browser.
+ *      `AMM pool: <SYM> / BSV · openex fees <the keyID's bytes, hex>`. The
+ *      deploy history gives it back. Nothing is kept in the browser. (0.55.0:
+ *      the older BRC-29 LP key, ` · amm-lp <suffix hex>`, is gone with layout 2.)
  *      0.55.0: the pool's two LP fee addresses are derived from the same keyID
  *      (`lpFeeAddresses`): LpSatsPkh a BRC-29 key, LpTokenPkh a 1Color module
  *      receiving key, the sender the LP's own identity key; nothing more is
@@ -46,7 +46,7 @@ import { PoolTemplate, RESCINDED_KEY, decodeOneColor, oneColorValuePrefix, type 
 import { deriveFirstValidatorPubKey } from "../lib/keys.js";
 import { priceOf } from "../market/view.js";
 import { callApp, dagBytes, readBytes, type AuthFetchLike } from "../market/relay.js";
-import { BRC29_PROTOCOL, brc29PublicKey, identityKeyOf, randomBase64 } from "../wallet/brc29.js";
+import { brc29PublicKey, identityKeyOf, randomBase64 } from "../wallet/brc29.js";
 import { POOLS_BASKET, newReceivingKey, runTokenAction, transferPlanLabels, type HeldOutput } from "../wallet/color.js";
 import { POOL_OP, POOL_TAG, isPoolRow } from "./poolRows.js";
 import { parseOutpoint, parseTokenId, sdkTokenId, tokenIdOfWire, tokenIdText } from "../lib/tokenId.js";
@@ -61,7 +61,6 @@ export interface ValidatorChoice {
 
 /** The LP key's protocol for a new pool: level 1, `[1, "openex fees"]`. */
 export const LP_KEY_PROTOCOL: WalletProtocol = [1, "openex fees"];
-const LP_DERIVATION_PREFIX = Utils.toBase64(Utils.toArray("amm-lp", "utf8"));
 /** `amm.pool.affirm` (amm-p2p, 0.11.0; 0.13.0: `{pool, satoshis}` → `{validatorPubKey, nonce, signature}`). */
 export const POOL_AFFIRM_FN = "amm.pool.affirm";
 
@@ -71,23 +70,15 @@ function describe(text: string): string {
   return text.length <= 50 ? text : `${text.slice(0, 49)}…`;
 }
 
-/** The marker an older BRC-29 pool output description ends with: ` · amm-lp <hex>`. */
-export const LP_KEY_MARK = " · amm-lp ";
 /** The marker a new pool output description ends with: ` · openex fees <hex>`. */
 export const FEES_KEY_MARK = " · openex fees ";
 
 /**
- * The pool output's description: the readable text (`AMM pool: <SYM> / BSV`) then the key.
- * A keyID with a space is the older BRC-29 key (` · amm-lp ` and the suffix bytes, hex).
- * One base64 token is the `openex fees` key (` · openex fees ` and those bytes, hex).
+ * The pool output's description: the readable text (`AMM pool: <SYM> / BSV`) then the key: the
+ * `openex fees` keyID, one base64 token (` · openex fees ` and its bytes, hex).
  */
 export function lpKeyDescription(readable: string, keyID: string): string {
-  const space = keyID.indexOf(" ");
-  if (space > 0) {
-    const suffix = keyID.slice(space + 1);
-    if (keyID.slice(0, space) !== LP_DERIVATION_PREFIX || !suffix) throw new PoolDeployError(`not a deploy LP keyID: ${keyID}`);
-    return `${readable}${LP_KEY_MARK}${toHex(Utils.toArray(suffix, "base64"))}`;
-  }
+  if (keyID.includes(" ")) throw new PoolDeployError(`not a deploy LP keyID: ${keyID}`);
   let bytes: number[];
   try {
     bytes = Utils.toArray(keyID, "base64");
@@ -100,8 +91,6 @@ export function lpKeyDescription(readable: string, keyID: string): string {
 
 /** The LP keyID an output description names (`lpKeyDescription`), or null. */
 export function lpKeyIdOfDescription(description: string | undefined): string | null {
-  const legacy = / · amm-lp ([0-9a-f]{2,128})$/.exec(description ?? "");
-  if (legacy && legacy[1]!.length % 2 === 0) return `${LP_DERIVATION_PREFIX} ${Utils.toBase64(Utils.toArray(legacy[1]!, "hex"))}`;
   const fees = / · openex fees ([0-9a-f]{2,128})$/.exec(description ?? "");
   if (fees && fees[1]!.length % 2 === 0) return Utils.toBase64(Utils.toArray(fees[1]!, "hex"));
   return null;
@@ -110,13 +99,7 @@ export function lpKeyIdOfDescription(description: string | undefined): string | 
 /** The protocol an output description names, or null when it names no key. */
 export function lpProtocolOfDescription(description: string | undefined): WalletProtocol | null {
   if (/ · openex fees ([0-9a-f]{2,128})$/.test(description ?? "")) return LP_KEY_PROTOCOL;
-  if (/ · amm-lp ([0-9a-f]{2,128})$/.test(description ?? "")) return BRC29_PROTOCOL;
   return null;
-}
-
-/** A new pool's LP key derivation (0.13.0): derivationPrefix base64("amm-lp"), derivationSuffix 16 random bytes, base64. */
-export function newLpDerivation(): { derivationPrefix: string; derivationSuffix: string } {
-  return { derivationPrefix: LP_DERIVATION_PREFIX, derivationSuffix: randomBase64(16) };
 }
 
 /**
@@ -205,7 +188,7 @@ export interface PoolDeployForm {
   /** The relay's commission (the contract's CommissionBps), fixed at deploy. Default 0. */
   commissionBps?: bigint;
   lpPubKey: string;
-  /** The LP key's keyID (BRC-29, `newLpDerivation`). */
+  /** The LP key's keyID (`newLpKey`). */
   lpKeyId: string;
   /** 0.55.0: the pool's LP fee addresses, 20 bytes hex each (`lpFeeAddresses`). */
   lpSatsPkh: string;

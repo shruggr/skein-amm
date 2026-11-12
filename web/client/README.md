@@ -102,7 +102,7 @@ change row: `amm-swap-<txid>.<vout>:change` of its first input of that kind), `S
 (`amm-swap-stage`) + `SWAP_KEY_MARK` + `swapKeyDescription` / `swapKeyIdOfDescription` (a staged
 token output's description naming its key), `legDerivation` (an order's payout, own commission and
 last-leg change keys), `swapInstructions` / `swapSatsInstructions` (their customInstructions, a
-change row's with `order`), `LP_KEY_PROTOCOL` (BRC-29) + `LP_KEY_MARK` +
+change row's with `order`), `LP_KEY_PROTOCOL` (`[1, "openex fees"]`) + `FEES_KEY_MARK` +
 `lpKeyDescription` / `lpKeyIdOfDescription` (the deploy's pool output description naming the LP
 keyID), `POOL_TAG` / `POOL_OP` / `isPoolRow` / `poolCustomInstructions` (an `amm-pools` row),
 `POOL_DEPLOY_LABEL` (`amm-pool-deploy`), `LEG_PATIENCE_MS` (15 s: how long a swap leg waits for the host's answer before closing the request; 0.44.0, was the swap's expiry), `transferPlanLabels` (the `p color

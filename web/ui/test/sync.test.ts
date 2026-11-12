@@ -364,7 +364,7 @@ describe("syncPool (0.54.0): the start, a close, a rebalance hop", () => {
   ]);
   const pages = new Map<string, PoolEvent[]>([[POOL_ID, [event(swap, "swap", { feeLp: 60n })]]]);
   const txs = new Map<string, number[]>([[swap.id("hex"), rawBeef(swap, [poolDeploy])]]);
-  const brc29KeyID = `${Utils.toBase64(Utils.toArray("amm-lp", "utf8"))} ${Utils.toBase64(Array.from({ length: 16 }, (_, n) => 200 - n))}`;
+  const otherKeyID = Utils.toBase64(Array.from({ length: 16 }, (_, n) => 200 - n));
   /** The deploy-history row `historyPoolRows` builds from the deploy output's description. */
   const historyRow = (protocolID: [number, string], keyID: string): Row => ({
     outpoint: `${poolDeploy.id("hex")}.0`,
@@ -392,7 +392,7 @@ describe("syncPool (0.54.0): the start, a close, a rebalance hop", () => {
 
   it("a spendable basket row wins over the start", async () => {
     const bag = syncWallet({ pools: [deployRow()] });
-    await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs), historyRow([2, "3241645161d8"], brc29KeyID) as never);
+    await syncPool(bag.wallet, POOL_ID, ioOf(pages, txs), historyRow([1, "openex fees"], otherKeyID) as never);
     expect(internalized(bag)[0]!.outputs[1]).toEqual(satsFee(HELD.keyID));
   });
 

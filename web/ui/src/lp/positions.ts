@@ -73,7 +73,7 @@ export async function historyPoolRows(wallet: WalletInterface): Promise<BasketRo
       for (const a of r.actions ?? []) {
         for (const o of a.outputs ?? []) {
           const outpoint = `${a.txid}.${o.outputIndex}`;
-          // 0.29.4: the LP keyID from the pool output's description (`… · amm-lp <hex>`), the pool from its script.
+          // 0.29.4: the LP keyID from the pool output's description (`… · openex fees <hex>`), the pool from its script.
           const keyID = lpKeyIdOfDescription(o.outputDescription);
           const protocolID = lpProtocolOfDescription(o.outputDescription);
           const pool = keyID && protocolID && o.lockingScript ? PoolTemplate.decode(o.lockingScript) : null;

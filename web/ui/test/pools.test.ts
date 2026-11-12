@@ -86,7 +86,7 @@ describe("pool deploy: plan", () => {
       validatorFeeBps: BigInt(v.validatorFeeBps),
       commissionBps: BigInt(v.commissionBps),
       lpPubKey: pub(lpKey),
-      lpKeyId: "YW1tLWxw abc=",
+      lpKeyId: "AAECAwQFBgcICQoLDA0ODw==",
       lpSatsPkh: v.lpSatsPkh,
       lpTokenPkh: v.lpTokenPkh,
       validator: { identityKey: v.identity },
@@ -94,7 +94,7 @@ describe("pool deploy: plan", () => {
     expect(plan.lockingScript).toBe(proposedPool);
     expect(plan.state.validatorPubKey).toBe(RESCINDED_KEY);
     expect(PoolTemplate.lockDeploy(plan.args, { ...plan.state, validatorPubKey: v.pool0.validator, nonce: v.nonce, affirmation: v.affirmation }).toHex()).toBe(poolDeploy.outputs[0]!.lockingScript.toHex());
-    expect(plan.lpKeyId).toBe("YW1tLWxw abc=");
+    expect(plan.lpKeyId).toBe("AAECAwQFBgcICQoLDA0ODw==");
     // Pools before 0.13.0: the LP key keyed by the deploy's key input (BRC-29), or the pre-BRC-29 key.
     expect(plan.args.assetId).toBe(Utils.toHex(tokenDeploy.hash() as number[]));
     expect(plan.topic).toBe(`tm_color_${DEPLOY_TXID}_0`);
@@ -251,8 +251,7 @@ function atomic(tx: Transaction, ancestors: Transaction[]): number[] {
 }
 
 /**
- * The wallet's honest keys. A new pool's `openex fees` key, and an older BRC-29 key with the `amm-lp` prefix, both return the
- * fixture LP key so the pool output stays the fixture's bytes; 0.55.0: the LP fee keys derived from the last `openex fees`
+ * The wallet's honest keys. A pool's `openex fees` key returns the fixture LP key so the pool output stays the fixture's bytes; 0.55.0: the LP fee keys derived from the last `openex fees`
  * keyID asked (`lpFeeDerivation`) return the fixture's LP fee keys (gen/vectors key 13, BRC-29; key 14, the module's).
  */
 let lastLpKeyId: string | undefined;
@@ -261,7 +260,6 @@ const deployKeys = (a: KeyArgs) => {
     lastLpKeyId = a.keyID;
     return lpKey;
   }
-  if (isBrc29(a.protocolID) && a.keyID.startsWith("YW1tLWxw ")) return lpKey;
   const d = lastLpKeyId ? lpFeeDerivation(lastLpKeyId) : undefined;
   if (d && isBrc29(a.protocolID) && a.keyID === `${d.derivationPrefix} ${d.derivationSuffix}`) return key(13);
   if (d && a.protocolID[1] === colorProtocolID(SDK_ID, d.derivationPrefix, d.derivationSuffix)[1] && a.keyID === "color") return key(14);

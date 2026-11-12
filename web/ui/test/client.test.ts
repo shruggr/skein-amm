@@ -69,10 +69,10 @@ describe("the shared names (D10)", () => {
     expect(pkg.swapKeyIdOfDescription(pkg.swapKeyDescription("TST for a swap", `amm-swap-${"0f".repeat(16)}`))).toBe(`amm-swap-${"0f".repeat(16)}`);
     expect(pkg.legDerivation(`${"cd".repeat(32)}.1`, "change").derivationPrefix).toBe("YW1tIHN3YXAgY2hhbmdl");
     expect(pkg.LP_KEY_PROTOCOL).toEqual([1, "openex fees"]);
-    expect(pkg.LP_KEY_MARK).toBe(" · amm-lp ");
+    expect("LP_KEY_MARK" in pkg).toBe(false); // 0.55.0: the older BRC-29 LP key is gone
     expect(pkg.FEES_KEY_MARK).toBe(" · openex fees ");
     expect(pkg.lpProtocolOfDescription(`AMM pool: TST / BSV · openex fees ${"ab".repeat(16)}`)).toEqual([1, "openex fees"]);
-    expect(pkg.lpProtocolOfDescription(`AMM pool: TST / BSV · amm-lp ${"ab".repeat(16)}`)).toEqual([2, "3241645161d8"]);
+    expect(pkg.lpProtocolOfDescription(`AMM pool: TST / BSV · amm-lp ${"ab".repeat(16)}`)).toBeNull();
     expect(pkg.POOL_DEPLOY_LABEL).toBe("amm-pool-deploy");
     expect([pkg.POOL_TAG, pkg.POOL_OP]).toEqual(["amm-pool", "amm-pool"]);
     expect(pkg.LEG_PATIENCE_MS).toBe(15_000);
