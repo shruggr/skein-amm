@@ -4,6 +4,17 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.54.2 (branch `release-0.54.2`, on maint-0.54)
+
+A client-only cut on the 0.54 line: @dcasegr/amm-engine and amm-client 0.54.2. The token app, its
+programs and etc/app.json stay at 0.52.1; the engine's code is unchanged.
+
+- New client read `lpFees(poolIds, {from?, to?})`: the host's `GET <origin>/amm/lp/fees` (H10, open-exchange
+  0.27.2): the pools' LP fees over swaps with `from ≤ at < to` (both optional) →
+  `{from, to, sats, tokens: [{tokenId, amount}], swaps, pools, byPool: [{poolId, tokenId, sats, tokens,
+  swaps}]}`, a buy's fee in sats, a sell's in the pool's token, amounts as bigints. The `LpFees` type is
+  exported. (The same change as 0.55.1.)
+
 ## 0.54.1 (branch `collect-report-0.54.1`; not tagged)
 
 A web-only cut: @dcasegr/amm-engine and amm-client 0.54.1, and the Liquidity page. The token app, its
