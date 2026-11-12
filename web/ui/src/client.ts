@@ -45,7 +45,7 @@
  * an outpoint is `<txid>.<vout>`. Amounts are bigints in base units; prices
  * are numbers: sats per whole token.
  */
-import { Beef, Transaction, createNonce, type WalletInterface } from "@bsv/sdk";
+import { Beef, Transaction, createNonce, type WalletInterface, type WalletOutput } from "@bsv/sdk";
 import { BRC29_PROTOCOL, p2pkhHexOf } from "./wallet/brc29.js";
 import { send1Color, type Send1ColorResult } from "@1sat/actions";
 import { nextLeg, priceOf, type Leg, type PoolState, type Plan, type PricePair } from "@dcasegr/amm-engine";
@@ -114,10 +114,11 @@ import { deployPool, poolCustomInstructions, poolRowTokenId } from "./lp/poolDep
 import { rebalancePool } from "./lp/rebalance.js";
 import { historyPoolRows, mergePoolRows, positionRowsOf, type PositionRow } from "./lp/positions.js";
 import { isPoolRow } from "./lp/poolRows.js";
-import { collectBasket, heldPoolRow, storedKey, syncPool, type CollectResult } from "./lp/sync.js";
+import { availableFees as basketFees, collectBasket, heldPoolRow, storedKey, syncPool, type AvailableFees, type CollectOptions, type CollectResult, type SyncIo } from "./lp/sync.js";
+import { PoolTemplate } from "./pool/index.js";
 import { POOLS_BASKET, assetBasket, heldOutputs } from "./wallet/color.js";
 import { prepareClose, submitToOverlay } from "./lp/close.js";
-export type { CollectResult };
+export type { AvailableFees, CollectOptions, CollectResult };
 import { ClientError, toClientError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
@@ -1458,8 +1459,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
    */
   async function closePosition(req: CloseRequest): Promise<CloseResult> {
     const { wallet } = needWallet();
-    const rows = await basketRows(wallet, POOLS_BASKET);
-    const held = heldPoolRow(rows, req.poolId);
+    // 0.54.0: the walk's start — the pool's spendable row, else its deploy-history row (a stale or missing row).
+    const held = await walkStart(wallet, req.poolId);
     if (!held?.lockingScript) throw new Error("No such position");
     const key = storedKey(held.customInstructions);
     // 0.48.0 (D9): the token is the held output's script's (a row filed before, its `id`).
@@ -1468,13 +1469,12 @@ function makeClient(opts: ClientOptions, s: Shared) {
     if (!key.protocolID || !key.keyID) throw new Error("the pool output names no key");
     const base = await tokenBaseOf(tokenId);
     const m = (await tokenMeta()).get(tokenId);
-    const synced = await syncPool(wallet, req.poolId, {
-      history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
-      readTx: (txid) => readTx(base, txid, freshFetch),
-    });
+    const synced = await syncPool(wallet, req.poolId, walkIo(base), held);
     // 0.48.2: a walk that stopped leaves the held row behind the pool: never spend it.
     if (!synced.caughtUp) throw new Error(`could not catch up: ${synced.reason}`);
-    const again = heldPoolRow(await basketRows(wallet, POOLS_BASKET), req.poolId);
+    if (synced.closed) throw new Error("the pool is already closed");
+    // 0.54.0: the walk filed nothing after its start (the pool is still there): the start is the pool's output.
+    const again = heldPoolRow(spendable(await basketRows(wallet, POOLS_BASKET)), req.poolId) ?? held;
     if (!again?.lockingScript) throw new Error("No such position");
     const key2 = storedKey(again.customInstructions);
     if (!key2) throw new Error("the pool output names no key");
@@ -1507,43 +1507,132 @@ function makeClient(opts: ClientOptions, s: Shared) {
     return { txid: prepared.txid, sats: prepared.sats, tokens: prepared.tokenAmount };
   }
 
+  /** The rows `listOutputs` lists as spendable (a row listed `spendable: false` is no start). */
+  function spendable<T extends { spendable?: boolean }>(rows: T[]): T[] {
+    return rows.filter((r) => r.spendable !== false);
+  }
+
+  /** A pool's walk reads over its token's instance (`GET /pools/history?outpoint=`, `GET /tx?id=`), fresh. */
+  function walkIo(base: string): SyncIo {
+    return {
+      history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
+      readTx: (txid) => readTx(base, txid, freshFetch),
+    };
+  }
+
+  /** 0.54.0: where a pool's walk starts: its spendable `amm-pools` row, else its deploy-history row (as `myPositions` builds it). */
+  async function walkStart(wallet: WalletInterface, poolId: string): Promise<WalletOutput | undefined> {
+    const held = heldPoolRow(spendable(await basketRows(wallet, POOLS_BASKET)), poolId);
+    if (held) return held;
+    return heldPoolRow((await historyPoolRows(wallet)) as WalletOutput[], poolId);
+  }
+
+  /** The pool id a pool row names: its `poolId`, else its own outpoint (still the deploy), `<txid>_<vout>`. */
+  function poolIdOfRow(row: { outpoint: string; customInstructions?: string }): string {
+    let named: string = row.outpoint.replace(".", "_");
+    try {
+      const ci = JSON.parse(row.customInstructions ?? "{}") as { poolId?: unknown };
+      if (typeof ci.poolId === "string") named = ci.poolId;
+    } catch {
+      /* the outpoint */
+    }
+    const parsed = parseOutpoint(named);
+    return parsed ? `${parsed.txid}_${parsed.vout}` : named.toLowerCase();
+  }
+
   /**
-   * Collects the LP fees: the same catch-up over every pool the wallet holds, then one action
-   * spending the `openex fees` basket. Satoshis go to one BRC-29 address; each token's sum goes
-   * to one `p color` output. The pools stay open. A pool whose walk stops is named in `stopped`
-   * (0.48.2) and its later fees are not in the collect.
+   * 0.54.0: the fee walk over every position the client reports: the wallet's spendable `amm-pools`
+   * rows first, then its deploy-history rows (`historyPoolRows`, as `myPositions`), one walk per pool
+   * id. A pool on an old contract or whose token is not enabled here is named in `stopped` and not
+   * walked; a walk that throws is named too; none blocks the others.
    */
-  async function collectFees(): Promise<CollectResult> {
-    const { wallet } = needWallet();
-    const rows = await basketRows(wallet, POOLS_BASKET);
+  async function walkPositions(wallet: WalletInterface): Promise<{ stopped: { poolId: string; reason: string }[]; filed: number }> {
+    const [rows, history] = await Promise.all([basketRows(wallet, POOLS_BASKET), historyPoolRows(wallet)]);
+    let enabled: Set<string> | null = null;
+    let listError = "";
+    try {
+      enabled = new Set((await enabledTokens()).map((t) => t.tokenId));
+    } catch (e) {
+      listError = errText(e);
+    }
     const seen = new Set<string>();
     const stopped: { poolId: string; reason: string }[] = [];
-    for (const row of rows) {
+    let filed = 0;
+    for (const row of mergePoolRows(spendable(rows), history) as WalletOutput[]) {
       if (!isPoolRow(row)) continue;
-      let ci: { poolId?: string } = {};
-      try {
-        ci = JSON.parse(row.customInstructions ?? "{}") as { poolId?: string };
-      } catch {
-        continue;
-      }
-      // 0.48.0 (D9): the token is the row's script's (a row filed before, its `id`).
-      const tokenId = poolRowTokenId(row);
-      if (!tokenId) continue;
-      const named = typeof ci.poolId === "string" ? ci.poolId : row.outpoint.replace(".", "_");
-      const parsed = parseOutpoint(named);
-      const id = parsed ? `${parsed.txid}_${parsed.vout}` : named.toLowerCase();
+      const id = poolIdOfRow(row);
       if (seen.has(id)) continue;
       seen.add(id);
-      const base = await tokenBaseOf(tokenId);
-      const synced = await syncPool(wallet, id, {
-        history: (outpoint) => readPoolHistory(base, { outpoint, limit: 100 }, freshFetch),
-        readTx: (txid) => readTx(base, txid, freshFetch),
-      });
-      if (!synced.caughtUp) stopped.push({ poolId: id, reason: synced.reason });
+      if (!row.lockingScript) {
+        stopped.push({ poolId: id, reason: "the wallet lists no script for this pool's output" });
+        continue;
+      }
+      if (!PoolTemplate.decode(row.lockingScript)) {
+        stopped.push({ poolId: id, reason: "an old pool contract: not collectable by this client" });
+        continue;
+      }
+      const tokenId = poolRowTokenId(row);
+      if (!tokenId) continue;
+      if (!enabled) {
+        stopped.push({ poolId: id, reason: `the exchange's token list cannot be read: ${listError}` });
+        continue;
+      }
+      if (!enabled.has(tokenId)) {
+        stopped.push({ poolId: id, reason: `${tokenId.slice(0, 8)}… is not enabled on this exchange` });
+        continue;
+      }
+      try {
+        const synced = await syncPool(wallet, id, walkIo(tokenBase(tokenId, swapBase)), row);
+        filed += synced.filed ?? 0;
+        if (!synced.caughtUp) stopped.push({ poolId: id, reason: synced.reason });
+      } catch (e) {
+        stopped.push({ poolId: id, reason: errText(e) });
+      }
     }
-    const r = await collectBasket(wallet);
-    if (r.txid) emit();
-    return stopped.length ? { ...r, stopped } : r;
+    return { stopped, filed };
+  }
+
+  /**
+   * The fee walk alone (0.54.0): every reported position's uncollected LP fee outputs filed into
+   * `openex fees` (one internalizeAction per swap). Silent, never throws: safe on every page load
+   * (as `settleSwaps`). → the pools whose walk stopped, with why. Something filed: the pages' data reloads.
+   */
+  async function syncFees(): Promise<{ poolId: string; reason: string }[]> {
+    if (!boundWallet) return [];
+    try {
+      const r = await walkPositions(boundWallet);
+      if (r.filed > 0) emit();
+      return r.stopped;
+    } catch (e) {
+      return [{ poolId: "", reason: errText(e) }];
+    }
+  }
+
+  /** What is available to collect (0.54.0): ONE `listOutputs` of `openex fees` — sats rows summed, token rows per token id, the row count. */
+  async function availableFees(): Promise<AvailableFees> {
+    const { wallet } = needWallet();
+    return basketFees(wallet);
+  }
+
+  /**
+   * Collects the LP fees (0.54.0): the fee walk first (`syncFees`' walk), then the `openex fees` basket
+   * moved into the wallet's own balance in pages (src/lp/sync.ts `collectBasket`): each page one
+   * wallet createAction, its fee rows the inputs, one `p color` output per token on the page, no sats
+   * output (the wallet keeps the sats as its change). Every page runs in sequence; a refusal after
+   * the first page stops the loop and returns what was done (`refused`, `remaining`). The pools stay open.
+   */
+  async function collectFees(options: CollectOptions = {}): Promise<CollectResult> {
+    const { wallet } = needWallet();
+    const walked = await walkPositions(wallet);
+    let r: CollectResult;
+    try {
+      r = await collectBasket(wallet, options);
+    } catch (e) {
+      if (walked.filed > 0) emit();
+      throw e;
+    }
+    if (r.txids.length > 0 || walked.filed > 0) emit();
+    return walked.stopped.length ? { ...r, stopped: walked.stopped } : r;
   }
 
   /**
@@ -1568,6 +1657,12 @@ function makeClient(opts: ClientOptions, s: Shared) {
     const v = terms.validator;
     if (!v) throw new Error(NO_VALIDATOR);
     const m = meta.get(row.tokenId);
+    // 0.54.0: the fee walk first, as Close; a walk that stops refuses the rebalance.
+    const poolId = row.deployOutpoint.replace(".", "_");
+    const synced = await syncPool(wallet, poolId, walkIo(base), await walkStart(wallet, poolId));
+    if (synced.filed) emit();
+    if (!synced.caughtUp) throw new Error(`could not catch up: ${synced.reason}`);
+    if (synced.closed) throw new ClientError("stale_pool", `the pool is already closed (${synced.closed}): reload your positions`);
     const op = parseOutpoint(req.outpoint);
     const [spend] = op ? await readSpends(base, [outpointText(req.outpoint)], freshFetch) : [];
     const poolOutput = !op || spend?.spentBy ? null : poolOutputOf(await readTx(base, op.txid, freshFetch), req.outpoint);
@@ -1999,6 +2094,8 @@ function makeClient(opts: ClientOptions, s: Shared) {
     deployPosition: guard(deployPosition),
     closePosition: guard(closePosition),
     collectFees: guard(collectFees),
+    syncFees,
+    availableFees: guard(availableFees),
     rebalancePosition: guard(rebalancePosition),
     // your tokens
     myTokens: guard(myTokens),

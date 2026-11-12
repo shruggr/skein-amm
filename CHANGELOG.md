@@ -4,6 +4,39 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.54.0 (branch `lp-collect-0.54.0`; not tagged)
+
+A client-only release (David 2026-11-11/12, agent-env plans/queued-items-2026-11-11.md §12, §12b;
+plans/research/plan-pass-lp-collect.md, plan-pass-lp-collect-2.md): @dcasegr/amm-engine and amm-client
+0.54.0, and the Open Exchange Liquidity page. The token app, its programs and etc/app.json stay at 0.52.1.
+
+- The fee walk covers every position the client reports: `syncPool` starts from the pool's spendable
+  `amm-pools` row or, when there is none (no row, or a row listed `spendable: false`), from the
+  deploy-history row `myPositions` builds (the deploy output's description: the BRC-29 and the
+  `[1, "openex fees"]` key alike). A stale row is left alone. The walk ends caught up at a `close` and at
+  a hop whose pool names another LpPubKey (a rebalance), filing nothing past it (`SyncResult.closed`).
+- Pools on an old contract and pools whose token is not enabled are `stopped` entries with a reason;
+  they no longer abort the collect (`tokenBaseOf` threw inside the loop) nor block other pools.
+- `closePosition` starts from the same row: a reported position with a stale or missing row can be
+  closed ("No such position" before). A pool the walk finds closed is refused.
+- `rebalancePosition` runs the fee walk first and refuses when it stops (`could not catch up: …`) or
+  finds the pool closed (`stale_pool`).
+- New: `syncFees()` (the walk alone, silent, never throws; on every page load, as `settleSwaps`) and
+  `availableFees()` (ONE `listOutputs` of `openex fees` → `{sats, tokens, outputs}`).
+- `collectFees(options?)`: the walk, then the fees basket in PAGES, each ONE wallet createAction with
+  the fee rows as inputs and one `p color` output per token on the page; NO sats output and no
+  take-in of one (the wallet keeps the sats as its change). Token rows first (by token id), up to
+  `COLLECT_PAGE_TOKEN_INPUTS` = 250 per page, plus sats rows (largest first) until they cover the
+  page's estimated miner fee (`feeRateSatsPerKb`, default `COLLECT_FEE_RATE_SATS_PER_KB` = 200, ×
+  `COLLECT_FEE_MARGIN` = 1.25); the sats left in sats-only pages of up to 250. All pages in one call;
+  a refusal or failure after page 1 returns what was done.
+- `CollectResult`: `txid` kept (the last page's); added `txids`, `pages`, `refused`, `remaining`;
+  `sats` is now the gross sats of the spent rows (the wallet's balance rises by that less the miner fees).
+- Liquidity page: the walk on load, "Available to collect" beside Collect, the per-position figure
+  labelled lifetime "earned".
+- web/client README: the LP fees section; the `closePosition({poolId})` example corrected.
+- Release notes: never run against a real wallet (see the 0.54.0 manual test).
+
 ## 0.53.0 (branch `merge-pr8-ui-design-pass`; not tagged)
 
 A pages-only release: the web/ui design pass contributed by Dan Wagner (PR #8), plus @dcasegr/amm-engine

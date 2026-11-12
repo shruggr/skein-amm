@@ -20,7 +20,9 @@ import {
   NO_TERMS_TEXT,
   clearDefaultMarket,
   clearDefaultTerms,
+  availableFees,
   closePosition,
+  collectFees,
   connectAction,
   defaults,
   disableToken,
@@ -51,9 +53,11 @@ import {
   onDataChange,
   poolViews,
   quoteSwap,
+  rebalancePosition,
   registeredTokens,
   setExchangeContext,
   settleSwaps,
+  syncFees,
   swapBasketSats,
   topicOf,
   validatorTerms,
@@ -135,6 +139,8 @@ interface Instance {
   calls: { fn: string; args: unknown }[];
   /** Every request: method, path and query. */
   requests: string[];
+  /** 0.54.0: `/pools/history` by `outpoint` (null: no such route, 404). */
+  history: Record<string, unknown[]> | null;
 }
 
 /** A token's stats record (H3) with `price` and its pools' reserves summed (TVL). */
@@ -165,6 +171,7 @@ function instance(): Instance {
     sent: [],
     calls: [],
     requests: [],
+    history: null,
   };
 }
 
@@ -218,6 +225,7 @@ async function route(url: string, init?: { method?: string; headers?: Record<str
   if (path === "/pools") return json({ market: inst.market, validators: inst.validators, pools: rows });
   if (path === "/positions") return json(list(u, "pool").map((k) => inst.lpPools[k] ?? { poolId: k, lpPubKey: null, status: "closed", sats: 0, tokens: 0, swaps: 0 }));
   if (path === "/terms") return json({ validator: inst.terms, market: inst.market });
+  if (path === "/pools/history" && inst.history) return json({ events: inst.history[u.searchParams.get("outpoint") ?? ""] ?? [], next: null });
   if (path === "/spends") {
     const ops = list(u, "outpoint");
     const rec = (o: string) => inst.spends[o] ?? { outpoint: o };
@@ -1068,5 +1076,126 @@ describe("connectAction (0.9.1: the connect dialog listed nothing)", () => {
   });
   it("swallows a failed auto-connect (the wallet shows its own error)", () => {
     expect(connectAction(0, () => {}, async () => { throw new Error("no wallet"); })).toBe("auto");
+  });
+});
+
+describe("LP fees (0.54.0): the walk covers every reported position", () => {
+  const pd = poolDeploy.id("hex");
+  const s1 = swap1.id("hex");
+  const suffix = "c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9";
+  /** The BRC-29 era LP keyID the deploy's description names (` · amm-lp <suffix hex>`). */
+  const keyID = `${Utils.toBase64(Utils.toArray("amm-lp", "utf8"))} ${Utils.toBase64(Utils.toArray(suffix, "hex"))}`;
+  const deployAction = {
+    txid: pd,
+    satoshis: 0,
+    status: "completed",
+    isOutgoing: true,
+    description: "AMM pool deploy: TST",
+    labels: ["amm-pool-deploy"],
+    version: 1,
+    lockTime: 0,
+    outputs: [{ outputIndex: 0, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), outputDescription: `AMM pool: TST / BSV · amm-lp ${suffix}` }],
+  };
+  /** The NANNER case: the basket's row at the deploy output is listed `spendable: false`. */
+  const staleRow = { outpoint: `${pd}.0`, satoshis: v.pool0.bsv, spendable: false, lockingScript: poolDeploy.outputs[0]!.lockingScript.toHex(), tags: ["amm-pool"], customInstructions: JSON.stringify({ protocolID: [2, "3241645161d8"], keyID, counterparty: "self", poolId: PID }) };
+  const oldPool = `${"ee".repeat(32)}_0`;
+  const oldRow = { outpoint: `${"ee".repeat(32)}.0`, satoshis: 1000, lockingScript: new P2PKH().lock(new PrivateKey(5).toAddress()).toHex(), tags: ["amm-pool"], customInstructions: JSON.stringify({ id: TOKEN, op: "amm-pool", protocolID: [2, "3241645161d8"], keyID: "old", counterparty: "self", poolId: oldPool }) };
+  const swapEvent = { type: "swap", txid: s1, poolId: PID, outpoint: `${s1}_0`, lpPubKey: v.lp, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 10, validatorIdentityKey: SKEIN, at: 1, swaps: 1, side: "buy", feeLp: 60 };
+
+  /** fakeWallet whose basket insertions into `amm-pools` are listed after (as a wallet lists what it filed). */
+  function filingWallet(rows: WalletRows): WalletInterface {
+    const w = fakeWallet(rows);
+    return {
+      ...w,
+      async internalizeAction(args: { tx: number[]; outputs: { outputIndex: number; insertionRemittance?: { basket: string; tags?: string[]; customInstructions?: string } }[] }) {
+        internalized.push(args);
+        const b = Beef.fromBinary(args.tx);
+        const tx = b.findTxid(b.atomicTxid!)!.tx!;
+        for (const o of args.outputs) {
+          const rem = o.insertionRemittance;
+          if (rem?.basket !== "amm-pools") continue;
+          const out = tx.outputs[o.outputIndex]!;
+          rows.pools = [...(rows.pools ?? []), { outpoint: `${b.atomicTxid}.${o.outputIndex}`, satoshis: out.satoshis, lockingScript: out.lockingScript.toHex(), tags: rem.tags, customInstructions: rem.customInstructions }];
+        }
+        return { accepted: true };
+      },
+    } as unknown as WalletInterface;
+  }
+  const filedOf = () => internalized as { outputs: { outputIndex: number; insertionRemittance: { basket: string; customInstructions: string } }[] }[];
+
+  beforeEach(() => {
+    inst.history = { [PID]: [swapEvent] };
+    inst.txs[s1] = atomic(swap1, [fund, tokenDeploy, poolDeploy]);
+  });
+
+  it("collectFees: a position only in the deploy history (its basket row non-spendable) is walked from the deploy, its fee filed under the description's BRC-29 key; an old-contract row is `stopped`, no read", async () => {
+    setExchangeContext({ wallet: filingWallet({ pools: [staleRow, oldRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+    const r = await collectFees();
+    expect(r).toEqual({ txids: [], pages: 0, sats: 0n, tokens: [], stopped: [{ poolId: oldPool, reason: "an old pool contract: not collectable by this client" }] });
+    expect(filedOf()).toHaveLength(1);
+    const [cont, fee] = filedOf()[0]!.outputs;
+    const want = { protocolID: [2, "3241645161d8"], keyID, counterparty: "self", poolId: PID };
+    expect(cont).toMatchObject({ outputIndex: 0, insertionRemittance: { basket: "amm-pools" } });
+    expect(JSON.parse(cont!.insertionRemittance.customInstructions)).toEqual(want);
+    expect(fee).toMatchObject({ outputIndex: 2, insertionRemittance: { basket: "openex fees" } });
+    expect(JSON.parse(fee!.insertionRemittance.customInstructions)).toEqual(want);
+    expect(inst.requests.filter((x) => x.includes("/pools/history"))).toEqual([`GET /@${TOKEN}/amm/pools/history?limit=100&outpoint=${PID}`, `GET /@${TOKEN}/amm/pools/history?limit=100&outpoint=${s1}_0`]);
+    expect(inst.requests.some((x) => x.includes("ee".repeat(32)))).toBe(false);
+  });
+
+  it("collectFees: a pool whose token is not enabled is `stopped` and no longer aborts the collect", async () => {
+    inst.enabled[0]!.status = "disabled";
+    setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+    const r = await collectFees();
+    expect(r.stopped).toEqual([{ poolId: PID, reason: `${TOKEN.slice(0, 8)}… is not enabled on this exchange` }]);
+    expect(internalized).toEqual([]);
+  });
+
+  it("syncFees: the walk alone, silent; something filed fires onDataChange; no wallet, nothing; availableFees reads the fees basket once", async () => {
+    expect(await syncFees()).toEqual([]);
+    setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+    let changed = 0;
+    const off = onDataChange(() => changed++);
+    expect(await syncFees()).toEqual([]);
+    off();
+    expect(changed).toBe(1);
+    expect(filedOf()).toHaveLength(1);
+    walletReads = [];
+    expect(await availableFees()).toEqual({ sats: 0n, tokens: [], outputs: 0 });
+    expect(walletReads).toEqual(["openex fees"]);
+    // A walk that stops is answered, not thrown.
+    inst.history = null;
+    expect((await syncFees())[0]).toMatchObject({ poolId: PID, reason: expect.stringMatching(/^the pool's history cannot be read/) });
+  });
+
+  it("closePosition on a stale-row position: the walk from the deploy-history row, then the Close builds on the walked head (here stopped in prepareClose by the fake wallet's key, not a curve point: past any 'No such position')", async () => {
+    setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+    await expect(closePosition({ poolId: PID })).rejects.toThrow("Invalid point");
+    expect(filedOf()).toHaveLength(1);
+    expect(inst.requests.filter((x) => x === `GET /@${TOKEN}/amm/tx?id=${s1}`)).toHaveLength(2);
+    // A pool the walk finds closed is not spent.
+    internalized = [];
+    inst.history = { [PID]: [{ ...swapEvent, type: "close" }] };
+    setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+    await expect(closePosition({ poolId: PID })).rejects.toThrow("the pool is already closed");
+    expect(internalized).toEqual([]);
+  });
+
+  it("rebalancePosition walks first (from the deploy-history row) and refuses when the walk stops or finds the pool closed", async () => {
+    inst.lpPools[PID] = { poolId: PID, lpPubKey: v.lp, status: "live", outpoint: `${s1}_0`, current: wirePool(s1, v.pool1), sats: 60, tokens: 0, swaps: 1 };
+    const rebalance = async () => {
+      setExchangeContext({ wallet: filingWallet({ pools: [staleRow], actions: [deployAction] }), signedFor: () => af as never, identityKey: ME });
+      await myPositions();
+      return rebalancePosition({ outpoint: `${s1}.0`, tokens: 1000n, sats: 1000n });
+    };
+    await expect(rebalance()).rejects.toThrow(/^(?!could not catch up|No such position|the pool is already closed)/);
+    expect(filedOf()).toHaveLength(1);
+    expect(filedOf()[0]!.outputs.map((o) => o.insertionRemittance.basket)).toEqual(["amm-pools", "openex fees"]);
+    internalized = [];
+    inst.history = null;
+    await expect(rebalance()).rejects.toThrow(/^could not catch up: the pool's history cannot be read/);
+    inst.history = { [PID]: [{ ...swapEvent, type: "close" }] };
+    await expect(rebalance()).rejects.toMatchObject({ kind: "stale_pool" });
+    expect(internalized).toEqual([]);
   });
 });

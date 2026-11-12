@@ -10,7 +10,9 @@ import {
   closePosition,
   collectFees,
   deployPosition,
+  useAvailableFees,
   useMyPositions,
+  useSyncFees,
   useMyTokens,
   hasTerms,
   NO_TERMS_TEXT,
@@ -79,7 +81,7 @@ function PositionCard({ p, onClosed }: { p: Position; onClosed: (msg: string, tx
         </dd>
         {p.feesEarnedSats !== undefined && (
           <>
-            <dt>Fees earned</dt>
+            <dt>Fees earned (lifetime)</dt>
             <dd className="num">
               {fmtSats(p.feesEarnedSats)} sats · {fmtAmount(p.feesEarnedTokens ?? 0n, p.dec)} {p.sym}
             </dd>
@@ -267,6 +269,9 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
 export function Liquidity({ session, hosted }: { session: Session; hosted: HostedToken[] | null }) {
   const connected = session.status === "connected";
   const positions = useMyPositions(connected);
+  // 0.54.0: the fee walk on load files what the swaps paid into the fees basket; "available" is that basket.
+  useSyncFees(connected);
+  const available = useAvailableFees(connected);
   const [closed, setClosed] = useState<{ msg: string; txid: string } | null>(null);
   const [collected, setCollected] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
   const [collecting, setCollecting] = useState(false);
@@ -275,14 +280,12 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
     setCollected(null);
     try {
       const r = await collectFees();
+      const what = r.sats > 0n && r.tokens.length > 0 ? `${fmtSats(r.sats)} sats and your token fees` : r.sats > 0n ? `${fmtSats(r.sats)} sats` : "your token fees";
       const text = !r.txid
         ? "No fees to collect."
-        : r.sats > 0n && r.tokens.length > 0
-          ? `Collected ${fmtSats(r.sats)} sats and your token fees.`
-          : r.sats > 0n
-            ? `Collected ${fmtSats(r.sats)} sats.`
-            : "Collected your token fees.";
-      setCollected({ kind: "ok", text });
+        : `Collected ${what} in ${r.txids.length} transaction${r.txids.length === 1 ? "" : "s"}.` +
+          (r.refused ? ` Stopped at ${r.refused.page} of ${r.pages}: ${r.refused.error}. Collect again for the rest.` : "");
+      setCollected({ kind: r.refused ? "bad" : "ok", text });
     } catch (e) {
       setCollected({ kind: "bad", text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -292,6 +295,16 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
   // 0.32.0: the cards are the live positions; the per-token fees line counts the closed ones too.
   const live = positions.data?.filter((p) => !p.closed) ?? null;
   const byToken = positions.data ? feesByToken(positions.data) : [];
+  const metaOf = (tokenId: string) => positions.data?.find((p) => p.tokenId === tokenId) ?? hosted?.find((h) => h.tokenId === tokenId);
+  const fees = available.data;
+  const availableText = !fees
+    ? null
+    : fees.outputs === 0
+      ? "nothing"
+      : [`${fmtSats(fees.sats)} sats`, ...fees.tokens.map((t) => {
+          const m = metaOf(t.tokenId);
+          return `${fmtAmount(t.amount, m?.dec ?? 0)} ${m?.sym ?? t.tokenId.slice(0, 8)}`;
+        })].join(" · ");
   if (!connected) {
     return (
       <>
@@ -317,15 +330,16 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
           <div className="fees-summary" aria-label="Fees earned per token">
             {byToken.map((t) => (
               <p key={t.tokenId} className="fg2 small num">
-                {t.sym}: {t.positions} position{t.positions === 1 ? "" : "s"} · fees earned {fmtSats(t.sats)} sats · {fmtAmount(t.tokens, t.dec)} {t.sym}
+                {t.sym}: {t.positions} position{t.positions === 1 ? "" : "s"} · fees earned (lifetime) {fmtSats(t.sats)} sats · {fmtAmount(t.tokens, t.dec)} {t.sym}
               </p>
             ))}
           </div>
         )}
         <div className="row">
           <button type="button" className="btn btn-outline" onClick={() => void collect()} disabled={collecting}>
-            Collect fees
+            {collecting ? "Collecting…" : "Collect fees"}
           </button>
+          {availableText !== null && <span className="fg2 small num">Available to collect: {availableText}</span>}
         </div>
         {collected && <Notice kind={collected.kind}>{collected.text}</Notice>}
         {live === null ? (
