@@ -29,7 +29,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@1sat/actions": "0.1.5",
+    "@1sat/actions": "0.1.6",
     "@dcasegr/amm-engine": "0.54.2",
     "cbor2": "^2.3.0"
   },
