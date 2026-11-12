@@ -87,6 +87,11 @@ var (
 	lpNext   = key(11)
 	// lpTokens stands for the module receiving key the LP's Close pays the tokens to (0.13.0).
 	lpTokens = key(12)
+	// lpSatsFee and lpTokenFee stand for the LP's fee keys (0.55.0): the pool's LpSatsPkh (a
+	// BRC-29 key in the pages) and LpTokenPkh (a module receiving key), each Swap's LP fee paid
+	// to one of them by direction. Neither is the LP key.
+	lpSatsFee  = key(13)
+	lpTokenFee = key(14)
 	taker    = key(30)
 	// relay is the fixture relay's payout key: the swaps pay their
 	// commission to its P2PKH (Swap's commissionPkh, vectors' commission_pkh).
@@ -181,7 +186,7 @@ func (g *gen) tokenP2pkh(amount int64, k *ec.PrivateKey) []byte {
 }
 
 // state is TokenReserve (8, LE) ‖ LpPubKey ‖ ValidatorPubKey ‖ ValidatorIdentity (33 each) ‖
-// Nonce (32) ‖ Affirmation (its length byte, then the DER; OP_0 when empty), as Rúnar
+// Nonce (32) ‖ LpSatsPkh ‖ LpTokenPkh (20 each, 0.55.0) ‖ Affirmation (its length byte, then the DER; OP_0 when empty), as Rúnar
 // serializes it (codeFor checks it against the SDK).
 func (p pool) state() []byte {
 	b := make([]byte, 8)
@@ -194,6 +199,8 @@ func (p pool) state() []byte {
 	}
 	b = append(b, identity.PubKey().Compressed()...)
 	b = append(b, nonce...)
+	b = append(b, lpSatsFee.PubKey().Hash()...)
+	b = append(b, lpTokenFee.PubKey().Hash()...)
 	b = append(b, byte(len(p.affirmation)))
 	return append(b, p.affirmation...)
 }
@@ -214,6 +221,8 @@ func (g *gen) codeFor(assetID []byte) []byte {
 		hex.EncodeToString(p.validator.PubKey().Compressed()),
 		hex.EncodeToString(identity.PubKey().Compressed()),
 		hex.EncodeToString(nonce),
+		hex.EncodeToString(lpSatsFee.PubKey().Hash()),
+		hex.EncodeToString(lpTokenFee.PubKey().Hash()),
 		hex.EncodeToString(p.affirmation),
 		hex.EncodeToString(assetID),
 		int64(lpFeeBps),
@@ -381,7 +390,7 @@ func main() {
 	// tokens to the taker (for the tokens-in swap), 2 the LP's token change, 3 the LP's sats
 	// change — from the token input and the LP's funding, every input signed ALL|FORKID. The
 	// affirmation: the validator key's DER signature over sha256(affirmMessage(the pool, its
-	// satoshis)), message v2 (the nonce in it, no termsHash).
+	// satoshis)), message v3 (0.55.0: the nonce and the two LP fee addresses in it).
 	vkey := validatorKeyFor(nonceKeyID(nonce))
 	p0 := pool{bsv: 1_000_000, tokens: 5_000_000, lp: lpKey, validator: vkey}
 	const deployFee = 500
@@ -427,7 +436,7 @@ func main() {
 		return []out{
 			{next.bsv, g.poolScript(next)},
 			{1, g.tokenP2pkh(tokOut, taker)},
-			{lpFee, p2pkhScript(p0.lp)},
+			{lpFee, p2pkhScript(lpSatsFee)},
 			{valFee, p2pkhScript(p0.validator)},
 			{comm, p2pkhScript(relay)},
 			{change1, p2pkhScript(taker)},
@@ -457,7 +466,7 @@ func main() {
 	swap2 := build(swap2Ins, []out{
 		{p2.bsv, g.poolScript(p2)},
 		{bsvOut, p2pkhScript(taker)},
-		{1, g.tokenP2pkh(lpFee2, p1.lp)},
+		{1, g.tokenP2pkh(lpFee2, lpTokenFee)},
 		{1, g.tokenP2pkh(valFee2, p1.validator)},
 		{1, g.tokenP2pkh(comm2, relay)},
 		{change2, p2pkhScript(taker)},
@@ -479,7 +488,7 @@ func main() {
 	swap3 := build(swap2Ins, []out{
 		{p3.bsv, g.poolScript(p3)},
 		{bsvOut3, p2pkhScript(taker)},
-		{1, g.tokenP2pkh(lpFee3, p1.lp)},
+		{1, g.tokenP2pkh(lpFee3, lpTokenFee)},
 		{1, g.tokenP2pkh(valFee3, p1.validator)},
 		{1, g.tokenP2pkh(comm3, relay)},
 		{1, g.tokenP2pkh(tokenChange3, taker)},
@@ -555,6 +564,7 @@ func main() {
 	fmt.Fprintf(&b, "pub const lp_fee_bps = %d;\npub const validator_fee_bps = %d;\npub const commission_bps = %d;\n", lpFeeBps, validatorFeeBps, commissionBps)
 	fmt.Fprintf(&b, "pub const commission_pkh = \"%s\";\n", hex.EncodeToString(relay.PubKey().Hash()))
 	fmt.Fprintf(&b, "pub const lp = \"%s\";\n", hex.EncodeToString(lpKey.PubKey().Compressed()))
+	fmt.Fprintf(&b, "pub const lp_sats_pkh = \"%s\";\npub const lp_token_pkh = \"%s\";\n", hex.EncodeToString(lpSatsFee.PubKey().Hash()), hex.EncodeToString(lpTokenFee.PubKey().Hash()))
 	fmt.Fprintf(&b, "pub const affirmation = \"%s\";\npub const nonce = \"%s\";\npub const close_fee = %d;\npub const deploy_fee = %d;\n", hex.EncodeToString(affirmation), hex.EncodeToString(nonce), closeFee, deployFee)
 	fmt.Fprintf(&b, "pub const own_key = \"%s\";\npub const bad_next = \"%s\";\n", hex.EncodeToString(ownP.validator.PubKey().Compressed()), hex.EncodeToString(pBad.validator.PubKey().Compressed()))
 	for _, p := range []struct {
@@ -575,6 +585,9 @@ func main() {
 	}
 	v["identity"] = hex.EncodeToString(identity.PubKey().Compressed())
 	v["lp"] = hex.EncodeToString(lpKey.PubKey().Compressed())
+	// 0.55.0: the LP fee keys (the pages' tests answer the wallet's BRC-29 and module derivations with them) and their hashes.
+	v["lpSatsFeeKey"], v["lpTokenFeeKey"] = hex.EncodeToString(lpSatsFee.PubKey().Compressed()), hex.EncodeToString(lpTokenFee.PubKey().Compressed())
+	v["lpSatsPkh"], v["lpTokenPkh"] = hex.EncodeToString(lpSatsFee.PubKey().Hash()), hex.EncodeToString(lpTokenFee.PubKey().Hash())
 	v["lpFeeBps"], v["validatorFeeBps"], v["commissionBps"] = lpFeeBps, validatorFeeBps, commissionBps
 	v["commissionPkh"] = hex.EncodeToString(relay.PubKey().Hash())
 	v["affirmation"], v["nonce"], v["closeFee"] = hex.EncodeToString(affirmation), hex.EncodeToString(nonce), closeFee
@@ -593,10 +606,11 @@ func main() {
 	fmt.Println("wrote", *outDir, *webDir)
 }
 
-// The affirmation message v2 (must match src/pool.zig `affirmMessage`, docs/AMM.md "The deploy
-// and the affirmation"): the tag, the asset id, the three fees (int64 LE), TokenReserve and the
-// pool's satoshis (uint64 LE), LpPubKey, ValidatorPubKey, ValidatorIdentity, the nonce. 221 bytes.
-const affirmTag = "skein-amm affirm 2"
+// The affirmation message v3 (0.55.0; must match src/pool.zig `affirmMessage`, docs/AMM.md "The
+// deploy and the affirmation"): the tag, the asset id, the three fees (int64 LE), TokenReserve and
+// the pool's satoshis (uint64 LE), LpPubKey, ValidatorPubKey, ValidatorIdentity, the nonce,
+// LpSatsPkh, LpTokenPkh. 261 bytes.
+const affirmTag = "skein-amm affirm 3"
 
 func (g *gen) affirmMessage(p pool) []byte {
 	m := []byte(affirmTag)
@@ -610,8 +624,10 @@ func (g *gen) affirmMessage(p pool) []byte {
 	m = append(m, p.validator.PubKey().Compressed()...)
 	m = append(m, identity.PubKey().Compressed()...)
 	m = append(m, nonce...)
-	if len(m) != 221 {
-		panic("affirmMessage: not 221 bytes")
+	m = append(m, lpSatsFee.PubKey().Hash()...)
+	m = append(m, lpTokenFee.PubKey().Hash()...)
+	if len(m) != 261 {
+		panic("affirmMessage: not 261 bytes")
 	}
 	return m
 }
@@ -816,7 +832,7 @@ func writeArtifact(path string, sa *runar.RunarArtifact, src string) {
 	for i, f := range sa.StateFields {
 		names[i] = f.Name + ":" + f.Type
 	}
-	if strings.Join(names, ",") != "tokenReserve:bigint,lpPubKey:PubKey,validatorPubKey:PubKey,validatorIdentity:PubKey,nonce:Sha256,affirmation:ByteString" {
+	if strings.Join(names, ",") != "tokenReserve:bigint,lpPubKey:PubKey,validatorPubKey:PubKey,validatorIdentity:PubKey,nonce:Sha256,lpSatsPkh:Addr,lpTokenPkh:Addr,affirmation:ByteString" {
 		panic("state layout changed: update src/pool.zig: " + strings.Join(names, ","))
 	}
 	var b strings.Builder

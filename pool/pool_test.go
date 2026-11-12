@@ -45,6 +45,14 @@ var assetID = bytes.Repeat([]byte{0xa5}, 32)
 
 var validatorIdentity = key(nil, 0x7f)
 
+// The LP fee addresses every fixture pool carries in state (0.55.0): the sats
+// one (a BRC-29 key's hash in the pages) and the token one (a 1Color module
+// receiving key's hash). Neither is the LP key's.
+var (
+	lpSatsPkh  = bytes.Repeat([]byte{0x66}, 20)
+	lpTokenPkh = bytes.Repeat([]byte{0x77}, 20)
+)
+
 type fixture struct {
 	code          []byte // compiled code with readonly args spliced in (no state)
 	userPkh       []byte
@@ -86,6 +94,8 @@ func newFixture(t *testing.T, lpFeeBps, validatorBps, commissionBps int64) *fixt
 		hex.EncodeToString(p.validator.PubKey().Compressed()),
 		hex.EncodeToString(validatorIdentity.PubKey().Compressed()),
 		hex.EncodeToString(nonce),
+		hex.EncodeToString(lpSatsPkh),
+		hex.EncodeToString(lpTokenPkh),
 		hex.EncodeToString(affirmation),
 		hex.EncodeToString(assetID),
 		lpFeeBps,
@@ -171,8 +181,8 @@ func tokenPrefix(amount int64) []byte {
 }
 
 // state is TokenReserve (8, LE) || LpPubKey || ValidatorPubKey ||
-// ValidatorIdentity (33 each) || Nonce (32) || Affirmation (its length, then
-// the DER). newFixture checks this against the SDK. A rescinded pool's
+// ValidatorIdentity (33 each) || Nonce (32) || LpSatsPkh || LpTokenPkh (20
+// each, 0.55.0) || Affirmation (its length, then the DER). newFixture checks this against the SDK. A rescinded pool's
 // ValidatorPubKey is 33 zero bytes (`rescinded`).
 func (p pool) state() []byte {
 	b := make([]byte, 8)
@@ -185,6 +195,9 @@ func (p pool) state() []byte {
 	}
 	b = append(b, validatorIdentity.PubKey().Compressed()...)
 	b = append(b, nonce...)
+	sats, tokens := p.feePkhs()
+	b = append(b, sats...)
+	b = append(b, tokens...)
 	b = append(b, byte(len(affirmation)))
 	return append(b, affirmation...)
 }
@@ -209,7 +222,31 @@ type pool struct {
 	bsv, tokens   int64
 	lp, validator *ec.PrivateKey // current keys
 	rescinded     bool           // ValidatorPubKey cleared (Rescind)
+	// satsPkh, tokenPkh: the LP fee addresses in state; nil, lpSatsPkh and lpTokenPkh.
+	satsPkh, tokenPkh []byte
 	lock          []byte         // defaults to poolScript(pool)
+}
+
+// feePkhs is the pool's LpSatsPkh and LpTokenPkh.
+func (p pool) feePkhs() ([]byte, []byte) {
+	sats, tokens := p.satsPkh, p.tokenPkh
+	if sats == nil {
+		sats = lpSatsPkh
+	}
+	if tokens == nil {
+		tokens = lpTokenPkh
+	}
+	return sats, tokens
+}
+
+// lpFeePkh is where a Swap pays the LP fee (0.55.0): LpSatsPkh on a sats-in
+// Swap, LpTokenPkh on a token-in Swap.
+func (p pool) lpFeePkh(bsvIn bool) []byte {
+	sats, tokens := p.feePkhs()
+	if bsvIn {
+		return sats
+	}
+	return tokens
 }
 
 type out struct {
@@ -328,7 +365,7 @@ type swapResult struct {
 }
 
 func (r swapResult) pool(p pool) pool {
-	return pool{bsv: r.newBsv, tokens: r.newTokens, lp: p.lp, validator: r.nextValidator}
+	return pool{bsv: r.newBsv, tokens: r.newTokens, lp: p.lp, validator: r.nextValidator, satsPkh: p.satsPkh, tokenPkh: p.tokenPkh}
 }
 
 func (f *fixture) expectSwap(p pool, amountIn int64, bsvIn bool) swapResult {
@@ -372,7 +409,7 @@ func (f *fixture) swapCall(p pool, amountIn int64, bsvIn bool, r swapResult) cal
 	} else {
 		outs = append(outs, out{r.out, p2pkh(f.userPkh)})
 	}
-	fee(r.lpFee, pkh(p.lp))
+	fee(r.lpFee, p.lpFeePkh(bsvIn))
 	fee(r.validatorFee, pkh(p.validator))
 	fee(r.commission, f.commissionPkh)
 	return call{
@@ -455,6 +492,42 @@ func TestSwap(t *testing.T) {
 			}
 			mustFail(t, f.run(t, p, c))
 		})
+		t.Run(name+": LP fee paid to the LP key (the pre-0.55.0 address)", func(t *testing.T) {
+			c := f.swapCall(p, 20_000, bsvIn, r)
+			if bsvIn {
+				c.outs[2].script = p2pkh(pkh(p.lp))
+			} else {
+				c.outs[2].script = tokenP2pkh(r.lpFee, pkh(p.lp))
+			}
+			mustFail(t, f.run(t, p, c))
+		})
+		t.Run(name+": LP fee paid to the other direction's address", func(t *testing.T) {
+			c := f.swapCall(p, 20_000, bsvIn, r)
+			if bsvIn {
+				c.outs[2].script = p2pkh(lpTokenPkh)
+			} else {
+				c.outs[2].script = tokenP2pkh(r.lpFee, lpSatsPkh)
+			}
+			mustFail(t, f.run(t, p, c))
+		})
+		t.Run(name+": a pool with its own fee addresses pays them", func(t *testing.T) {
+			own := p
+			own.satsPkh, own.tokenPkh = bytes.Repeat([]byte{0x88}, 20), bytes.Repeat([]byte{0x99}, 20)
+			mustPass(t, f.run(t, own, f.swapCall(own, 20_000, bsvIn, f.expectSwap(own, 20_000, bsvIn))))
+		})
+		for _, field := range []string{"LpSatsPkh", "LpTokenPkh"} {
+			t.Run(name+": "+field+" changes on a swap", func(t *testing.T) {
+				c := f.swapCall(p, 20_000, bsvIn, r)
+				moved := r.pool(p)
+				if field == "LpSatsPkh" {
+					moved.satsPkh = bytes.Repeat([]byte{0x88}, 20)
+				} else {
+					moved.tokenPkh = bytes.Repeat([]byte{0x88}, 20)
+				}
+				c.outs[0].script = f.poolScript(moved)
+				mustFail(t, f.run(t, p, c))
+			})
+		}
 		t.Run(name+": LP key changes on a swap", func(t *testing.T) {
 			c := f.swapCall(p, 20_000, bsvIn, r)
 			moved := r.pool(p)

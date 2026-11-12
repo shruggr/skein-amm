@@ -46,8 +46,10 @@ type Pool struct {
 
 	TokenReserve runar.Bigint
 	// The validator's key rotates: it names its next key on every Swap it
-	// signs. The LP's key is the pool's for its life. Payouts go to Hash160 of the current key. Next keys are derived
-	// off-chain so wallets can find their payouts from overlay data.
+	// signs; its fee goes to Hash160 of the current key. Next keys are derived
+	// off-chain so wallets can find their payouts from overlay data. The LP's key
+	// is the pool's for its life: it signs Close (0.55.0: the LP fee goes to
+	// LpSatsPkh / LpTokenPkh, not to this key).
 	LpPubKey        runar.PubKey
 	ValidatorPubKey runar.PubKey
 
@@ -73,7 +75,19 @@ type Pool struct {
 	// (raw in the state, no framing: a variable-length field costs every
 	// method a parser, 174 bytes here); Affirmation is a ByteString (DER varies
 	// in length), framed in the state by its one-byte push length.
-	Nonce       runar.Sha256Digest
+	Nonce runar.Sha256Digest
+
+	// LpSatsPkh and LpTokenPkh (0.55.0, David Case 2026-11-12, agent-env
+	// plans/lp-fee-addresses-settled-2026-11-12.md): where Swap pays the LP fee,
+	// LpSatsPkh on a sats-in Swap (the fee in sats), LpTokenPkh on a token-in
+	// Swap (the fee in tokens). Fixed at deploy, never assigned, so every
+	// continuation carries them unchanged (as the Nonce). The LP's wallet derives
+	// both from the pool's key id: a BRC-29 key for the sats (taken in as a
+	// wallet payment), a 1Color module receiving key for the tokens (taken in as
+	// a `p color` receipt).
+	LpSatsPkh  runar.Addr
+	LpTokenPkh runar.Addr
+
 	Affirmation runar.ByteString
 
 	// AssetId is the token's canonical 32-byte BRC-162 id (the deploy txid;
@@ -91,15 +105,21 @@ type Pool struct {
 // commissionPkh (named by the relay per call). Only amountIn minus fees
 // enters the pool. A CommissionBps of 0 means no commission output.
 //
-// Outputs: 0 pool, 1 user payout, then LP fee, validator fee and commission,
-// each only when nonzero; then (skein-amm 0.40.0) the taker's token change,
+// Outputs: 0 pool, 1 user payout, then LP fee (0.55.0: to LpSatsPkh on a
+// sats-in Swap, to LpTokenPkh on a token-in Swap), validator fee and
+// commission, each only when nonzero; then (skein-amm 0.40.0) the taker's token change,
 // tokenChange tokens to tokenChangePkh (1 sat), only when nonzero; then
 // Rúnar's sats change.
 func (c *Pool) Swap(validatorSig runar.Sig, nextValidatorPubKey runar.PubKey, amountIn runar.Bigint, bsvIn runar.Bool, userPkh runar.Addr, commissionPkh runar.Addr, tokenChangePkh runar.Addr, tokenChange runar.Bigint) {
 	runar.Assert(runar.CheckSig(validatorSig, c.ValidatorPubKey))
 	runar.Assert(amountIn > 0)
 	runar.Assert(tokenChange >= 0)
-	lpPkh := runar.Hash160(c.LpPubKey)
+	// 0.55.0: the LP fee's address by direction (read here, before writePool's
+	// GetStateScript: a property read after it compiles to the slot value).
+	lpPkh := c.LpSatsPkh
+	if !bsvIn {
+		lpPkh = c.LpTokenPkh
+	}
 	validatorPkh := runar.Hash160(c.ValidatorPubKey)
 
 	bsvReserve := runar.ExtractAmount(c.TxPreimage)
@@ -159,7 +179,8 @@ func (c *Pool) Close(lpSig runar.Sig) {
 // Rescind is the validator's withdrawal of its attestation (0.13.0, David
 // Case 2026-10-22; it replaces 0.11.0's validator Close): signed by the current
 // ValidatorPubKey, it writes the pool back at output 0 unchanged (the same
-// sats, TokenReserve, LpPubKey, ValidatorIdentity, Nonce and Affirmation) with
+// sats, TokenReserve, LpPubKey, ValidatorIdentity, Nonce, LpSatsPkh, LpTokenPkh
+// and Affirmation) with
 // ValidatorPubKey cleared to 33 zero bytes. No Swap is possible after it (no
 // key can sign against the zero key, nor can a second Rescind), and the lookup
 // delists the pool on seeing it; the LP closes it as any pool. The validator
@@ -185,8 +206,8 @@ func (c *Pool) writePool(bsvReserve runar.Bigint) {
 func (c *Pool) poolScript() runar.ByteString {
 	// scriptCode = varint || code[2:] || OP_RETURN || state, where state is
 	// TokenReserve (8) + LpPubKey, ValidatorPubKey, ValidatorIdentity (33
-	// each) + Nonce (32) + Affirmation (its length byte + the DER
-	// signature). Every field but TokenReserve and ValidatorPubKey is carried
+	// each) + Nonce (32) + LpSatsPkh, LpTokenPkh (20 each, 0.55.0) +
+	// Affirmation (its length byte + the DER signature). Every field but TokenReserve and ValidatorPubKey is carried
 	// unchanged and those two are fixed-width, so the new state is exactly as
 	// long as the spent one.
 	//
