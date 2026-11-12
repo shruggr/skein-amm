@@ -4,6 +4,23 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## 0.54.1 (branch `collect-report-0.54.1`; not tagged)
+
+A web-only cut: @dcasegr/amm-engine and amm-client 0.54.1, and the Liquidity page. The token app, its
+programs and etc/app.json stay at 0.52.1. From a real collect (Yours, 2026-11-12): page 1 broadcast,
+then the page showed only "Unknown error" and the old "Available to collect".
+
+- New `errorText(e)` (exported): any thrown value as a non-empty text — `message`, else `description`
+  (with `code`), else the value's own properties as JSON, else `String(value)`; a string, `undefined`
+  and `null` say what they are; a bare "Unknown error" is never the whole text.
+- `collectFees` / `collectBasket`: `refused.error` and a page-1 throw carry `errorText` of what the
+  wallet threw (a page-1 throw is an Error with that text, the wallet's `code` kept, the value as its
+  `cause`); the walk's `stopped` reasons too. A failed re-read of the basket after the pages no longer
+  loses them: the result comes back without `remaining`. Result shape otherwise unchanged.
+- Liquidity page: after a partial collect, "Collected X in N transaction(s). The next one failed: <text>.
+  Y is still available to collect."; "Available to collect" is re-read after every collect attempt.
+- No retry, delay or wait between pages.
+
 ## 0.54.0 (branch `lp-collect-0.54.0`; not tagged)
 
 A client-only release (David 2026-11-11/12, agent-env plans/queued-items-2026-11-11.md §12, §12b;

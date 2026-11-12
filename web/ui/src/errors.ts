@@ -58,6 +58,59 @@ export function errorKind(e: unknown): ClientErrorKind | undefined {
   return undefined;
 }
 
+/** A non-empty string field of `o`, trimmed, or "". */
+function textField(o: object, key: string): string {
+  const v = (o as Record<string, unknown>)[key];
+  return typeof v === "string" ? v.trim() : typeof v === "number" || typeof v === "bigint" ? String(v) : "";
+}
+
+/** Every own property of `o` (an Error's non-enumerable `message`, `code`… too) but `stack`, as JSON; "" when there is none or it cannot be written. */
+function ownPropsJson(o: object): string {
+  const props: Record<string, unknown> = {};
+  for (const k of Object.getOwnPropertyNames(o)) if (k !== "stack") props[k] = (o as Record<string, unknown>)[k];
+  try {
+    const json = JSON.stringify(props, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
+    return json && json !== "{}" ? json : "";
+  } catch {
+    return "";
+  }
+}
+
+/** A text that says nothing about what failed (the wallets' "Unknown error" and its kin). */
+const SAYS_NOTHING = /^(unknown error|error|undefined|null|\[object \w+\])?$/i;
+
+/**
+ * Any thrown value as a non-empty text (0.54.1): an Error's or a wallet error object's `message`,
+ * else its `description` (BRC-100's `{code, description}`), with its `code` when it has one; when that
+ * says nothing ("", "Unknown error"), the value's own properties as JSON; else `String(value)`. A string
+ * is itself; `undefined`/`null` say so. Never empty, never only "Unknown error".
+ */
+export function errorText(e: unknown): string {
+  if (typeof e === "string") return e.trim() && !SAYS_NOTHING.test(e.trim()) ? e : `thrown: the text ${JSON.stringify(e)}`;
+  if (e === undefined || e === null) return `thrown: ${String(e)} (no error value)`;
+  if (typeof e !== "object") return `thrown: ${typeof e} ${String(e)}`;
+  const main = textField(e, "message") || textField(e, "description");
+  const code = textField(e, "code");
+  const said = main && !SAYS_NOTHING.test(main) ? main : "";
+  if (said) return code && !said.includes(code) ? `${said} (${code})` : said;
+  const name = e instanceof Error ? e.name : (e.constructor?.name ?? "object");
+  const props = ownPropsJson(e);
+  // Something beyond the empty or generic message: the properties say it.
+  if (props && props !== JSON.stringify({ message: (e as { message?: unknown }).message })) return `${main || name}: ${props}`;
+  const str = e instanceof Error ? "" : String(e);
+  if (str && !SAYS_NOTHING.test(str)) return str;
+  const at = typeof (e as { stack?: unknown }).stack === "string" ? ((e as { stack: string }).stack.split("\n").find((l) => /^\s+at\s/.test(l))?.trim() ?? "") : "";
+  return `thrown: ${name}${main ? ` "${main}"` : ""} with nothing else${at ? `, ${at}` : ""}`;
+}
+
+/** `e` when it is an Error whose message says something; else an Error of `errorText(e)` (its `code` kept, `e` the cause). */
+export function asError(e: unknown): Error {
+  if (e instanceof Error && e.message.trim() && !SAYS_NOTHING.test(e.message.trim())) return e;
+  const err = new Error(errorText(e), { cause: e }) as Error & { code?: unknown };
+  if (e && typeof e === "object" && "code" in e) err.code = (e as { code?: unknown }).code;
+  return err;
+}
+
 /** `e` as a `ClientError` of its kind (its message unchanged, `e` the cause) when it has one; else `e` itself. */
 export function toClientError(e: unknown): unknown {
   if (e instanceof ClientError) return e;

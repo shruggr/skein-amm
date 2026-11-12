@@ -573,14 +573,14 @@ describe("collectBasket (0.54.0): pages in sequence", () => {
   const rowsOf = (): Row[] => src.outputs.map((o, n) => ({ outpoint: `${src.id("hex")}.${n}`, satoshis: o.satoshis!, lockingScript: o.lockingScript.toHex(), customInstructions: specs }));
 
   /** The signing wallet: createAction hands back a transaction of the named inputs and outputs; signAction "broadcasts" it, the spent rows leave the basket. `refuse`: the createAction call that throws. */
-  function collectWallet(refuse?: number) {
+  function collectWallet(refuse?: number, ...thrown: unknown[]) {
     const bag = syncWallet({ fees: rowsOf(), feeTxs: [src] });
     const created: CreateActionArgs[] = [];
     let pending: { tx: Transaction; args: CreateActionArgs } | undefined;
     Object.assign(bag.wallet, {
       async createAction(args: CreateActionArgs) {
         created.push(args);
-        if (created.length === refuse) throw new Error("The user denied the request: color_send TST");
+        if (created.length === refuse) throw thrown.length ? thrown[0] : new Error("The user denied the request: color_send TST");
         const beef = Beef.fromBinary(Array.from(args.inputBEEF!));
         const tx = new Transaction();
         for (const i of args.inputs ?? []) {
@@ -641,6 +641,52 @@ describe("collectBasket (0.54.0): pages in sequence", () => {
     const bag = collectWallet(1);
     await expect(collectBasket(bag.wallet)).rejects.toThrow("The user denied the request");
     expect(bag.created).toHaveLength(1);
+  });
+
+  it("0.54.1: page 2 throws a non-Error (undefined, a string): page 1's result comes back, `refused` has a real, non-empty text", async () => {
+    for (const thrown of [undefined, "", "Unknown error", 42]) {
+      const bag = collectWallet(2, thrown);
+      const r = await collectBasket(bag.wallet);
+      expect(r.txids).toHaveLength(1);
+      expect(r).toMatchObject({ pages: 2, sats: 5000n, tokens: [{ tokenId: TOKEN_ID, amount: 7n }], remaining: { sats: 7000n, outputs: 2 } });
+      expect(r.refused!.page).toBe(2);
+      expect(r.refused!.error.trim()).not.toBe("");
+      expect(r.refused!.error).not.toMatch(/^unknown error$/i);
+    }
+    expect((await collectBasket(collectWallet(2, undefined).wallet)).refused!.error).toBe("thrown: undefined (no error value)");
+  });
+
+  it("0.54.1: page 2 throws an object with no message: its description and code, or its properties", async () => {
+    const wallet = (await collectBasket(collectWallet(2, { code: "ERR_INVALID_PARAMETER", description: "inputBEEF is not valid" }).wallet)).refused!.error;
+    expect(wallet).toBe("inputBEEF is not valid (ERR_INVALID_PARAMETER)");
+    const bare = (await collectBasket(collectWallet(2, { isError: true, status: "error" }).wallet)).refused!.error;
+    expect(bare).toBe('Object: {"isError":true,"status":"error"}');
+    const empty = (await collectBasket(collectWallet(2, new Error("")).wallet)).refused!.error;
+    expect(empty).toMatch(/^thrown: Error with nothing else/);
+  });
+
+  it("0.54.1: page 1 fails: thrown, with the real text (and the wallet's code kept), nothing spent", async () => {
+    await expect(collectBasket(collectWallet(1, { code: "ERR_PERMISSION_DENIED", description: "denied" }).wallet)).rejects.toMatchObject({ message: "denied (ERR_PERMISSION_DENIED)", code: "ERR_PERMISSION_DENIED" });
+    await expect(collectBasket(collectWallet(1, undefined).wallet)).rejects.toThrow("thrown: undefined (no error value)");
+    const wrapped = new Error("Unknown error");
+    Object.assign(wrapped, { code: "ERR_UNKNOWN", detail: "popup closed" });
+    await expect(collectBasket(collectWallet(1, wrapped).wallet)).rejects.toThrow('Unknown error: {"message":"Unknown error","code":"ERR_UNKNOWN","detail":"popup closed"}');
+  });
+
+  it("0.54.1: the re-read after the pages fails: the completed pages still come back (no `remaining`)", async () => {
+    const bag = collectWallet(2, undefined);
+    const list = bag.wallet.listOutputs.bind(bag.wallet);
+    let reads = 0;
+    Object.assign(bag.wallet, {
+      async listOutputs(args: Parameters<typeof list>[0]) {
+        if (args.basket === FEES_BASKET && args.include === "locking scripts" && ++reads === 2) throw undefined;
+        return list(args);
+      },
+    });
+    const r = await collectBasket(bag.wallet);
+    expect(r.txids).toHaveLength(1);
+    expect(r).not.toHaveProperty("remaining");
+    expect(r.refused).toEqual({ page: 2, error: "thrown: undefined (no error value)" });
   });
 
   it("availableFees: ONE listOutputs of the fees basket; sats rows summed, token rows per token id, every row counted", async () => {

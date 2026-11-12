@@ -18,6 +18,7 @@ import { signP2pkhWithWallet } from "../market/swapAction.js";
 import { inputIndexOf, runAppSignedAction } from "../wallet/action.js";
 import { FEES_BASKET, POOLS_BASKET, newReceivingKey } from "../wallet/color.js";
 import { identityKeyOf } from "../wallet/brc29.js";
+import { asError, errorText } from "../errors.js";
 import { POOL_TAG, poolCustomInstructions, tokenP2pkhScript } from "./poolDeploy.js";
 import { basketBeef, basketRows } from "./wallet.js";
 
@@ -260,7 +261,7 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
         // 0.48.2: the transaction's Atomic BEEF (internalizeAction takes nothing else).
         await wallet.internalizeAction({ tx: beef.toBinaryAtomic(txid), outputs, description: "AMM pool output filed" });
       } catch (e) {
-        return { stop: `the wallet refused ${txid}: ${e instanceof Error ? e.message : String(e)}` };
+        return { stop: `the wallet refused ${txid}: ${errorText(e)}` };
       }
       filed++;
       if (!contKnown) knownPools.add(pointKey(txid, 0));
@@ -275,7 +276,7 @@ export async function syncPool(wallet: WalletInterface, poolId: string, io: Sync
     try {
       page = await io.history(cursor);
     } catch (e) {
-      return { caughtUp: false, reason: `the pool's history cannot be read: ${e instanceof Error ? e.message : String(e)}` };
+      return { caughtUp: false, reason: `the pool's history cannot be read: ${errorText(e)}` };
     }
     if (page.events.length === 0) return done();
     for (const event of page.events) {
@@ -411,7 +412,9 @@ export function composePages(fees: FeeInput[], rate: number, scriptOf: (tokenId:
  * them, `runAppSignedAction`) and one `p color` output per token on the page, NO sats output: the
  * wallet keeps the sats as its change at its own fee rate (the shape of `moveBackSats`). A refusal
  * or a failure on page 1 throws (nothing spent); on a later page it stops the loop and the pages
- * done are returned with `refused`.
+ * done are returned with `refused`. 0.54.1: the thrown or `refused` text is `errorText` of whatever
+ * the wallet threw (never empty); the pages done are returned even when the re-read of the basket
+ * after them fails (`remaining` absent then).
  */
 export async function collectBasket(wallet: WalletInterface, options: CollectOptions = {}): Promise<CollectResult> {
   const rate = options.feeRateSatsPerKb ?? COLLECT_FEE_RATE_SATS_PER_KB;
@@ -435,19 +438,26 @@ export async function collectBasket(wallet: WalletInterface, options: CollectOpt
       txids.push(await collectPage(wallet, page, inputBEEF, me));
       spent.push(...page.inputs);
     } catch (e) {
-      if (n === 0) throw e;
-      refused = { page: n + 1, error: e instanceof Error ? e.message : String(e) };
+      // 0.54.1: the real text, whatever was thrown (a wallet error object, a string, undefined).
+      if (n === 0) throw asError(e);
+      refused = { page: n + 1, error: errorText(e) };
       break;
     }
   }
-  const remaining = feeTotals(await basketRows(wallet, FEES_BASKET));
+  // 0.54.1: a failed re-read loses nothing that completed: `remaining` is then absent (the page reads `availableFees` itself).
+  let remaining: AvailableFees | undefined;
+  try {
+    remaining = feeTotals(await basketRows(wallet, FEES_BASKET));
+  } catch {
+    remaining = undefined;
+  }
   const sats = spent.reduce((a, f) => (f.kind === "sats" ? a + BigInt(f.satoshis) : a), 0n);
   return {
     ...(txids.length ? { txid: txids[txids.length - 1]! } : {}),
     txids,
     pages: pages.length,
     ...(refused ? { refused } : {}),
-    remaining,
+    ...(remaining ? { remaining } : {}),
     sats,
     tokens: tokenSums(spent),
   };

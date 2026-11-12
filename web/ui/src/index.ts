@@ -7,7 +7,7 @@
 
 // The client (D9, D11–D13).
 export * from "./client.js";
-export { CLIENT_ERROR_KINDS, ClientError, errorKind, toClientError, type ClientErrorKind } from "./errors.js";
+export { CLIENT_ERROR_KINDS, ClientError, errorKind, errorText, toClientError, type ClientErrorKind } from "./errors.js";
 export { DEFAULT_FEE_RATE_SATS_PER_KB, exchangeBase, tokenBase } from "./lib/config.js";
 /** A swap-basket row whose spender the swap's overlay pass could not take in (`SwapResult.stuck`, 0.44.2). */
 export type { StuckRow } from "./wallet/swapPayouts.js";

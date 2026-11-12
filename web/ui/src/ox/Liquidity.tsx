@@ -17,10 +17,13 @@ import {
   hasTerms,
   NO_TERMS_TEXT,
   useValidatorTerms,
+  type AvailableFees,
+  type CollectResult,
   type HostedToken,
   type Position,
   type Session,
 } from "../data/exchange";
+import { errorText } from "../errors";
 import { fmtAmount, fmtPrice, fmtSats, parseInput } from "./format";
 import { followAmount, type DeploySource } from "./deployFill";
 import { feesByToken } from "../lp/positions";
@@ -266,6 +269,43 @@ function DeployForm({ hosted }: { hosted: HostedToken[] | null }) {
   );
 }
 
+/** What the fees basket holds as one line ("nothing" when it holds no row). */
+export function feesLine(fees: AvailableFees, metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined): string {
+  if (fees.outputs === 0) return "nothing";
+  return [`${fmtSats(fees.sats)} sats`, ...fees.tokens.map((t) => {
+    const m = metaOf(t.tokenId);
+    return `${fmtAmount(t.amount, m?.dec ?? 0)} ${m?.sym ?? t.tokenId.slice(0, 8)}`;
+  })].join(" · ");
+}
+
+/**
+ * The notice after a collect (0.54.1): what the completed pages moved and, when a later page failed,
+ * the wallet's own text and what is still in the basket.
+ */
+export function collectNotice(r: CollectResult, metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined): { kind: "ok" | "bad"; text: string } {
+  if (!r.txid) return { kind: "ok", text: "No fees to collect." };
+  const what = r.sats > 0n && r.tokens.length > 0 ? `${fmtSats(r.sats)} sats and your token fees` : r.sats > 0n ? `${fmtSats(r.sats)} sats` : "your token fees";
+  const done = `Collected ${what} in ${r.txids.length} transaction${r.txids.length === 1 ? "" : "s"}.`;
+  if (!r.refused) return { kind: "ok", text: done };
+  const left = r.remaining ? `${feesLine(r.remaining, metaOf)} is still available to collect.` : "The rest is still available to collect.";
+  return { kind: "bad", text: `${done} The next one failed: ${r.refused.error}. ${left}` };
+}
+
+/** A collect attempt (0.54.1): its notice (a throw's real text), and "Available to collect" re-read after it, success or failure. */
+export async function runCollect(
+  collect: () => Promise<CollectResult>,
+  reloadAvailable: () => void,
+  metaOf: (tokenId: string) => { sym?: string; dec?: number } | undefined,
+): Promise<{ kind: "ok" | "bad"; text: string }> {
+  try {
+    return collectNotice(await collect(), metaOf);
+  } catch (e) {
+    return { kind: "bad", text: errorText(e) };
+  } finally {
+    reloadAvailable();
+  }
+}
+
 export function Liquidity({ session, hosted }: { session: Session; hosted: HostedToken[] | null }) {
   const connected = session.status === "connected";
   const positions = useMyPositions(connected);
@@ -279,15 +319,7 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
     setCollecting(true);
     setCollected(null);
     try {
-      const r = await collectFees();
-      const what = r.sats > 0n && r.tokens.length > 0 ? `${fmtSats(r.sats)} sats and your token fees` : r.sats > 0n ? `${fmtSats(r.sats)} sats` : "your token fees";
-      const text = !r.txid
-        ? "No fees to collect."
-        : `Collected ${what} in ${r.txids.length} transaction${r.txids.length === 1 ? "" : "s"}.` +
-          (r.refused ? ` Stopped at ${r.refused.page} of ${r.pages}: ${r.refused.error}. Collect again for the rest.` : "");
-      setCollected({ kind: r.refused ? "bad" : "ok", text });
-    } catch (e) {
-      setCollected({ kind: "bad", text: e instanceof Error ? e.message : String(e) });
+      setCollected(await runCollect(() => collectFees(), available.reload, metaOf));
     } finally {
       setCollecting(false);
     }
@@ -297,14 +329,7 @@ export function Liquidity({ session, hosted }: { session: Session; hosted: Hoste
   const byToken = positions.data ? feesByToken(positions.data) : [];
   const metaOf = (tokenId: string) => positions.data?.find((p) => p.tokenId === tokenId) ?? hosted?.find((h) => h.tokenId === tokenId);
   const fees = available.data;
-  const availableText = !fees
-    ? null
-    : fees.outputs === 0
-      ? "nothing"
-      : [`${fmtSats(fees.sats)} sats`, ...fees.tokens.map((t) => {
-          const m = metaOf(t.tokenId);
-          return `${fmtAmount(t.amount, m?.dec ?? 0)} ${m?.sym ?? t.tokenId.slice(0, 8)}`;
-        })].join(" · ");
+  const availableText = !fees ? null : feesLine(fees, metaOf);
   if (!connected) {
     return (
       <>

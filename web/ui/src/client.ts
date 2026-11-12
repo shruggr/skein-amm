@@ -119,7 +119,7 @@ import { PoolTemplate } from "./pool/index.js";
 import { POOLS_BASKET, assetBasket, heldOutputs } from "./wallet/color.js";
 import { prepareClose, submitToOverlay } from "./lp/close.js";
 export type { AvailableFees, CollectOptions, CollectResult };
-import { ClientError, toClientError } from "./errors.js";
+import { ClientError, errorText, toClientError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1553,7 +1553,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
     try {
       enabled = new Set((await enabledTokens()).map((t) => t.tokenId));
     } catch (e) {
-      listError = errText(e);
+      listError = errorText(e);
     }
     const seen = new Set<string>();
     const stopped: { poolId: string; reason: string }[] = [];
@@ -1586,7 +1586,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
         filed += synced.filed ?? 0;
         if (!synced.caughtUp) stopped.push({ poolId: id, reason: synced.reason });
       } catch (e) {
-        stopped.push({ poolId: id, reason: errText(e) });
+        stopped.push({ poolId: id, reason: errorText(e) });
       }
     }
     return { stopped, filed };
@@ -1604,7 +1604,7 @@ function makeClient(opts: ClientOptions, s: Shared) {
       if (r.filed > 0) emit();
       return r.stopped;
     } catch (e) {
-      return [{ poolId: "", reason: errText(e) }];
+      return [{ poolId: "", reason: errorText(e) }];
     }
   }
 
