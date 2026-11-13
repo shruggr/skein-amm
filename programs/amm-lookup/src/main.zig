@@ -50,13 +50,13 @@ pub fn documentation(_: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
     \\
     \\0.49.0: a recognizer. What it recognizes it emits as events (`amm/pool/<poolId>`,
     \\`amm/output/<txid>.<vout>`, `amm/hop`, `amm/commission/<txid>.<vout>`), read at
-    \\`/events/…`; it stores only its counters and the token fee tally.
+    \\`/events/…`; it stores only the token fee tally.
     \\
     \\Every query names its token, `tokenId` (`<txid>`, `<txid>_<vout>` or `<txid>.<vout>`):
     \\
     \\- `{tokenId}`: every live pool of the token, `{poolId, outpoint, bsvReserve, tokenReserve,
-    \\  lpPubKey, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, at, swaps,
-    \\  lifetime}` (freeform);
+    \\  lpPubKey, liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey, at,
+    \\  swaps}` (freeform);
     \\- `{tokenId, poolIds: [<txid>_<vout>]}`: per pool `{poolId, lpPubKey, status, outpoint?,
     \\  current?, sats, tokens, swaps}`, its state and the LP fees of its Swaps.
     \\

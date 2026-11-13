@@ -41,7 +41,7 @@ it: they write only through their `Service` and read no head. A re-run stamps th
 This supersedes the map list and the record shapes below. `pools` and `spentPools` link each hop's
 EVENT record (a deploy's, a Swap's or a rescind's: the `history` row itself); there is no separate
 pool record (D1). One renderer, `poolRowFields`, gives the pool row of the live list, the positions'
-`current`, `/pools/at`, the history and the events; the live list and `current` add `lifetime`. The
+`current`, `/pools/at`, the history and the events; the live list and `current` added `lifetime` (gone, see `counters`). The
 maps are `pools`, `spentPools`, `byCommission`, `trades`, `history`, `closes`, `counters` (D2): a
 pool's LP and validator fee sums are its `history` Swap rows, its live hop its last `history` row's,
 a Swap by txid its continuation's record; `fees`, `byPool`, `byValidator`, `rescinded` and `beat`
@@ -114,7 +114,7 @@ order) ‖ vout, big-endian u32:
 | `spentPools` | `tp ‖ outpoint → record` (a CID link) | a checked pool a spend consumed, kept for `rejected` to give back and for `{outpoint}` to follow |
 | `fees` (0.33.0; 0.40.0 by pool id) | `tp ‖ poolId (36 bytes) ‖ swap txid → the Swap's event` (a CID link) | one row per Swap admitted, under its pool's id: the Swap's EVENT RECORD (below), carrying the trade's fields `{lp, validator, commission, bsvIn, commissionPkh, side, amountIn, amountOut, payoutPkh}`, the three fees in the input asset (src/pool.zig `feesOf`, the outputs where the relay's pair check finds them) |
 | `trades` (0.36.0) | `tp ‖ at (u64 BE, ms) ‖ swap txid → the same event` | every Swap admitted, in time order (`at` the admitting step's time); read by `/trades`, `/candles`, `/stats` |
-| `counters` (0.47.0) | `p ‖ tp ‖ poolId`, `t ‖ tp`, `v ‖ tp ‖ validator identity` → a record (a CID link) | the pool's lifetime volume in and out on each side, its fees to the LP, the validator and the commission in each asset, its last trade's time (`amm-pool-counters`, on the pool row as `lifetime`); the token's lifetime volume and trades (`amm-token-counters`, on `/stats`); the validator's Swaps and fees (`amm-validator-counters`, not on a read yet); written at each admitted Swap, unwound at its rejection, no backfill |
+| `counters` (0.47.0; 0.49.0 the tally) | `f ‖ tp` → a record (a CID link) | the token fee tally (`amm-fee-tally`, `{units}`: the token units of the fee outputs that are ours and unspent; read by `/fees/tokens`). The lifetime counters this map held from 0.47.0 — the pool's (`p ‖ tp ‖ poolId`, on the pool row as `lifetime`), the token's (`t ‖ tp`) and the validator's (`v ‖ tp ‖ …`; both gone in 0.50.0) — are gone: the host sums the same totals from its own analytics store |
 | `history` (0.40.0) | `tp ‖ poolId ‖ at (u64 BE) ‖ seq (u64 BE) → event` | every deploy, Swap, close and rescind of a pool, in time order, rows at one time in event order (seq: the swap count for a deploy or a Swap, + 1 for a close or a rescind); read by `/pools/at`, `/pools/history`, `/trades?pool=` |
 | `closes` (0.40.0) | `tp ‖ at (u64 BE) ‖ poolId → the close's or rescind's event` | the pools' ends in time order: a read at `t` touches only the live pools and the pools closed from `t` on |
 | `byCommission` (0.33.0) | `commissionPkh (20 bytes) ‖ tp ‖ swap txid → the same fee row` | the Swaps that paid a commission (not 0) to that key hash |

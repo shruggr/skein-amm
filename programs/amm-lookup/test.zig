@@ -381,18 +381,12 @@ fn latestRow(a: Allocator, name: []const u8) !?Value {
     return if (ans.array.len == 0) null else ans.array[ans.array.len - 1].get("record");
 }
 
-/// The Swaps a pool's counters hold (0.50.0: the token's counters are gone): its standing swap hops
-/// whose amounts the counters add up to — checked against the counters' satsIn + tokensIn.
-fn tradesOf(a: Allocator, svc: *lookup.Service, tp: []const u8, pid: []const u8) !u64 {
+/// The Swaps a pool holds: its standing swap hops.
+fn tradesOf(a: Allocator, svc: *lookup.Service, pid: []const u8) !u64 {
     var n: u64 = 0;
-    var ins: u64 = 0;
     for (try idx.standing(a, svc, pid)) |h| if (std.mem.eql(u8, h.getText("type") orelse "", "swap")) {
         n += 1;
-        ins += h.getUint("amountIn").?;
     };
-    const op = try idx.parseOutpoint(pid);
-    const c = try idx.poolCounters(a, svc, tp, &w.store.outpointKey(op.txid, op.vout));
-    try testing.expectEqual(ins, c.sats_in + c.tokens_in);
     return n;
 }
 
@@ -457,14 +451,14 @@ test "deploy: an affirmed pool deploy is emitted as its hop under amm/pool/<pool
     try testing.expectEqualStrings("deploy", (try latestRow(a, try idx.outputName(a, pd, 0))).?.getText("type").?);
     try testing.expectEqualStrings(pid, (try latestRow(a, "amm/hop")).?.getText("poolId").?);
 
-    // {tokenId}: THE pool row (0.48.0 shape: 12 fields, `lifetime` last).
+    // {tokenId}: THE pool row (0.48.0 shape; the `lifetime` counters gone: 11 fields, `swaps` last).
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
-    try testing.expectEqual(@as(usize, 12), all[0].map.len);
+    try testing.expectEqual(@as(usize, 11), all[0].map.len);
     try testing.expectEqualStrings("poolId", all[0].map[0].key);
     try testing.expectEqualStrings("outpoint", all[0].map[1].key);
-    try testing.expectEqualStrings("lifetime", all[0].map[11].key);
-    try testing.expect(all[0].get("lifetime").?.get("lastTradeAt").? == .null);
+    try testing.expectEqualStrings("swaps", all[0].map[10].key);
+    try testing.expect(all[0].get("lifetime") == null);
     // Another token: nothing of it.
     const other = try query(a, "0102030405060708091011121314151617181920212223242526272829303132_0", &.{});
     try testing.expectEqual(@as(usize, 0), (try idx.answer(a, &svc, &ch, other)).freeform.array.len);
@@ -491,7 +485,7 @@ test "listing: pools that fail the pool checks, and deploys that do not attest t
     try testing.expectEqual(@as(usize, 0), Index.names.items.len);
 }
 
-test "swap: a Swap's continuation of a listed pool is its next hop — the pool id copied, swaps + 1, the trade, keyId the spent outpoint, feeVouts; the counters; a continuation naming another next key is not listed" {
+test "swap: a Swap's continuation of a listed pool is its next hop — the pool id copied, swaps + 1, the trade, keyId the spent outpoint, feeVouts; a continuation naming another next key is not listed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -521,17 +515,14 @@ test "swap: a Swap's continuation of a listed pool is its next hop — the pool 
     inline for (.{ "feeLp", "feeValidator", "feeCommission", "amountIn", "payoutPkh" }) |k| try testing.expect(row.get(k) != null);
     // No close: the pool continued.
     try testing.expectEqual(@as(usize, 2), Index.count("amm/pool/"));
-    // The live list: the continuation; the counters on its row.
+    // The live list: the continuation.
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
     try testing.expectEqualStrings(try opStr(a, sw, 0), all[0].getText("outpoint").?);
-    try testing.expectEqual(row.getUint("amountIn").?, all[0].get("lifetime").?.getUint("satsIn").?);
-    try testing.expectEqual(@as(u64, 1000), all[0].get("lifetime").?.getUint("lastTradeAt").?);
-    const tp = try idx.tokenPrefix(a, e.token);
-    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, pid));
     // A re-admission of the Swap: counted once.
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{});
-    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, pid));
 
     // A continuation naming another next key (swap_bad_next): not listed; the deploy closes.
     const e2 = try Env.init(a);
@@ -584,7 +575,6 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     var svc = try e.svc(a);
     const pid = try poolIdOfEnv(a, e);
     const sw = e.f.txid("swap_bsv_in");
-    const tp = try idx.tokenPrefix(a, e.token);
     try e.admit(a, &svc, "pool_deploy", null, &.{ 0, 1, 2 }, &.{});
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
     try e.reject(a, &svc, "swap_bsv_in", null);
@@ -597,18 +587,17 @@ test "rejected: a rejected Swap's rows are reverted under the same names — its
     try testing.expectEqualStrings(pid, rv.getText("outpoint").?);
     try testing.expectEqual(@as(u64, 0), rv.getUint("swaps").?);
     try testing.expectEqualStrings("revert", (try latestRow(a, "amm/hop")).?.getText("type").?);
-    try testing.expectEqual(@as(u64, 0), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 0), try tradesOf(a, &svc, pid));
     const all = try e.live(a, &svc);
     try testing.expectEqual(@as(usize, 1), all.len);
     try testing.expectEqualStrings(pid, all[0].getText("outpoint").?);
-    try testing.expect(all[0].get("lifetime").?.get("lastTradeAt").? == .null);
     // A second rejection: nothing more.
     const before = Index.names.items.len;
     try e.reject(a, &svc, "swap_bsv_in", null);
     try testing.expectEqual(before, Index.names.items.len);
     // Re-admitted (a proof after the rejection): listed and counted again.
     try e.admit(a, &svc, "swap_bsv_in", null, &.{ 0, 1 }, &.{e.op("pool_deploy", 0)});
-    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 1), try tradesOf(a, &svc, pid));
     try testing.expectEqualStrings(try opStr(a, sw, 0), (try e.live(a, &svc))[0].getText("outpoint").?);
     // The deploy rejected: the pool is gone, its revert names only the pool.
     try e.reject(a, &svc, "swap_bsv_in", null);
@@ -640,7 +629,7 @@ test "positions {poolIds}: per pool its state, LP key and the LP fees of its sta
     try testing.expectEqual(buy.getUint("feeLp").?, ans[0].getUint("sats").?);
     try testing.expectEqual(sell.getUint("feeLp").?, ans[0].getUint("tokens").?);
     try testing.expectEqual(@as(u64, 2), ans[0].getUint("swaps").?);
-    try testing.expect(ans[0].get("current").?.get("lifetime") != null);
+    try testing.expect(ans[0].get("current").?.get("lifetime") == null);
     try testing.expectEqualStrings("closed", ans[1].getText("status").?);
     try testing.expect(ans[1].get("lpPubKey").? == .null);
     try testing.expectEqual(@as(u64, 0), ans[1].getUint("swaps").?);
@@ -821,13 +810,13 @@ test "order rule (skein-overlay 0.26.0): a proven B spending the pool output a h
     try idx.spent(a, &svc, e.topic, xp, lb);
     try e.commit(&svc);
     try testing.expectEqual(2 * fee, try idx.tally(a, &svc, tp));
-    try testing.expectEqual(@as(u64, 3), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 3), try tradesOf(a, &svc, pid));
     // A rejected (double spent, by B): nothing given back — B consumes the pool output.
     svc.given_back = &.{};
     try idx.rejected(a, &svc, e.topic, la);
     try e.commit(&svc);
     try testing.expectEqual(fee, try idx.tally(a, &svc, tp)); // B's fee only
-    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, tp, pid)); // buy + B
+    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, pid)); // buy + B
     const rv = (try latestRow(a, try idx.poolName(a, pid))).?;
     try testing.expectEqualStrings("revert", rv.getText("type").?);
     try testing.expectEqualStrings(try opStr(a, tb, 0), rv.getText("outpoint").?); // the pool as it stands: B's
@@ -901,7 +890,7 @@ test "audit (0.50.0): a BEEF carrying a pool deploy and a Swap on it, admitted i
     const hops = try idx.standing(a, &svc, pid);
     try testing.expectEqual(@as(usize, 3), hops.len);
     for ([_][]const u8{ "deploy", "swap", "swap" }, hops) |k, h| try testing.expectEqualStrings(k, h.getText("type").?);
-    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, tp, pid));
+    try testing.expectEqual(@as(u64, 2), try tradesOf(a, &svc, pid));
     try testing.expectEqual(@as(usize, 2), Filed.calls.items.len); // the buy's fee under bsv, the sell's under tokens
     try testing.expectEqualStrings("bsv", Filed.calls.items[0].basket);
     try testing.expectEqualStrings("tokens", Filed.calls.items[1].basket);
@@ -970,7 +959,6 @@ test "trade time (0.52.0): a Swap admitted ALREADY MINED is stamped with its blo
     try testing.expectEqual(block_ms, hops[1].getUint("at").?);
     try testing.expectEqual(block_ms, (try latestRow(a, try idx.outputName(a, sw, 0))).?.getUint("at").?);
     try testing.expectEqual(block_ms, (try latestRow(a, "amm/hop")).?.getUint("at").?);
-    try testing.expectEqual(block_ms, (try e.live(a, &svc))[0].get("lifetime").?.getUint("lastTradeAt").?);
 }
 
 test "trade time (0.52.0): a Swap admitted UNMINED keeps the step's time after its proof is recorded (a re-admission emits nothing); the next Swap, admitted unmined later, its own step's time" {

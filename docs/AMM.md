@@ -505,7 +505,7 @@ List parameters are comma-separated; answers list one record per key in query or
 
 This app answers P4–P9 (amm-p2p, reads.zig; filters `positions`, `validatorFees`,
 `commissionFees`, `readTerms`, `spends`, `tx`; 0.44.0: no `swaps`; 0.47.0: no `poolsBeef`); P4–P6 are the pool lookup's own list
-answers (amm-lookup `answer`, the same code `/lookup` runs; 0.47.0: each pool row carries `lifetime`, the pool's counters). P1 and P2 (`/pools`) are the HOST's (it joins its liveness and the market's
+answers (amm-lookup `answer`, the same code `/lookup` runs; the pool row's `lifetime`, the pool's counters of 0.47.0, is gone: the host's `/amm/pools` rows carry `lifetime` from its own analytics store). P1 and P2 (`/pools`) are the HOST's (it joins its liveness and the market's
 minimum to the lookup's rows; D11, D13): no route of this app. The pages (web/ui) read only these
 routes and the wallet; they send `/lookup` nowhere.
 

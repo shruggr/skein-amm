@@ -6,7 +6,7 @@
 //! It keeps NO index of its own: what it recognizes it EMITS as named events (the kernel indexes
 //! them by name; the latest under a name is the current state, the list is the history), and it
 //! reads earlier facts back from that index in its step (skein `events`). It STORES only running
-//! summaries: the counters (0.47.0) and the token fee tally (0.49.0).
+//! summary: the token fee tally (0.49.0; the pool counters of 0.47.0 are gone).
 //!
 //! The listing (skein-amm 0.13.0, David Case 2026-10-22; docs/AMM.md "The listing"): a pool output
 //! is listed when
@@ -73,9 +73,10 @@ const eql = std.mem.eql;
 pub const service_name = "ls_amm";
 
 /// The stored summaries (0.49.0: the index maps `pools`, `spentPools`, `history`, `closes`,
-/// `trades` and `byCommission` are gone; what they found is in the events). `counters`: `p ‖ tp ‖
-/// poolId` the pool's (0.47.0; 0.50.0: the token's `t ‖ tp` and the validator's `v ‖ …` gone, no
-/// reader), `f ‖ tp` the token fee tally (0.49.0).
+/// `trades` and `byCommission` are gone; what they found is in the events). `counters`: `f ‖ tp`
+/// the token fee tally (0.49.0). (The lifetime counters of 0.47.0 — the pool's `p ‖ tp ‖ poolId`,
+/// and until 0.50.0 the token's `t ‖ tp` and the validator's `v ‖ …` — are gone: the host sums the
+/// same totals from its own analytics store.)
 pub const maps = [_][]const u8{"counters"};
 
 // ---------------------------------------------------------------- the step's context
@@ -524,68 +525,10 @@ fn emitHop(a: Allocator, svc: *Service, row: Value, output: ?ParsedOutpoint) !vo
     try svc.emit(try named(a, try hopName(a), row));
 }
 
-// ---------------------------------------------------------------- the counters (0.47.0) and the tally (0.49.0)
+// ---------------------------------------------------------------- the token fee tally (0.49.0)
 
-/// A pool's counters (`counters` under `p ‖ tp ‖ poolId`).
-pub const PoolCounters = struct {
-    sats_in: u64 = 0,
-    sats_out: u64 = 0,
-    tokens_in: u64 = 0,
-    tokens_out: u64 = 0,
-    lp_sats: u64 = 0,
-    lp_tokens: u64 = 0,
-    validator_sats: u64 = 0,
-    validator_tokens: u64 = 0,
-    commission_sats: u64 = 0,
-    commission_tokens: u64 = 0,
-    last_trade_at: ?u64 = null,
-};
-
-
-
-const pool_fields = .{
-    .{ "satsIn", "sats_in" },             .{ "satsOut", "sats_out" },
-    .{ "tokensIn", "tokens_in" },         .{ "tokensOut", "tokens_out" },
-    .{ "lpSats", "lp_sats" },             .{ "lpTokens", "lp_tokens" },
-    .{ "validatorSats", "validator_sats" }, .{ "validatorTokens", "validator_tokens" },
-    .{ "commissionSats", "commission_sats" }, .{ "commissionTokens", "commission_tokens" },
-};
-
-fn poolCountersKey(a: Allocator, tp: []const u8, pid: []const u8) ![]u8 {
-    return cat(a, &.{ "p", tp, pid });
-}
 fn tallyKey(a: Allocator, tp: []const u8) ![]u8 {
     return cat(a, &.{ "f", tp });
-}
-
-fn readCounters(comptime T: type, comptime fields: anytype, a: Allocator, svc: *Service, key: []const u8) !T {
-    var out: T = .{};
-    const cid = (try svc.map("counters").link(key)) orelse return out;
-    const rec = try svc.store.getValue(a, cid);
-    inline for (fields) |f| @field(out, f[1]) = rec.getUint(f[0]) orelse 0;
-    if (T == PoolCounters) out.last_trade_at = rec.getUint("lastTradeAt");
-    return out;
-}
-
-fn writeCounters(comptime T: type, comptime fields: anytype, a: Allocator, svc: *Service, key: []const u8, kind: []const u8, v: T) !void {
-    var es: std.ArrayList(Entry) = .empty;
-    try es.append(a, .{ .key = "kind", .value = .{ .text = kind } });
-    var any = false;
-    inline for (fields) |f| {
-        const n: u64 = @field(v, f[1]);
-        any = any or n != 0;
-        try es.append(a, .{ .key = f[0], .value = .{ .uint = n } });
-    }
-    if (T == PoolCounters) try es.append(a, .{ .key = "lastTradeAt", .value = if (v.last_trade_at) |t| .{ .uint = t } else .null });
-    if (!any) {
-        _ = try svc.map("counters").remove(key);
-        return;
-    }
-    try svc.map("counters").putLink(key, try svc.store.putValue(a, .{ .map = es.items }));
-}
-
-pub fn poolCounters(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !PoolCounters {
-    return readCounters(PoolCounters, pool_fields, a, svc, try poolCountersKey(a, tp, pid));
 }
 
 /// The token fee tally (0.49.0, David 2026-11-09 "TOKEN TALLY"): the token units of the fee outputs
@@ -613,55 +556,6 @@ fn adjustTally(a: Allocator, svc: *Service, tp: []const u8, units: u64, add: boo
     }) }));
 }
 
-fn bump(x: *u64, n: u64, add: bool) void {
-    x.* = if (add) std.math.add(u64, x.*, n) catch std.math.maxInt(u64) else x.* -| n;
-}
-
-/// A Swap's hop row counted in (`add`) or unwound: its pool's counters (0.50.0: the token's and the
-/// validator's are gone — nothing read them since 0.49.0; the host folds token-wide figures from
-/// `amm/hop`).
-fn countTrade(a: Allocator, svc: *Service, tp: []const u8, row: Value, add: bool) !void {
-    const pid_op = try parseOutpoint(row.getText("poolId") orelse return error.BadEvent);
-    const pid = w.store.outpointKey(pid_op.txid, pid_op.vout);
-    const at = row.getUint("at") orelse return error.BadEvent;
-    const in = row.getUint("amountIn") orelse return error.BadEvent;
-    const out = row.getUint("amountOut") orelse return error.BadEvent;
-    const lp = row.getUint("feeLp") orelse 0;
-    const val = row.getUint("feeValidator") orelse 0;
-    const com = row.getUint("feeCommission") orelse 0;
-    const bsv_in = eql(u8, row.getText("side") orelse "", "buy");
-    const pk = try poolCountersKey(a, tp, &pid);
-    var p = try readCounters(PoolCounters, pool_fields, a, svc, pk);
-    if (bsv_in) {
-        bump(&p.sats_in, in, add);
-        bump(&p.tokens_out, out, add);
-        bump(&p.lp_sats, lp, add);
-        bump(&p.validator_sats, val, add);
-        bump(&p.commission_sats, com, add);
-    } else {
-        bump(&p.tokens_in, in, add);
-        bump(&p.sats_out, out, add);
-        bump(&p.lp_tokens, lp, add);
-        bump(&p.validator_tokens, val, add);
-        bump(&p.commission_tokens, com, add);
-    }
-    if (add) {
-        p.last_trade_at = if (p.last_trade_at) |t| @max(t, at) else at;
-    } else if (p.last_trade_at != null and p.last_trade_at.? == at) {
-        p.last_trade_at = try lastSwapAt(a, svc, try poolIdText(a, &pid), row.getText("txid") orelse "");
-    }
-    try writeCounters(PoolCounters, pool_fields, a, svc, pk, "amm-pool-counters", p);
-}
-
-/// A pool's counters as its row carries them (`lifetime`, 0.47.0).
-fn lifetimeValue(a: Allocator, svc: *Service, tp: []const u8, pid: []const u8) !Value {
-    const p = try poolCounters(a, svc, tp, pid);
-    var es: std.ArrayList(Entry) = .empty;
-    inline for (pool_fields) |f| try es.append(a, .{ .key = f[0], .value = .{ .uint = @field(p, f[1]) } });
-    try es.append(a, .{ .key = "lastTradeAt", .value = if (p.last_trade_at) |t| .{ .uint = t } else .null });
-    return .{ .map = es.items };
-}
-
 // ---------------------------------------------------------------- a pool's standing history
 
 /// A pool's hops as they stand (oldest first): its `<app>/pool/<poolId>` rows with every hop a later
@@ -681,19 +575,6 @@ pub fn standing(a: Allocator, svc: *Service, pid_text: []const u8) ![]const Valu
         try out.append(a, r);
     }
     return out.items;
-}
-
-/// The latest standing Swap's time of a pool other than the Swap `skip` (its txid hex); null none.
-fn lastSwapAt(a: Allocator, svc: *Service, pid_text: []const u8, skip: []const u8) !?u64 {
-    const hops = try standing(a, svc, pid_text);
-    var i: usize = hops.len;
-    while (i > 0) {
-        i -= 1;
-        const h = hops[i];
-        if (!eql(u8, kindOf(h), "swap") or eql(u8, h.getText("txid") orelse "", skip)) continue;
-        return h.getUint("at");
-    }
-    return null;
 }
 
 // ---------------------------------------------------------------- the fees that are ours (0.49.0)
@@ -846,10 +727,7 @@ pub fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, o
                         const trade = try tradeOf(a, tx, input, pf, was);
                         const row = try hopRow(a, "swap", tx.txid, token, pf, true, trade, at);
                         try emitHop(a, svc, row, here);
-                        if (trade) |t| {
-                            try countTrade(a, svc, tp, row, true);
-                            try recognizeFees(a, svc, tp, tx, row, was, op, t);
-                        }
+                        if (trade) |t| try recognizeFees(a, svc, tp, tx, row, was, op, t);
                     },
                 }
                 continue;
@@ -920,8 +798,8 @@ fn afterUndo(a: Allocator, svc: *Service, pid_text: []const u8, txid: [32]u8) !?
 /// A judgement of `topic` was removed by a rejection: every row `tx` wrote is unwound — under the
 /// same names: each listed output of its own `{reverted}` under `<app>/output/…`, one revert row
 /// per pool it touched under `<app>/pool/<poolId>` and `<app>/hop` (the pool after the undo: the
-/// listed pool it spent given back, or none), its commission flag `{reverted}`; a Swap's counts
-/// unwound; the tally loses its fees of ours and gets back the fee outputs of ours it had spent.
+/// listed pool it spent given back, or none), its commission flag `{reverted}`; the tally
+/// loses its fees of ours and gets back the fee outputs of ours it had spent.
 pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyerror!void {
     app = svc.app;
     _ = tokenIdOf(topic) orelse return;
@@ -933,7 +811,6 @@ pub fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) a
         const row = (try outputRow(a, svc, tx.txid, vout)) orelse continue;
         const pid_op = try parseOutpoint(row.getText("poolId") orelse return error.BadEvent);
         if (eql(u8, kindOf(row), "swap") and row.get("amountIn") != null) {
-            try countTrade(a, svc, tp, row, false);
             var buf: [2]Ours = undefined;
             // Its fee outputs of ours leave the tally — those still unspent (a spent one left it at
             // its spend: the topic's fact `<app>/topic/output/<op>` says spent).
@@ -1013,13 +890,12 @@ pub fn priceOf(rec: Value) ?Price {
 
 /// THE pool row the live list and the positions answer (0.48.0 shape): `{poolId, outpoint,
 /// bsvReserve, tokenReserve, lpPubKey, liquidityFeeBps, validationFeeBps, commissionBps,
-/// validatorIdentityKey, at, swaps, lifetime}` from a standing hop row.
-fn poolStateValue(a: Allocator, svc: *Service, tp: []const u8, hop: Value) !Value {
+/// validatorIdentityKey, at, swaps}` from a standing hop row (the pool's `lifetime` counters,
+/// 0.47.0, are gone: the host sums them from its own analytics store).
+fn poolStateValue(a: Allocator, hop: Value) !Value {
     var es: std.ArrayList(Entry) = .empty;
     inline for (.{ "poolId", "outpoint", "bsvReserve", "tokenReserve", "lpPubKey", "liquidityFeeBps", "validationFeeBps", "commissionBps", "validatorIdentityKey", "at", "swaps" }) |k|
         try es.append(a, .{ .key = k, .value = hop.get(k) orelse return error.BadEvent });
-    const op = try parseOutpoint(hop.getText("poolId").?);
-    try es.append(a, .{ .key = "lifetime", .value = try lifetimeValue(a, svc, tp, &w.store.outpointKey(op.txid, op.vout)) });
     return .{ .map = es.items };
 }
 
@@ -1052,7 +928,7 @@ fn stateOf(a: Allocator, svc: *Service, pid_text: []const u8, token: []const u8)
 
 /// `{tokenId}`: every live pool of the token (a rescinded one is not listed), in pool id order:
 /// the latest row of every `<app>/pool/…`; a pool whose latest is a revert is read whole.
-fn answerAll(a: Allocator, svc: *Service, tp: []const u8, token: []const u8) !lookup.Answer {
+fn answerAll(a: Allocator, svc: *Service, token: []const u8) !lookup.Answer {
     var out: std.ArrayList(Value) = .empty;
     for (try latestUnder(a, svc, try std.fmt.allocPrint(a, "{s}/pool/", .{app}))) |r| {
         if (!eql(u8, r.getText("tokenId") orelse "", token)) continue;
@@ -1064,7 +940,7 @@ fn answerAll(a: Allocator, svc: *Service, tp: []const u8, token: []const u8) !lo
             hop = st.current.?;
         } else if (!eql(u8, k, "deploy") and !eql(u8, k, "swap")) continue;
         if (try spentOnChain(a, svc, hop.getText("outpoint") orelse continue)) continue;
-        try out.append(a, try poolStateValue(a, svc, tp, hop));
+        try out.append(a, try poolStateValue(a, hop));
     }
     return .{ .freeform = .{ .array = out.items } };
 }
@@ -1072,7 +948,7 @@ fn answerAll(a: Allocator, svc: *Service, tp: []const u8, token: []const u8) !lo
 /// `{poolIds}` (0.40.0): per pool id `{poolId, lpPubKey, status, outpoint?, current?, sats, tokens,
 /// swaps}` — the LP fees of its standing Swaps (sats from buys, tokens from sells), their count, and
 /// its state (`stateOf`); an unknown id `closed` with zeros and `lpPubKey` null.
-fn answerPools(a: Allocator, svc: *Service, tp: []const u8, token: []const u8, v: Value) !lookup.Answer {
+fn answerPools(a: Allocator, svc: *Service, token: []const u8, v: Value) !lookup.Answer {
     if (v != .array) return error.BadQuery;
     const out = try a.alloc(Value, v.array.len);
     for (v.array, out) |x, *o| {
@@ -1096,7 +972,7 @@ fn answerPools(a: Allocator, svc: *Service, tp: []const u8, token: []const u8, v
         });
         if (st) |s| if (s.current) |c| try es.appendSlice(a, &.{
             .{ .key = "outpoint", .value = c.get("outpoint") orelse .null },
-            .{ .key = "current", .value = try poolStateValue(a, svc, tp, c) },
+            .{ .key = "current", .value = try poolStateValue(a, c) },
         });
         try es.appendSlice(a, &.{
             .{ .key = "status", .value = .{ .text = if (st) |s| s.status else "closed" } },
@@ -1118,11 +994,10 @@ pub fn answer(a: Allocator, svc: *Service, _: *Chain, query: Value) anyerror!loo
     if (query != .map) return error.BadQuery;
     const token_text = query.getText("tokenId") orelse return error.BadQuery;
     const topic = try topicOf(a, token_text);
-    const tp = try topicPrefix(a, topic);
     const token = try tokenTextOf(a, topic);
-    if (query.get("poolIds")) |v| return answerPools(a, svc, tp, token, v);
+    if (query.get("poolIds")) |v| return answerPools(a, svc, token, v);
     if (query.get("outpoint") != null or query.get("validatorIdentityKey") != null or query.get("validatorIdentityKeys") != null or query.get("commissionPkhs") != null) return error.BadQuery;
-    return answerAll(a, svc, tp, token);
+    return answerAll(a, svc, token);
 }
 
 /// The service: its summaries, the queries, the hooks.

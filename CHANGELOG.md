@@ -4,6 +4,24 @@ Released versions of skein-amm. 0.10.0 is the first entry here; the notes
 on earlier versions are below as the README carried them at 0.9.1, in the
 names of their time, and each release commit names what changed.
 
+## Unreleased
+
+- amm-lookup: the pool lifetime counters are gone (David 2026-11-12: a lookup does not answer
+  summarized data). They were added in 0.47.0, when the lookup was the only source of those totals:
+  per pool its volume in and out on each side, its fees to the LP, the validator and the commission,
+  and its last trade's time (`amm-pool-counters` in the `counters` map under `p ‖ tp ‖ poolId`),
+  written at each admitted Swap and unwound at its rejection. Since open-exchange 0.28.1 the host
+  computes the same totals from its own analytics store and does not read these. Removed:
+  `PoolCounters`, the counter writes in `admitted` and their unwind in `rejected`, and the `lifetime`
+  entry of the pool row. The lookup's `{tokenId}` rows and the `current` of a `{poolIds}` answer (the
+  instance's `/positions?pool=`, passed through by the host's `/amm/positions`) no longer carry
+  `lifetime`. Counter records already stored under `p ‖ tp ‖ …` are left in place and never read.
+- Unchanged: the token fee tally (`counters` under `f ‖ tp`), its read `/fees/tokens`, and the
+  `{poolIds}` answer's `sats`, `tokens` and `swaps`.
+- A consumer that read `lifetime` from the instance reads the host instead: `GET /@<token>/amm/pools`
+  and `GET <origin>/amm/pools` (each row's `lifetime`), `GET /@<token>/amm/stats` (`volumeSats`,
+  `volumeTokens`, `trades`), and `GET <origin>/amm/lp/fees` (the LP fees per pool).
+
 ## 0.55.1 (branch `release-0.55.1`)
 
 A client-only cut: @dcasegr/amm-engine and amm-client 0.55.1. The token app, its programs and
