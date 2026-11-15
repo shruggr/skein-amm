@@ -33,11 +33,11 @@ const (
 )
 
 // The attestation every pool output carries in state (0.13.0): the nonce and a
-// stand-in DER signature (the contract never checks either; gen/vectors signs a
-// real one).
+// stand-in signature, as its r and s (the contract never checks either).
 var (
-	nonce       = bytes.Repeat([]byte{0x4e}, 32)
-	affirmation = append([]byte{0x30, 0x44}, bytes.Repeat([]byte{0x02}, 0x44)...)
+	nonce        = bytes.Repeat([]byte{0x4e}, 32)
+	affirmationR = bytes.Repeat([]byte{0x72}, 32)
+	affirmationS = bytes.Repeat([]byte{0x73}, 32)
 )
 
 // assetID is a canonical BRC-162 token id: the 32-byte deploy txid.
@@ -96,7 +96,8 @@ func newFixture(t *testing.T, lpFeeBps, validatorBps, commissionBps int64) *fixt
 		hex.EncodeToString(nonce),
 		hex.EncodeToString(lpSatsPkh),
 		hex.EncodeToString(lpTokenPkh),
-		hex.EncodeToString(affirmation),
+		hex.EncodeToString(affirmationR),
+		hex.EncodeToString(affirmationS),
 		hex.EncodeToString(assetID),
 		lpFeeBps,
 		validatorBps,
@@ -182,7 +183,7 @@ func tokenPrefix(amount int64) []byte {
 
 // state is TokenReserve (8, LE) || LpPubKey || ValidatorPubKey ||
 // ValidatorIdentity (33 each) || Nonce (32) || LpSatsPkh || LpTokenPkh (20
-// each, 0.55.0) || Affirmation (its length, then the DER). newFixture checks this against the SDK. A rescinded pool's
+// each, 0.55.0) || AffirmationR || AffirmationS (32 each). newFixture checks this against the SDK. A rescinded pool's
 // ValidatorPubKey is 33 zero bytes (`rescinded`).
 func (p pool) state() []byte {
 	b := make([]byte, 8)
@@ -198,8 +199,8 @@ func (p pool) state() []byte {
 	sats, tokens := p.feePkhs()
 	b = append(b, sats...)
 	b = append(b, tokens...)
-	b = append(b, byte(len(affirmation)))
-	return append(b, affirmation...)
+	b = append(b, affirmationR...)
+	return append(b, affirmationS...)
 }
 
 func p2pkh(pkh []byte) []byte {
@@ -261,8 +262,13 @@ type call struct {
 	// signers produce sigs over the real preimage; placed at sigSlots in args.
 	signers  []*ec.PrivateKey
 	sigSlots []int
-	// poolIndex is the pool's input index (0 by convention; not enforced).
+	// poolIndex is the pool's input index. Swap and Rescind require 0
+	// (requireInputZero); Close does not look.
 	poolIndex int
+	// prevouts is the allPrevouts argument of Swap and Rescind; nil: the
+	// transaction's real input outpoints.
+	prevouts []byte
+
 	// change is Rúnar's change output (_changePKH, _changeAmount), the last
 	// output, when the call names one.
 	change *struct {
@@ -333,11 +339,21 @@ func (f *fixture) run(t *testing.T, p pool, c call) error {
 	}
 
 	var u []byte
-	u = append(u, pushData(f.code)...) // _codePart
+	if c.method != methodClose {
+		u = append(u, pushData(f.code)...) // _codePart: the methods that write a continuation
+	}
 	for _, a := range args {
 		u = append(u, a...)
 	}
 	if c.method != methodClose { // Close adds no output: no change parameters (0.13.0)
+		prevouts := c.prevouts
+		if prevouts == nil {
+			for _, in := range tx.Inputs {
+				prevouts = append(prevouts, in.SourceTXID.CloneBytes()...)
+				prevouts = binary.LittleEndian.AppendUint32(prevouts, in.SourceTxOutIndex)
+			}
+		}
+		u = append(u, pushData(prevouts)...)            // allPrevouts
 		changePkh, change := make([]byte, 20), int64(0) // _changeAmount 0: no change output
 		if c.change != nil {
 			changePkh, change = c.change.pkh, c.change.sats
